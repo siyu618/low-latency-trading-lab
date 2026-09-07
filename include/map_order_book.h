@@ -3,47 +3,70 @@
 #include "types.h"
 
 #include <map>
+#include <stdexcept>
 
 namespace llob {
 
 // ---------------------------------------------------------------------------
 // MapOrderBook — baseline L2 book built on std::map.
 //
-// Bids live in one map ordered by descending price (so bid.rbegin() is the
-// best bid); asks in another ordered by ascending price (ask.begin() is the
-// best ask). This is the reference implementation used as a correctness
-// oracle for FlatOrderBook and as the benchmark baseline.
+// Bids live in one map ordered by descending price; asks in another ordered by
+// ascending price. With a descending comparator the largest bid is at
+// begin(), so begin() is the best bid for both sides. This is the reference
+// implementation used as a correctness oracle for FlatOrderBook and as the
+// benchmark baseline.
 //
 // std::map is a node-based red-black tree: every inserted price level is a
 // heap allocation, and reads/updates chase pointers. That is precisely the
 // cost model we want to measure against a flat representation.
+//
+// Price-domain semantics are identical to FlatOrderBook: the map is configured
+// over [tick_min, tick_max], accepts the same apply()/load_snapshot() results,
+// and must be constructed with the SAME domain as any FlatOrderBook it is
+// compared against.
 // ---------------------------------------------------------------------------
 class MapOrderBook final {
 public:
-    // Tick-domain endpoints the map book will accept. Kept symmetric with
-    // FlatOrderBook's bounds so the two books can be fed identical streams.
-    static constexpr int64_t kMinTick = 1;
-    static constexpr int64_t kMaxTick = 10'000'000'000;
+    // Tick-domain endpoints the map book will accept. Defaults are shared with
+    // FlatOrderBook (see types.h); construct with the same domain for parity.
+    explicit MapOrderBook(int64_t tick_min = kDefaultTickMin,
+                          int64_t tick_max = kDefaultTickMax)
+        : tick_min_(tick_min), tick_max_(tick_max) {
+        if (tick_max < tick_min) {
+            throw std::invalid_argument("MapOrderBook: tick_max must be >= tick_min");
+        }
+    }
 
     using Bids = std::map<int64_t, int64_t, std::greater<int64_t>>; // desc; begin() = best bid
     using Asks = std::map<int64_t, int64_t, std::less<int64_t>>;    // asc;  begin() = best ask
 
+    int64_t tick_min() const noexcept { return tick_min_; }
+    int64_t tick_max() const noexcept { return tick_max_; }
+
     ApplyResult apply(const L2Update& u) {
         if (u.seq <= seq_) {
-            return ApplyResult::Stale; // replayed or older than applied state
+            return ApplyResult::Stale; // replay/older, or unsynced: nothing changes
         }
         if (!synced_) {
-            // Already desynchronized by an earlier gap; every update is ignored
-            // until load_snapshot() restores a consistent baseline.
-            return ApplyResult::Stale;
+            return ApplyResult::Stale; // only a snapshot can restore a usable book
         }
         if (u.seq != seq_ + 1) {
             synced_ = false;
             return ApplyResult::GapDetected;
         }
 
-        if (u.price < kMinTick || u.price > kMaxTick) {
-            return ApplyResult::Stale; // outside the domain the book can hold
+        // Brand-new, in-order sequence: validate content before touching state.
+        if (u.qty < 0) {
+            // Corrupt content => the stream is not trustworthy; refuse the
+            // update and require a snapshot rebuild. Sequence NOT consumed.
+            synced_ = false;
+            return ApplyResult::InvalidUpdate;
+        }
+        if (u.price < tick_min_ || u.price > tick_max_) {
+            // Outside this book's configured domain. Ignored, but the sequence
+            // IS consumed to keep the view contiguous.
+            seq_ = u.seq;
+            return ApplyResult::OutOfRange;
         }
 
         seq_ = u.seq;
@@ -66,26 +89,28 @@ public:
         return ApplyResult::Applied;
     }
 
-    void load_snapshot(const BookSnapshot& s) {
+    // Replaces book state from `s`. Returns false (leaving the book completely
+    // unchanged) if the snapshot is malformed; cold path, correctness first.
+    bool load_snapshot(const BookSnapshot& s) {
+        if (!validate_snapshot(s, tick_min_, tick_max_)) {
+            return false; // reject, do not partially load, do not touch synced()
+        }
+
         bids_.clear();
         asks_.clear();
-
-        const auto& bp = s.bids.prices;
-        const auto& bq = s.bids.qtys;
-        for (size_t i = 0; i < bp.size() && i < bq.size(); ++i) {
-            if (bp[i] >= kMinTick && bp[i] <= kMaxTick && bq[i] > 0) {
-                bids_[bp[i]] = bq[i];
-            }
+        for (size_t i = 0; i < s.bids.prices.size(); ++i) {
+            const int64_t q = s.bids.qtys[i];
+            if (q == 0) continue; // qty 0 == no level; validated >= 0 already
+            bids_[s.bids.prices[i]] = q;
         }
-        const auto& ap = s.asks.prices;
-        const auto& aq = s.asks.qtys;
-        for (size_t i = 0; i < ap.size() && i < aq.size(); ++i) {
-            if (ap[i] >= kMinTick && ap[i] <= kMaxTick && aq[i] > 0) {
-                asks_[ap[i]] = aq[i];
-            }
+        for (size_t i = 0; i < s.asks.prices.size(); ++i) {
+            const int64_t q = s.asks.qtys[i];
+            if (q == 0) continue;
+            asks_[s.asks.prices[i]] = q;
         }
         seq_   = s.seq;
         synced_ = true;
+        return true;
     }
 
     // Best prices, cached as map endpoints (O(1), no side effects). With the
@@ -109,6 +134,8 @@ public:
 private:
     Bids     bids_;
     Asks     asks_;
+    int64_t  tick_min_;
+    int64_t  tick_max_;
     uint64_t seq_    = 0; // last applied sequence number
     bool     synced_ = false;
 };

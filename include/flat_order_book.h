@@ -23,11 +23,13 @@ namespace llob {
 //     side (2x int64 per tick), which is why realistic configurations keep the
 //     tick span modest (e.g. a 100k-tick band around the last price).
 //   * best_bid/best_ask are cached integers. Deleting the level that holds the
-//     current best triggers an immediate (eager) linear scan of that side to
-//     find the new best, so the cache is always valid and reads are pure O(1).
-//     The eager scan keeps updates deterministic — the cost lands on the delete
-//     itself, never on a later read. This makes "update a non-best level" O(1),
-//     and "delete the best price" O(span) — the documented worst case.
+//     current best triggers an immediate (eager) scan for the next best — but
+//     only starting at the slot adjacent to the deleted best and moving inward,
+//     not a scan of the whole configured domain. The cache is therefore always
+//     valid and reads are pure O(1); updates to non-best levels are O(1); and
+//     the costly operation, deleting the best price, is O(distance to the next
+//     best) — only a full-domain scan if the side empties. A full-domain scan
+//     is still used when (re)building from a snapshot (cold path).
 //
 // Hot path: apply() performs no dynamic allocation after construction, and
 // load_snapshot() performs none either once the storage is preallocated.
@@ -37,7 +39,8 @@ namespace llob {
 // ---------------------------------------------------------------------------
 class FlatOrderBook final {
 public:
-    FlatOrderBook(int64_t tick_min, int64_t tick_max)
+    FlatOrderBook(int64_t tick_min = kDefaultTickMin,
+                  int64_t tick_max = kDefaultTickMax)
         : tick_min_(tick_min)
         , tick_span_(tick_max - tick_min + 1) {
         if (tick_span_ <= 0) {
@@ -46,6 +49,9 @@ public:
         allocate();
     }
 
+    int64_t tick_min() const noexcept { return tick_min_; }
+    int64_t tick_max() const noexcept { return tick_min_ + tick_span_ - 1; }
+
     // Number of addressable tick slots per side.
     int64_t capacity() const noexcept { return tick_span_; }
 
@@ -53,24 +59,36 @@ public:
 
     ApplyResult apply(const L2Update& u) {
         if (u.seq <= seq_) {
-            return ApplyResult::Stale;
+            return ApplyResult::Stale; // replay/older, or unsynced: nothing changes
         }
         if (!synced_) {
-            // Already desynchronized; ignore until a snapshot restores state.
-            return ApplyResult::Stale;
+            return ApplyResult::Stale; // only a snapshot can restore a usable book
         }
         if (u.seq != seq_ + 1) {
             synced_ = false;
             return ApplyResult::GapDetected;
         }
 
+        // Brand-new, in-order sequence: validate content before touching state.
+        if (u.qty < 0) {
+            // Corrupt content => the stream is not trustworthy; refuse the
+            // update and require a snapshot rebuild. Sequence NOT consumed.
+            synced_ = false;
+            return ApplyResult::InvalidUpdate;
+        }
         const int64_t idx = u.price - tick_min_;
         if (idx < 0 || idx >= tick_span_) {
-            return ApplyResult::Stale; // outside this book's domain
+            // Outside this book's configured domain. The book intentionally
+            // does not cover this price (banded design), so the update is
+            // ignored but the sequence IS consumed to keep the view contiguous.
+            seq_ = u.seq;
+            return ApplyResult::OutOfRange;
         }
 
         const size_t s  = side_of(u.side);
-        auto& qty       = qty_[s][idx];
+        // idx is in [0, tick_span_) here (validated just above), so the
+        // narrowing to size_t is safe.
+        auto& qty       = qty_[s][static_cast<size_t>(idx)];
         const bool is_best = (idx == best_idx_[s]);
         if (u.qty == 0) {
             if (qty == 0) {
@@ -83,11 +101,12 @@ public:
             }
             qty = 0;
             if (is_best) {
-                // Removed the level the cache points at. Rescan NOW so that
-                // best_bid()/best_ask() stay pure O(1) reads with no hidden
-                // invalidation work. This is the documented O(span) worst
-                // case; it happens exactly once per best-level deletion.
-                best_idx_[s] = find_best(u.side);
+                // Removed the level the cache points at. Find the next best by
+                // scanning inward from the adjacent slot (cheap when the next
+                // level sits just inside the deleted best, which is the common
+                // case), so best reads stay pure O(1) and the cost is on the
+                // delete itself.
+                best_idx_[s] = rescan_after_delete(u.side, idx);
             }
         } else {
             qty = u.qty;
@@ -103,34 +122,31 @@ public:
 
     // ---- Cold path ---------------------------------------------------------
 
-    void load_snapshot(const BookSnapshot& s) {
+    // Replaces book state from `s`. Returns false (leaving the book completely
+    // unchanged) if the snapshot is malformed; cold path, correctness first.
+    bool load_snapshot(const BookSnapshot& s) {
+        if (!validate_snapshot(s, tick_min_, tick_min_ + tick_span_ - 1)) {
+            return false; // reject, do not partially load, do not touch synced()
+        }
+
         clear_storage(); // zero both sides
 
-        const auto& bp = s.bids.prices;
-        const auto& bq = s.bids.qtys;
-        for (size_t i = 0; i < bp.size() && i < bq.size(); ++i) {
-            if (bq[i] > 0) {
-                const int64_t idx = bp[i] - tick_min_;
-                if (idx >= 0 && idx < tick_span_) {
-                    qty_[0][idx] = bq[i];
-                }
-            }
+        for (size_t i = 0; i < s.bids.prices.size(); ++i) {
+            const int64_t q = s.bids.qtys[i];
+            if (q == 0) continue; // qty 0 == no level; validated >= 0 already
+            qty_[0][static_cast<size_t>(s.bids.prices[i] - tick_min_)] = q;
         }
-        const auto& ap = s.asks.prices;
-        const auto& aq = s.asks.qtys;
-        for (size_t i = 0; i < ap.size() && i < aq.size(); ++i) {
-            if (aq[i] > 0) {
-                const int64_t idx = ap[i] - tick_min_;
-                if (idx >= 0 && idx < tick_span_) {
-                    qty_[1][idx] = aq[i];
-                }
-            }
+        for (size_t i = 0; i < s.asks.prices.size(); ++i) {
+            const int64_t q = s.asks.qtys[i];
+            if (q == 0) continue;
+            qty_[1][static_cast<size_t>(s.asks.prices[i] - tick_min_)] = q;
         }
 
         seq_        = s.seq;
         synced_     = true;
         best_idx_[0] = find_best(Side::Bid);
         best_idx_[1] = find_best(Side::Ask);
+        return true;
     }
 
     // ---- Accessors ---------------------------------------------------------
@@ -142,10 +158,12 @@ public:
         return best_idx_[1] < 0 ? 0 : tick_min_ + best_idx_[1];
     }
     int64_t best_bid_qty() const noexcept {
-        return best_idx_[0] < 0 ? 0 : qty_[0][best_idx_[0]];
+        return best_idx_[0] < 0 ? 0
+                                : qty_[0][static_cast<size_t>(best_idx_[0])];
     }
     int64_t best_ask_qty() const noexcept {
-        return best_idx_[1] < 0 ? 0 : qty_[1][best_idx_[1]];
+        return best_idx_[1] < 0 ? 0
+                                : qty_[1][static_cast<size_t>(best_idx_[1])];
     }
 
     bool     synced() const noexcept { return synced_; }
@@ -185,12 +203,31 @@ private:
         qty_[1].assign(n, 0);
     }
 
-    void clear_storage() {
+    void clear_storage() { // zero both sides
         std::memset(qty_[0].data(), 0, qty_[0].size() * sizeof(int64_t));
         std::memset(qty_[1].data(), 0, qty_[1].size() * sizeof(int64_t));
     }
 
-    // Recompute the cached best for `side` by scanning its slots.
+    // Find the next best level on `side` after `deleted` (the just-removed
+    // best) was deleted. Bids search downward from deleted-1 (a lower price),
+    // asks upward from deleted+1 (a higher price). Returns -1 when the side is
+    // now empty. Caller guarantees slot `deleted` is now zero.
+    int64_t rescan_after_delete(Side side, int64_t deleted) const noexcept {
+        const size_t s = side_of(side);
+        if (is_bid(side)) {
+            for (int64_t i = deleted - 1; i >= 0; --i) {
+                if (qty_[s][static_cast<size_t>(i)] != 0) return i;
+            }
+        } else {
+            for (int64_t i = deleted + 1; i < tick_span_; ++i) {
+                if (qty_[s][static_cast<size_t>(i)] != 0) return i;
+            }
+        }
+        return -1;
+    }
+
+    // Full-domain scan for the best level on `side`. Used ONLY on the cold path
+    // (load_snapshot), where the whole domain is legitimately re-examined.
     int64_t find_best(Side side) const noexcept {
         const size_t s = side_of(side);
         if (is_bid(side)) { // bids: highest filled index

@@ -5,8 +5,18 @@
 // well-formed updates, so parity of observable state is a strong check that
 // FlatOrderBook's dense addressing and best-price caching agree with the map.
 //
-// A plain CHECK macro reports the file/line of the first failing assertion and
-// exits non-zero. No external test framework is needed for Phase 1.
+// A plain CHECK macro reports the file/line of the first failing assertion.
+// Any failed CHECK accumulates into a total counter, and main() returns
+// non-zero if that total is non-zero, so CTest genuinely fails on a bad run.
+// No external test framework is needed.
+//
+// Build each book pair over the same configured domain: the Books fixture
+// defaults to the shared [1, 200000] band, and callers may request a different
+// shared domain via Books(domain_min, domain_max).
+//
+// Exit-code self-test: set LLDB_SELFTEST_FAIL=1 to run only a deliberately
+// failing suite and exit through the normal path; the caller can assert the
+// exit status is non-zero.
 
 #include "flat_order_book.h"
 #include "map_order_book.h"
@@ -39,14 +49,19 @@ int g_checks   = 0;
         }                                                                   \
     } while (0)
 
+// Accumulated across ALL suites; never reset, so the process exit status
+// reflects any CHECK failure anywhere in the run.
+int g_failures_total = 0;
+
 void summary(const char* suite) {
     if (g_failures == 0) {
         std::printf("[ok] %-42s (%d checks)\n", suite, g_checks);
     } else {
         std::printf("[!!] %-42s (%d/%d checks FAILED)\n", suite, g_failures, g_checks);
     }
+    g_failures_total += g_failures;
     g_checks   = 0;
-    g_failures = 0;
+    g_failures = 0; // per-suite count only; the total is preserved
 }
 
 // ---------------------------------------------------------------------------
@@ -81,11 +96,25 @@ struct Books {
     MapOrderBook   map;
     FlatOrderBook  flat;
 
-    explicit Books() : flat(FlatOrderBook(1, 200000)) {}
+    explicit Books(int64_t min_t = 1, int64_t max_t = 200000)
+        : map(MapOrderBook(min_t, max_t)), flat(FlatOrderBook(min_t, max_t)) {}
 
     void load(const BookSnapshot& s) {
         map.load_snapshot(s);
         flat.load_snapshot(s);
+    }
+
+    // Feed the same snapshot to both books and require each to accept it.
+    void load_expect_ok(const BookSnapshot& s, const char* tag = "load_expect_ok") {
+        const bool ok_m = map.load_snapshot(s);
+        const bool ok_f = flat.load_snapshot(s);
+        if (!(ok_m && ok_f)) {
+            std::printf("   [%s] snapshot rejected: map=%d flat=%d (expected both ok)\n",
+                        tag, ok_m ? 1 : 0, ok_f ? 1 : 0);
+            ++g_failures;
+            return;
+        }
+        check_equal(tag);
     }
 
     void load(uint64_t seq,
@@ -264,10 +293,10 @@ void test_new_best() {
 // ---------------------------------------------------------------------------
 void test_snapshot_load() {
     Books b;
-    b.load(100,
-           {{500, 1}, {499, 2}, {498, 4}},
-           {{501, 1}, {502, 2}});
-    b.check_equal("initial snapshot");
+    BookSnapshot s = make_snapshot(100,
+                                   {{500, 1}, {499, 2}, {498, 4}},
+                                   {{501, 1}, {502, 2}});
+    b.load_expect_ok(s, "initial snapshot");
     CHECK(b.flat.best_bid() == 500);
     CHECK(b.flat.best_ask() == 501);
     CHECK(b.flat.synced());
@@ -375,9 +404,11 @@ void test_differential_fuzz() {
         if (iter % 1000 == 0) {
             // Resync both books to the same state.
             seq = static_cast<uint64_t>(iter) * 1000;
-            auto snap = seed_snapshot(seq);
-            b.map.load_snapshot(snap);
-            b.flat.load_snapshot(snap);
+            BookSnapshot snap = seed_snapshot(seq);
+            const bool ok_m = b.map.load_snapshot(snap);
+            const bool ok_f = b.flat.load_snapshot(snap);
+            CHECK(ok_m);
+            CHECK(ok_f);
             if (iter % 3000 == 0) b.check_equal("fuzz resync");
             continue;
         }
@@ -405,9 +436,183 @@ void test_differential_fuzz() {
     b.check_equal("fuzz final");
 }
 
+// ---------------------------------------------------------------------------
+// 12. A negative quantity on a brand-new, in-order sequence is corrupt: both
+//     books return InvalidUpdate and become unsynced, and the seq is NOT
+//     consumed (last_applied_seq() is unchanged).
+// ---------------------------------------------------------------------------
+void test_negative_qty_invalidates() {
+    Books b;
+    b.load_expect_ok(make_snapshot(10, {{100, 5}}, {{200, 5}}), "neg-qty seed");
+    CHECK(b.map.synced());
+    CHECK(b.flat.synced());
+
+    L2Update bad{11, 100, -4, Side::Bid};
+    CHECK(b.map.apply(bad) == ApplyResult::InvalidUpdate);
+    CHECK(b.flat.apply(bad) == ApplyResult::InvalidUpdate);
+    CHECK(!b.map.synced());
+    CHECK(!b.flat.synced());
+    // Sequence not consumed -> cannot self-heal.
+    CHECK(b.map.last_applied_seq() == 10);
+    CHECK(b.flat.last_applied_seq() == 10);
+    b.check_equal("unsynced after invalid");
+    // Both still agree, both need a snapshot.
+    CHECK(b.map.apply(L2Update{12, 100, 6, Side::Bid}) == ApplyResult::Stale);
+    CHECK(b.flat.apply(L2Update{12, 100, 6, Side::Bid}) == ApplyResult::Stale);
+}
+
+// ---------------------------------------------------------------------------
+// 13. A brand-new seq whose price is outside the shared domain is refused but
+//     does NOT desync: OutOfRange, seq consumed, book stays synced and usable.
+//     (Both books must return the identical result.)
+// ---------------------------------------------------------------------------
+void test_out_of_range_update() {
+    Books b; // default domain [1, 200000]
+    b.load_expect_ok(make_snapshot(10, {{100, 5}}, {{200, 5}}), "oor seed");
+    CHECK(b.map.synced());
+    CHECK(b.flat.synced());
+
+    // Well above the band.
+    L2Update hi{11, 999'999'999, 7, Side::Bid};
+    CHECK(b.map.apply(hi) == ApplyResult::OutOfRange);
+    CHECK(b.flat.apply(hi) == ApplyResult::OutOfRange);
+    CHECK(b.map.synced());
+    CHECK(b.flat.synced());
+    CHECK(b.map.last_applied_seq() == 11);
+    CHECK(b.flat.last_applied_seq() == 11);
+    b.check_equal("after oob, still synced");
+    // Best prices unchanged (update ignored).
+    CHECK(b.flat.best_bid() == 100);
+
+    // Stream is contiguous: the next in-range update applies normally.
+    CHECK(b.map.apply(L2Update{12, 100, 8, Side::Bid}) == ApplyResult::Applied);
+    CHECK(b.flat.apply(L2Update{12, 100, 8, Side::Bid}) == ApplyResult::Applied);
+    CHECK(b.map.synced());
+    CHECK(b.flat.synced());
+    b.check_equal("in-range update after oob");
+    CHECK(b.flat.best_bid_qty() == 8);
+}
+
+// ---------------------------------------------------------------------------
+// 14. Malformed snapshots are rejected wholesale by BOTH books: they return
+//     false, leave all prior state intact, and do not flip synced().
+// ---------------------------------------------------------------------------
+void test_malformed_snapshot() {
+    // Mismatched prices/qtys arrays (the book must not silently truncate).
+    {
+        Books b;
+        b.load_expect_ok(make_snapshot(10, {{100, 5}}, {{200, 5}}), "mal seed");
+
+        BookSnapshot s = make_snapshot(20, {{100, 5}}, {{200, 5}});
+        s.bids.prices = {100, 90}; // 2 prices, 1 qty
+        CHECK(!b.map.load_snapshot(s));
+        CHECK(!b.flat.load_snapshot(s));
+        b.check_equal("unchanged after len-mismatch bid snapshot");
+        CHECK(b.map.synced());
+        CHECK(b.flat.synced());
+        CHECK(b.map.best_bid() == 100);
+        CHECK(b.flat.best_bid() == 100);
+        CHECK(b.map.next_expected_seq() == 11);
+        CHECK(b.flat.next_expected_seq() == 11);
+
+        // A good snapshot afterwards still works (nothing wedged).
+        b.load_expect_ok(make_snapshot(30, {{500, 1}}, {{600, 1}}), "recover after mal");
+    }
+
+    // Negative qty in a snapshot.
+    {
+        Books b;
+        BookSnapshot s = make_snapshot(5, {{100, -1}}, {});
+        CHECK(!b.map.load_snapshot(s));
+        CHECK(!b.flat.load_snapshot(s));
+        CHECK(!b.map.synced());
+        CHECK(!b.flat.synced());
+    }
+
+    // Price outside the configured domain.
+    {
+        Books b(1, 1000); // shared narrow band
+        BookSnapshot s = make_snapshot(5, {{100, 1}, {5000, 1}}, {});
+        CHECK(!b.map.load_snapshot(s));
+        CHECK(!b.flat.load_snapshot(s));
+        b.check_equal("empty/unchanged after oor snapshot");
+    }
+
+    // Duplicate price on the same side.
+    {
+        Books b;
+        BookSnapshot s = make_snapshot(5, {{100, 1}, {100, 2}}, {});
+        CHECK(!b.map.load_snapshot(s));
+        CHECK(!b.flat.load_snapshot(s));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 15. Large-domain best-price deletion. Best and next-best sit adjacent to each
+//     other inside a domain whose extreme edge is far away; the delete must
+//     find the adjacent next-best, not (incorrectly) rescan from the far edge.
+// ---------------------------------------------------------------------------
+void test_large_domain_adjacent_best_delete() {
+    // Domain [1, 100_000_000]: flat storage is 2 * 1e8 * 8 bytes = 1.6 GB.
+    // A best at 90_000_000 with the next-best at 89_999_999 means the new best
+    // is directly adjacent; any scan of the domain's far edge would still find
+    // it, but a scan from the *wrong* extreme would be catastrophic.
+    const int64_t MIN_T = 1, MAX_T = 100'000'000;
+    const int64_t kBest = 90'000'000, kNext = 89'999'999, kLow = 10'000'000;
+    Books b(MIN_T, MAX_T);
+
+    BookSnapshot snap = make_snapshot(
+        10,
+        {{kBest, 5}, {kNext, 2}, {kLow, 1}}, // bids desc: best, then adjacent next, then low
+        {{kBest + 1, 3}, {kBest + 2, 4}});
+    b.load_expect_ok(snap, "large-domain seed");
+
+    CHECK(b.map.best_bid() == kBest);
+    CHECK(b.flat.best_bid() == kBest);
+
+    // Deleting the best bid promotes the ADJACENT next-best bid.
+    b.apply(L2Update{11, kBest, 0, Side::Bid}, ApplyResult::Applied);
+    b.check_equal("adjacent next-best promoted");
+    CHECK(b.flat.best_bid() == kNext);
+
+    // Ask side: delete the best ask (at kBest+1); next ask kBest+2 is adjacent.
+    b.apply(L2Update{12, kBest + 1, 0, Side::Ask}, ApplyResult::Applied);
+    b.check_equal("adjacent next-best ask promoted");
+    CHECK(b.flat.best_ask() == kBest + 2);
+
+    // Exhaust a side to empty; the inward scan must terminate cleanly.
+    b.apply(L2Update{13, kBest + 2, 0, Side::Ask}, ApplyResult::Applied);
+    b.check_equal("ask side emptied");
+    CHECK(b.flat.best_ask() == 0);
+}
+
+// ---------------------------------------------------------------------------
+// 16. Exit-code self-test. A failed CHECK must produce a non-zero exit status.
+//     This function is not run in the normal suite; it is invoked via the
+//     LLDB_SELFTEST_FAIL environment variable (see main). It deliberately
+//     fails one CHECK and returns, so the caller can assert the exit code is 1
+//     and therefore that CTest would report a failure.
+// ---------------------------------------------------------------------------
+void self_test_exit_code() {
+    std::printf("  (self-test) intentionally failing one CHECK...\n");
+    CHECK(1 == 2); // must trip
+}
+
 } // namespace
 
 int main() {
+    // Exit-code self-test mode: run ONLY the deliberately-failing suite so the
+    // caller can verify the process returns non-zero when a CHECK fails.
+    if (std::getenv("LLDB_SELFTEST_FAIL") != nullptr) {
+        std::printf("exit-code self-test: expecting non-zero exit\n");
+        self_test_exit_code();
+        summary("self-test (expected FAIL)");
+        // Same exit logic as the normal path: the tripped CHECK must drive the
+        // process to exit 1. If the runner's exit-code handling regresses, this
+        // returns 0 and the shell assertion below catches it.
+        return g_failures_total == 0 ? 0 : 1;
+    }
+
     test_add_and_best();
     test_update_quantity();
     test_delete_non_best();
@@ -419,7 +624,13 @@ int main() {
     test_recovery_after_snapshot();
     test_bid_ask_correctness();
     test_differential_fuzz();
+    test_negative_qty_invalidates();
+    test_out_of_range_update();
+    test_malformed_snapshot();
+    test_large_domain_adjacent_best_delete();
 
     summary("all suites");
-    return g_failures == 0 ? 0 : 1;
+    // g_failures_total is never reset, so ANY failed CHECK anywhere yields a
+    // non-zero exit and makes CTest report failure.
+    return g_failures_total == 0 ? 0 : 1;
 }

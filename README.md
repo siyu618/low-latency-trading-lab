@@ -1,15 +1,18 @@
-# low-latency-orderbook
+# low-latency-trading-lab
 
-A small but serious C++20 experiment: two designs for an aggregated L2 order
-book, implemented and benchmarked head-to-head.
+A lab for experiments in low-latency C++ trading infrastructure. Each
+experiment lives in its own directory under `experiments/`.
 
-- **MapOrderBook** — `std::map`-based baseline (node tree, heap allocation per
-  level).
-- **FlatOrderBook** — integer-tick prices addressed directly into preallocated
-  contiguous storage, with cached best bid / best ask and an allocation-free
-  steady-state hot path.
+> **Status — Experiment 01 complete (correctness):**
+> **Experiment 01 — L2 Order Book: `std::map` vs Flat Representation** is
+> implemented and its correctness tests are green. Benchmarking is Phase 2 and
+> has not started; this document reports no benchmark numbers yet.
 
-Status: **Phase 1 (core data structures + correctness tests) complete.**
+## Experiments
+
+| # | Experiment | Status |
+|---|------------|--------|
+| 01 | L2 Order Book: `std::map` vs Flat Representation | correctness done |
 
 ## Layout
 
@@ -42,10 +45,14 @@ Prices are **integer ticks**; doubles never appear. An update is
 
 - `qty > 0` sets the absolute size of the level (creating or replacing it);
 - `qty == 0` deletes the level;
-- `seq` must advance by exactly `+1` for every applied update while synced;
-  a skipped `seq` marks the book **unsynced** and returns `GapDetected`;
+- `seq` must advance by exactly `+1` for every applied update while synced; a
+  skipped `seq` marks the book **unsynced** and returns `GapDetected`;
 - while unsynced, updates are rejected (`Stale`) until `load_snapshot()`
-  re-synchronizes the book from full state.
+  re-synchronizes the book from full state;
+- a `qty < 0` is corrupt (`InvalidUpdate`) and desyncs the book until a
+  snapshot;
+- a price outside the configured band is `OutOfRange` — ignored, but the seq
+  is consumed so the view stays contiguous.
 
 `best_bid()` / `best_ask()` return cached best prices in O(1) and report `0`
 for an empty side.
@@ -59,9 +66,11 @@ adding a level, updating quantity (best and non-best), deleting a non-best
 level, deleting the best level, deleting the last level on a side, empty
 book/sides, a new best price appearing, snapshot loading, sequence-gap
 desync, recovery via a fresh snapshot, and best-price discipline across the
-spread. A differential fuzzer additionally applies thousands of random
-well-formed updates (including periodic snapshot resyncs) to both books and
-asserts parity at every checkpoint.
+spread. The suite also covers negative quantity, out-of-range updates,
+malformed-snapshot rejection, best-price deletion with an adjacent next-best
+over a very large price domain, and a differential fuzzer that applies
+thousands of random well-formed updates (including periodic snapshot resyncs)
+to both books and asserts parity at every checkpoint.
 
 ## Next phases
 
