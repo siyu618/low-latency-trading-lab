@@ -208,38 +208,49 @@ private:
         std::memset(qty_[1].data(), 0, qty_[1].size() * sizeof(int64_t));
     }
 
-    // Find the next best level on `side` after `deleted` (the just-removed
-    // best) was deleted. Bids search downward from deleted-1 (a lower price),
-    // asks upward from deleted+1 (a higher price). Returns -1 when the side is
-    // now empty. Caller guarantees slot `deleted` is now zero.
-    int64_t rescan_after_delete(Side side, int64_t deleted) const noexcept {
+    // Scan one side inward for the best level, starting at `start` (a slot
+    // index). Bids scan downward (toward lower prices / lower indexes); asks
+    // scan upward. Returns the slot index of the best filled level, or -1 if
+    // the side is empty from `start` onward.
+    //
+    // Both rescan_after_delete() and find_best() are thin wrappers over this
+    // single search primitive; they differ only in the starting slot:
+    //   * rescan_after_delete starts adjacent to a just-deleted best (hot path,
+    //     the common next-best is close by).
+    //   * find_best starts at the far edge of the domain (cold path — after a
+    //     snapshot wipes the book there is no prior best to resume from, so the
+    //     whole domain must be re-examined).
+    // `start` is the first slot considered. It may be exactly one past the
+    // valid range (-1 for an empty bid side, tick_span_ for an empty ask side);
+    // the loop condition handles those and the scan simply returns -1.
+    int64_t scan_best_from(Side side, int64_t start) const noexcept {
         const size_t s = side_of(side);
         if (is_bid(side)) {
-            for (int64_t i = deleted - 1; i >= 0; --i) {
+            for (int64_t i = start; i >= 0; --i) {
                 if (qty_[s][static_cast<size_t>(i)] != 0) return i;
             }
         } else {
-            for (int64_t i = deleted + 1; i < tick_span_; ++i) {
+            for (int64_t i = start; i < tick_span_; ++i) {
                 if (qty_[s][static_cast<size_t>(i)] != 0) return i;
             }
         }
         return -1;
     }
 
-    // Full-domain scan for the best level on `side`. Used ONLY on the cold path
-    // (load_snapshot), where the whole domain is legitimately re-examined.
+    // Next best level after the just-deleted best at slot `deleted`. Bids start
+    // at deleted-1 (a lower price), asks at deleted+1 (a higher price).
+    // Caller guarantees slot `deleted` is now zero.
+    int64_t rescan_after_delete(Side side, int64_t deleted) const noexcept {
+        return is_bid(side) ? scan_best_from(side, deleted - 1)
+                            : scan_best_from(side, deleted + 1);
+    }
+
+    // Best level on `side` by a full-domain scan. Used ONLY on the cold path
+    // (load_snapshot), where the whole book was just rebuilt and there is no
+    // prior best to seed a localized scan: start at the far edge of the domain.
     int64_t find_best(Side side) const noexcept {
-        const size_t s = side_of(side);
-        if (is_bid(side)) { // bids: highest filled index
-            for (int64_t i = tick_span_ - 1; i >= 0; --i) {
-                if (qty_[s][static_cast<size_t>(i)] != 0) return i;
-            }
-        } else { // asks: lowest filled index
-            for (int64_t i = 0; i < tick_span_; ++i) {
-                if (qty_[s][static_cast<size_t>(i)] != 0) return i;
-            }
-        }
-        return -1;
+        return is_bid(side) ? scan_best_from(side, tick_span_ - 1)
+                            : scan_best_from(side, 0);
     }
 
     // After writing a non-best level, promote the cache if the new level is
