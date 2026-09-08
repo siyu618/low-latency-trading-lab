@@ -48,13 +48,15 @@
 //   * OPTIONAL macOS signpost interval (Phase 3M): when the env var
 //     LLOB_SIGNPOSTS=1 is set (Apple platforms only), the SAME timed block is
 //     bracketed by os_signpost_interval_begin/end on a "llob.apply.block"
-//     interval so macOS Instruments / the `log` CLI can show the exact apply()
-//     region. The marker lives OUTSIDE the per-update loop, just outside t0/t1,
-//     and is compiled only on __APPLE__. It has a small fixed boundary overhead
-//     (an os_signpost_enabled() check per begin/end) that is NOT part of the
-//     timed loop; the profile must read the marker as the region of interest,
-//     not as extra per-update work. When LLOB_SIGNPOSTS is unset (the default)
-//     the interval is not emitted and normal runs are unchanged.
+//     interval so macOS Instruments / the `log` CLI can show the timed apply()
+//     region. The interval TIGHTLY BRACKETS the chrono-measured block: signpost
+//     begin, a small fixed boundary cost, t0, apply x N, t1, a small fixed
+//     boundary cost, signpost end. The marker lives OUTSIDE the per-update
+//     loop, just outside t0/t1, and is compiled only on __APPLE__. The small
+//     boundary overhead is NOT part of the chrono interval and is amortized over
+//     the large update count; the profile must read the marker as the region of
+//     interest, not as extra per-update work. When LLOB_SIGNPOSTS is unset (the
+//     default) the interval is not emitted and normal runs are unchanged.
 //   * The stream never contains a negative qty or an out-of-domain price, and
 //     seq advances by exactly 1, so it is legal for both books.
 //
@@ -139,8 +141,9 @@
 #include <sys/stat.h> // mkfifo
 #include <unistd.h>   // read, write, close
 #elif defined(__APPLE__)
-#include <os/log.h>      // OS_LOG_DEFAULT
-#include <os/signpost.h> // os_signpost_interval_begin/end, os_signpost_id_t
+#include <os/log.h>      // os_log_create (log-handle for signpost emission)
+#include <os/signpost.h> // os_signpost_interval_begin/end, os_signpost_id_t,
+                         //   OS_LOG_CATEGORY_POINTS_OF_INTEREST
 #endif
 
 using llob::ApplyResult;
@@ -576,19 +579,20 @@ void perf_gate_probe(const char* base) {
 // os_signpost intervals are the Apple Instruments-native way to mark a region
 // of interest in a standalone executable: Instruments' Time Profiler / CPU
 // Counters / the `log` CLI can show "llob.apply.block" as one interval with a
-// start and an end. The region it marks is the SAME steady-state apply() block
-// that the wall clock times — a separate mechanism from the Linux perf gate
-// above, and macOS-only.
+// start and an end. The region it marks tightly brackets the same steady-state
+// apply() block that the wall clock times — a separate mechanism from the Linux
+// perf gate above, and macOS-only.
 //
 //   * Opt-in via the env var LLOB_SIGNPOSTS=1. Default (unset) emits nothing,
 //     so normal Phase 2 runs are byte-for-byte unchanged.
 //   * The interval is emitted once per TIMED BLOCK (not once per update): begin
 //     just before t0, end just after t1 — the tightest practical wrapper around
-//     the apply() loop that does not put a call inside the loop. There is a
-//     small FIXED boundary overhead per block (an os_signpost_enabled() check
-//     plus the begin/end emission), entirely outside the timed region, so it is
-//     NOT part of the measured ns/update. A profile must be read at the interval
-//     granularity, not as per-update instrumentation cost.
+//     the apply() loop that does not put a call inside the loop. The signpost
+//     interval tightly brackets the chrono-measured block; a small fixed
+//     boundary overhead (the os_signpost_enabled() check and the begin/end
+//     emission) remains outside the chrono interval and is amortized over the
+//     large update count. It is NOT part of the measured ns/update; a profile
+//     must be read at the interval granularity, not as per-update cost.
 //   * Compiled only on Apple platforms (__APPLE__), never on Linux.
 // ---------------------------------------------------------------------------
 #if defined(__APPLE__)
@@ -603,10 +607,23 @@ bool signposts_requested() noexcept {
     return e != nullptr && e[0] != '\0' && e[0] != '0';
 }
 
-// The os_signpost API is designed around an os_log_t handle; OS_LOG_DEFAULT is
-// the system default and is what a plain standalone binary emits signposts to
-// (there is no app-level subsystem here to scope a custom log to).
-inline os_log_t signpost_log() noexcept { return OS_LOG_DEFAULT; }
+// Dedicated signpost log handle for this standalone binary.
+//
+// The C os_signpost API takes an os_log_t. For a plain C++ executable we create
+// our own log under a fixed subsystem/category rather than emitting to
+// OS_LOG_DEFAULT, so signposts are attributed to this benchmark and surface as
+// a clean "Points of Interest" stream in Instruments. The C API (os_log_create
+// / os_signpost_*) is considered legacy and is deprecated in newer Apple SDKs,
+// but keeping it here is deliberate for this small pure-C++ profiling hook: it
+// needs no Swift/Objective-C++, no OSSignposter, and links against the system
+// log directly. The handle is created lazily on first use and never released
+// (the process lifetime matches the benchmark, so a leak is meaningless here).
+inline os_log_t signpost_log() noexcept {
+    static os_log_t h =
+        os_log_create("com.siyu.lowlatencytradinglab",
+                      OS_LOG_CATEGORY_POINTS_OF_INTEREST);
+    return h;
+}
 
 } // namespace
 #endif // defined(__APPLE__)
@@ -631,12 +648,12 @@ TimedResult time_book(const BookSnapshot& snap,
 
     // One perf enable/disable window (Linux, Phase 3L) and one os_signpost
     // interval (macOS, Phase 3M) per timed block. Both are no-ops when unset;
-    // when set, each makes its tool's observation window span exactly the timed
-    // apply() loop: enable/begin before t0, disable/end after t1, and the
-    // end-state reads AFTER. So each tool's window and the Clock::now() window
-    // cover the same apply() block, and the reported ns/update is unchanged in
-    // meaning. A small fixed boundary overhead (the handshake / the signpost
-    // check) sits between each marker and t0/t1, outside the timed region.
+    // when set, each tightly brackets the timed apply() loop: enable/begin
+    // before t0, disable/end after t1, and the end-state reads AFTER. Each
+    // tool's window therefore covers the same apply() block as the Clock::now()
+    // window, with a small fixed boundary overhead (the handshake / the signpost
+    // check) between each marker and t0/t1, outside the timed region and
+    // amortized over the update count.
 #if defined(__linux__)
     const char* gate_base = std::getenv(kPerfControlVar);
     const bool  gated     = gate_base != nullptr && gate_base[0] != '\0';

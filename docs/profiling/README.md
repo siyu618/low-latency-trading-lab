@@ -40,13 +40,21 @@ Two honesty rules follow:
 ## Status & honesty box
 
 **No profiling numbers (perf OR Instruments) are presented anywhere in this
-repository — none have been measured.** The Phase 3M tooling is authored and
-committed, and the os_signpost marker is compile-validated on this Mac, but no
-Instruments trace has been captured on it (this host has Command Line Tools
-only — no full Xcode/Instruments). The Phase 3L harness is authored to run on a
-Linux host and has not been executed against a real PMU. Any illustrative
-output you may see in other docs is a labeled placeholder, never a measured
-claim. Real Phase 3M results belong in
+repository — none have been measured, and no real Instruments trace is committed
+yet.** The Phase 3M tooling is authored and committed, and the os_signpost marker
+is compile-validated, but whether a given machine can record is **detected at
+recording time** — never asserted as a permanent claim in these docs:
+
+- `xcrun --find xctrace` — present (and a real capture possible) only when full
+  Xcode is installed; absent when only the command-line tools are.
+- `xcrun xctrace list templates` — the exact template names that machine offers.
+- `scripts/collect-macos-profile-metadata.sh` — writes the recording machine's
+  actual state (macOS/chip/Xcode/Instruments availability, clang) into that
+  recording's `host.txt`.
+
+The Phase 3L harness is authored to run on a Linux host and has not been executed
+against a real PMU. Any illustrative output you may see in other docs is a
+labeled placeholder, never a measured claim. Real Phase 3M results belong in
 `docs/results/phase3-macos-apple-silicon/`; real Phase 3L results in
 `docs/results/phase3-linux-<machine>/`.
 
@@ -170,14 +178,19 @@ LLOB_SIGNPOSTS=1 ./build-perf/orderbook_bench map C 1000000 updates=2000000 reps
 
 With `LLOB_SIGNPOSTS=1` the benchmark wraps the identical apply() block (begin
 just before `t0`, end just after `t1`) in an **os_signpost interval** named
-`llob.apply.block` on the default log. Instruments (Time Profiler / CPU Counters)
-and signpost-aware `log` queries can then scope a recording to exactly that
-interval. Like the perf gate it is **strictly opt-in** — unset (the default)
-emits nothing and normal runs are byte-for-byte unchanged — and it sits outside
-the per-update loop, adding only the same small fixed per-block boundary cost
-described above. It is compiled only on `__APPLE__` and is never present on
-Linux. See `MACOS_INSTRUMENTS.md` for the full workflow and how this CLT-only
-host limits what can be captured here.
+`llob.apply.block`, emitted on a dedicated log created with
+`os_log_create("com.siyu.lowlatencytradinglab", OS_LOG_CATEGORY_POINTS_OF_INTEREST)`
+(not the default log) so the interval shows up in Instruments' Points of
+Interest lane. Instruments (Time Profiler / CPU Counters) and signpost-aware
+`log` queries can then scope a recording to exactly that interval. Like the perf
+gate it is **strictly opt-in** — unset (the default) emits nothing and normal
+runs are byte-for-byte unchanged — and it sits outside the per-update loop,
+adding only the same small fixed per-block boundary cost described above. It is
+compiled only on `__APPLE__` and is never present on Linux. It uses the C
+`os_signpost` API, which newer SDKs mark legacy/deprecated; that is a deliberate
+choice for this small pure-C++ hook (no Swift/ObjC++ `OSSignposter` dependency).
+See `MACOS_INSTRUMENTS.md` for the full workflow; capability to record is
+detected on the recording machine (`xcrun --find xctrace`).
 
 ## Prerequisites (Linux — Phase 3L)
 
@@ -421,7 +434,8 @@ a real tool reported.
   threads freely — see `collect-macos-profile-metadata.sh` and
   `MACOS_INSTRUMENTS.md`). Neither tool changes system settings.
 - Phase 3L (Linux) status — **tooling READY, native measurement DEFERRED** (no
-  Linux host). Phase 3M (macOS) status — **workflow READY, no Instruments trace
-  captured yet** on this CLT-only host. No profiling numbers exist anywhere in
-  this repository.
+  Linux host). Phase 3M (macOS) status — **workflow/tooling READY, no real
+  Instruments trace committed yet** (a recording needs full Xcode on the machine
+  that records; capability is detected at recording time). No profiling numbers
+  exist anywhere in this repository.
 - Phase 4 (latency percentiles) and Phase 5 (write-up) are not started.

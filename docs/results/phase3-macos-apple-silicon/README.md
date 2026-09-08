@@ -3,10 +3,13 @@
 **Status: EMPTY — no real Instruments recording exists yet.**
 
 This tree is the committed home for Phase 3M (Apple Instruments on the M3 Max)
-measurements. It is intentionally **not populated**: this host is Command Line
-Tools only (no Instruments / xctrace), so nothing has been captured. It is
-filled only after a real recording is inspected, following the workflow in
-`docs/profiling/MACOS_INSTRUMENTS.md`.
+measurements. It is intentionally **not populated**: no recording has been made
+and inspected yet. It is filled only after a real recording, following the
+workflow in `docs/profiling/MACOS_INSTRUMENTS.md`. Whether the machine that
+records has full Xcode (and thus `xctrace` / Instruments) is detected at
+recording time — `xcrun --find xctrace` — and recorded into that cell's
+`host.txt` by `scripts/collect-macos-profile-metadata.sh`; it is not asserted in
+this static file.
 
 The Phase 2 canonical dataset (`../phase2-m3max/`) was measured on this same
 Apple M3 Max / macOS machine, so it is the **same-host latency baseline** that

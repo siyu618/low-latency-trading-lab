@@ -10,13 +10,22 @@ Linux `perf` work (Phase 3L).
 
 ## Honesty box
 
-**No Instruments trace has been captured for this project yet.** The workflow
-below is authored and the tooling is committed and compile-validated, but this
-host has **Command Line Tools only — no full Xcode, no Instruments.app, no
-`xctrace`**. So:
+**No real Instruments trace is committed yet.** The workflow below is authored
+and the tooling is committed and compile-validated, but no recording has been
+made and inspected. Whether a given machine can record is **detected at
+recording time**, never asserted as a permanent host claim in this file:
 
-- `scripts/phase3m-instruments.sh` stops on this host with a clear message
-  (exit 3) instead of guessing.
+- `xcrun --find xctrace` — prints a path when full Xcode (Instruments) is
+  installed; fails when only the command-line tools are present. A real capture
+  needs the former.
+- `xcrun xctrace list templates` — the exact template names that machine offers.
+  The helper matches a requested name against this list exactly and refuses a
+  partial match.
+- `scripts/phase3m-instruments.sh` stops (exit 3) with a clear message when
+  xctrace is absent instead of guessing.
+- The machine/tool availability of the machine that actually records is captured
+  at recording time by `scripts/collect-macos-profile-metadata.sh` into that
+  recording's `host.txt` — not asserted here.
 - Nothing under `docs/results/phase3-macos-apple-silicon/` is populated yet; it
   is filled only after a **real** recording is inspected.
 - **Apple Instruments metrics are NOT Linux perf PMU events.** Terminology,
@@ -44,9 +53,10 @@ reps, mixing P-core and E-core timing. Consequences:
 
 ## Prerequisites
 
-- The same macOS / Apple Silicon host that produced Phase 2.
-- **Full Xcode** (Instruments.app + `xctrace`). This host has CLT only, so a
-  real capture needs an Xcode-equipped Mac.
+- A macOS / Apple Silicon host.
+- **Full Xcode** (Instruments.app + `xctrace`). To record on a given machine it
+  must have Xcode installed and `xctrace` reachable — check with
+  `xcrun --find xctrace`. The helper stops with a clear message when it is not.
 - The benchmark builds with the system toolchain as usual (Release, no arch
   flag — the Phase 2 canonical build).
 
@@ -190,11 +200,12 @@ Only document or use it if this Mac's hardware and the installed macOS/Xcode
 actually support recording Processor Trace; otherwise ignore it. Nothing in this
 workflow requires it.
 
-## Environment status on this host
+## Recording-time environment
 
-Recorded faithfully by `scripts/collect-macos-profile-metadata.sh`: macOS
-14.2.1, Apple M3 Max (`Mac15,10`), Apple clang 15.0.0, **Command Line Tools
-only** (`xcodebuild` absent, `xctrace` absent, Instruments absent). The
-os_signpost marker is compile- and runtime-validated (it emits exactly once per
-timed block when `LLOB_SIGNPOSTS=1` and is a strict no-op otherwise), but its
-visual confirmation in Instruments awaits an Xcode-equipped machine.
+Machine/tool availability is **not** asserted in this static file. At recording
+time, `scripts/collect-macos-profile-metadata.sh` records the host's actual
+state (macOS version, chip/model, compiler, whether Xcode / `xctrace` /
+Instruments are present) into the recording's `host.txt`. The os_signpost marker
+is compile- and runtime-validated (it emits exactly once per timed block when
+`LLOB_SIGNPOSTS=1` and is a strict no-op otherwise); visual confirmation of the
+interval inside an Instruments recording is done on the machine that records.
