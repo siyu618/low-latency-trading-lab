@@ -31,8 +31,20 @@ namespace llob {
 //     best) — only a full-domain scan if the side empties. A full-domain scan
 //     is still used when (re)building from a snapshot (cold path).
 //
-// Hot path: apply() performs no dynamic allocation after construction, and
-// load_snapshot() performs none either once the storage is preallocated.
+// Complexity vs. measured latency. The O(1)-per-update claim above is an
+// ALGORITHMIC bound: a price level maps directly to an array slot, so the
+// update touches no tree and follows no pointers. Actual per-update latency is
+// a hardware property on top of that — it depends on the cache hierarchy, the
+// working-set size (span of the domain), memory locality, and the workload —
+// so it is NOT "constant" or "independent of book size" in general. Whether
+// latency stays nearly flat over a range of book sizes is an empirical result
+// for a specific machine and memory layout (see the benchmark in Phase 2).
+//
+// Allocation: apply() performs no dynamic allocation after construction (the
+// steady-state hot path is allocation-free). load_snapshot() is a COLD path:
+// it validates the snapshot first (which sorts prices into a temporary vector
+// to check for duplicates) and may therefore allocate temporary memory for
+// correctness checks; that is deliberate and is not optimized on the hot path.
 //
 // Memory layout: the two sides are two separate int64 vectors so each side's
 // scan touches a single contiguous cache line run.

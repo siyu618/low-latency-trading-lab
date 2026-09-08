@@ -18,7 +18,10 @@ namespace llob {
 //
 // std::map is a node-based red-black tree: every inserted price level is a
 // heap allocation, and reads/updates chase pointers. That is precisely the
-// cost model we want to measure against a flat representation.
+// cost model we want to measure against a flat representation. (As with the
+// flat book, algorithmic cost and measured latency are distinct — see
+// flat_order_book.h — the map's red-black lookup is O(log L) in live levels
+// plus pointer-chasing and node allocation per insert.)
 //
 // Price-domain semantics are identical to FlatOrderBook: the map is configured
 // over [tick_min, tick_max], accepts the same apply()/load_snapshot() results,

@@ -21,10 +21,16 @@
 //                     (seq 2N), so every timed op is Applied (validated by
 //                     --check).
 //   * One block = (impl, workload, scale, rep). The identical op stream is
-//     replayed for every rep and for BOTH books, so any time difference is
-//     purely the book implementation. Reported time is the best (min) of the
-//     reps blocks — a common low-latency summary that discounts scheduling
-//     noise (which only ever adds latency).
+//     replayed for every rep of a given impl, so any time difference across
+//     implementations is purely the book code. Reported time is the best (min)
+//     of the reps blocks — a common low-latency summary that discounts
+//     scheduling noise (which only ever adds latency).
+//   * CANONICAL measurements run ONE implementation per process
+//     (`orderbook_bench map …` / `orderbook_bench flat …`): a long,
+//     CPU-saturating run of one design can thermally throttle the machine, so
+//     measuring both back-to-back in one process contaminates the second. The
+//     `both` mode exists only as a quick local sanity check and is NOT used
+//     for reported results.
 //   * The stream never contains a negative qty or an out-of-domain price, and
 //     seq advances by exactly 1, so it is legal for both books.
 //
@@ -34,25 +40,37 @@
 //   * asks occupy  1 .. N     (best ask = 1 initially)
 // A candidate level `idx` on a side is idx steps from the touch (idx 0 == the
 // best price), so both sides share one bookkeeping model. Workloads differ only
-// in WHICH levels they touch and how often they delete the best; every workload
-// keeps its side dense (~N live levels), so each cell measures steady state,
-// never a draining book.
+// in WHICH levels they touch and how often they delete the best. Live-level
+// count over a run is "~N" for the workloads below, not exactly N: A never
+// changes the level set (stays exactly N); B/D conserve levels (each delete is
+// later restored, so the count is exactly N at every prefix where a restore
+// has caught up); C conserves levels (refill rate >= delete rate, count returns
+// to exactly N); E does not conserve levels — it deletes/adds at random and the
+// count settles at a stochastic equilibrium below N (~0.9N). Every workload
+// keeps the side far from empty, so each cell measures steady state, never a
+// draining book.
 //
-//   A  update-only               every op re-quantifies a random present level
-//                                (no level ever appears or disappears)
-//   B  10% deletes               every 10th op deletes a random present level;
-//                                the rest restore a random absent level, so
-//                                density stays at ~N
+//   A  update-only               every op re-quantifies a random present level;
+//                                the level set never changes (exactly N)
+//   B  10% deletes               each op picks a side; with 10% probability it
+//                                deletes a random present level, otherwise it
+//                                adds at a random ABSENT level (restoring the
+//                                one that was deleted); level count stays N
 //   C  frequent best deletion    ~45% of ops delete the CURRENT best level
-//                                (forces the inward best re-scan); the rest
-//                                refill the vacated level just below the new
-//                                best, so the best churns across a few adjacent
-//                                prices while the side stays at ~N levels
+//                                (forcing the inward best re-scan); the rest
+//                                refill the most recently vacated level, which
+//                                restores it just below the current best. The
+//                                best churns across a few adjacent prices while
+//                                the level count stays exactly N
 //   D  concentrated top-of-book  ops touch only a small window [0, N/128) at
-//                                the best end; ~15% deletes inside the window
+//                                the best end; ~15% of ops delete a present
+//                                window level, ~85% add at an absent window
+//                                level (level count inside the window is
+//                                conserved); levels below the window never move
 //   E  uniformly random          fair side coin; price uniform over that side's
-//                                whole region; half delete a present level /
-//                                half restore an absent one
+//                                whole region; 50% delete a present level, 50%
+//                                add at an absent one; level count settles near
+//                                a random-walk equilibrium below N
 //
 // Usage:
 //   orderbook_bench [impl] [workload] [scale] [updates=N] [reps=N] [--check]
@@ -61,13 +79,19 @@
 //     scale     1000 | 10000 | 100000 | 1000000 | all   (default all)
 //     updates=N   steady ops per timed block            (default 2000000)
 //     reps=N      timed blocks per cell; best is kept   (default 3)
-//     --check     validate stream shapes only; no timing
+//     --check     replay one stream through BOTH books and verify they agree;
+//                 no timing
 //
-// Run ONE implementation per process for profile runs (Phase 3): perf counter
-// attribution for two book designs must never share a run.
+// Canonical / reported runs: ONE implementation per process, e.g.
+//   ./orderbook_bench map all all      then separately
+//   ./orderbook_bench flat all all
+// `both` runs map then flat back-to-back in one process and is only a quick
+// local sanity check (thermal drift makes its flat half optimistic).
 //
-// Release config is set in CMakeLists: -O3 -DNDEBUG plus (optionally)
-// -march=native.
+// Release config is set in CMakeLists: -O3 -DNDEBUG. CPU arch tuning is OPT-IN
+// and free-form via -DBENCH_ARCH_FLAGS="<flags>" (e.g. -march=native,
+// -mcpu=apple-m3); the canonical M3 numbers in the README were built WITHOUT
+// any arch flag.
 
 #include "flat_order_book.h"
 #include "map_order_book.h"
@@ -348,15 +372,21 @@ private:
 
 using Clock = std::chrono::steady_clock;
 
-// Compiler memory barrier: an opaque no-op at runtime that the optimizer cannot
-// see through. In the timed loop it forces every apply() to be treated as an
-// opaque memory-touching operation (its loads and stores cannot be reordered,
-// CSE'd, or eliminated across the barrier). This matters because both books are
+// Compiler memory barrier: an opaque empty asm at the level of the optimizer.
+// In the timed loop it forces every apply() to be treated as an opaque
+// memory-touching operation (its loads and stores cannot be reordered, CSE'd,
+// or eliminated across the barrier). This matters because both books are
 // header-only: without the barrier the compiler could legally prove parts of
 // the flat book's stores dead and remove them, and could otherwise optimize
 // more aggressively across apply() calls than a real caller in another
-// translation unit would allow. Zero runtime cost — it only constrains the
-// optimizer (register-allocation pressure).
+// translation unit would allow.
+//
+// Cost: it typically emits NO machine instruction (the asm body is empty), but
+// that is not the same as being free — as an optimizer barrier it can prevent
+// code motion across it and increase register pressure / spill, so it is part
+// of the benchmark methodology, not a neutral no-op. It is deliberately kept
+// IDENTICAL in the MapOrderBook and FlatOrderBook timed loops so any such
+// effect applies equally to both; it must never be removed from one loop only.
 inline void memory_barrier() noexcept {
 #if defined(__GNUC__) || defined(__clang__)
     __asm__ __volatile__("" ::: "memory");
@@ -396,7 +426,7 @@ TimedResult time_book(const BookSnapshot& snap,
         const auto t0 = Clock::now();
         for (const L2Update& u : ops) {
             sink ^= static_cast<uint64_t>(book.apply(u));
-            memory_barrier(); // see above; zero runtime cost, keeps the loop honest
+            memory_barrier(); // optimizer barrier; identical in both loops (see above)
         }
         const auto t1 = Clock::now();
 
@@ -425,34 +455,86 @@ TimedResult time_book(const BookSnapshot& snap,
 }
 
 // ---------------------------------------------------------------------------
-// Validation pass (--check): replay every stream against a reference book and
-// print the resulting shape. Guarantees no degenerate stream is ever measured:
-// density must stay ~N per side and every steady op must be Applied.
+// Validation pass (--check). Replays the SAME deterministic stream through BOTH
+// books and verifies they produce identical externally visible state at every
+// step. The map book is the reference: flat must match it exactly, because the
+// Phase 1 differential unit test already establishes they implement the same
+// contract. Divergence here would mean a generator op is exercising a path the
+// unit tests never hit, so it FAILS loudly (non-zero exit) instead of being
+// measured. This pass is entirely OUTSIDE the timed benchmark path.
 // ---------------------------------------------------------------------------
-void check_streams(uint64_t updates) {
-    std::printf("--check: replaying streams against MapOrderBook (reference)\n");
+int check_streams(uint64_t updates) {
+    int failures = 0;
+    std::printf("--check: differential MapOrderBook vs FlatOrderBook "
+                "(identical stream, identical domain)\n");
     for (int64_t n : kScaleLevels) {
         const auto snap = StreamGen::fill_snapshot(n);
         for (int w = 0; w < kWorkloadCount; ++w) {
             const Workload wl = static_cast<Workload>(w);
             const auto ops = StreamGen::steady_ops(wl, n, updates);
-            MapOrderBook book(1, 2 * n);
-            const bool loaded = book.load_snapshot(snap);
+
+            MapOrderBook  mbook(1, 2 * n);
+            FlatOrderBook fbook(1, 2 * n);
+            const bool loaded_m = mbook.load_snapshot(snap);
+            const bool loaded_f = fbook.load_snapshot(snap);
+            if (!(loaded_m && loaded_f)) {
+                ++failures;
+                std::printf("  [FAIL] N=%-9" PRId64 " wl=%s snapshot rejected "
+                            "(map=%d flat=%d)\n",
+                            n, workload_tag(wl), loaded_m ? 1 : 0,
+                            loaded_f ? 1 : 0);
+                continue;
+            }
+
             uint64_t applied = 0, other = 0;
             for (const L2Update& u : ops) {
-                if (book.apply(u) == ApplyResult::Applied) ++applied;
+                const ApplyResult rm = mbook.apply(u);
+                const ApplyResult rf = fbook.apply(u);
+                // Compare the requested externally visible state after each op.
+                const bool same = rm == rf &&
+                                  mbook.synced() == fbook.synced() &&
+                                  mbook.last_applied_seq() == fbook.last_applied_seq() &&
+                                  mbook.best_bid() == fbook.best_bid() &&
+                                  mbook.best_ask() == fbook.best_ask() &&
+                                  mbook.best_bid_qty() == fbook.best_bid_qty() &&
+                                  mbook.best_ask_qty() == fbook.best_ask_qty();
+                if (!same) {
+                    if (failures < 10) {
+                        std::printf("  [DIVERGE] N=%-9" PRId64 " wl=%s seq=%" PRIu64
+                                    " map(rs=%d sync=%d seq=%" PRIu64 " bb=%" PRId64 "/%" PRId64
+                                    " ba=%" PRId64 "/%" PRId64 ") vs flat(rs=%d sync=%d seq=%" PRIu64
+                                    " bb=%" PRId64 "/%" PRId64 " ba=%" PRId64 "/%" PRId64 ")\n",
+                                    n, workload_tag(wl), u.seq,
+                                    static_cast<int>(rm), mbook.synced() ? 1 : 0,
+                                    mbook.last_applied_seq(), mbook.best_bid(),
+                                    mbook.best_bid_qty(), mbook.best_ask(),
+                                    mbook.best_ask_qty(), static_cast<int>(rf),
+                                    fbook.synced() ? 1 : 0, fbook.last_applied_seq(),
+                                    fbook.best_bid(), fbook.best_bid_qty(),
+                                    fbook.best_ask(), fbook.best_ask_qty());
+                    }
+                    ++failures;
+                    break; // this stream is broken; report the cell and move on
+                }
+                if (rm == ApplyResult::Applied) ++applied;
                 else ++other;
             }
-            std::printf("  N=%-10" PRId64 " wl=%s %-28s snap_ok=%d"
-                        " steady_applied=%" PRIu64 " non_applied=%" PRIu64
-                        " end_levels(bid/ask)=%zu/%zu best=%" PRId64 "/%" PRId64 "\n",
-                        n, workload_tag(wl), workload_desc(wl), loaded ? 1 : 0,
-                        applied, other,
-                        book.bids().size(), book.asks().size(),
-                        book.best_bid(), book.best_ask());
+            std::printf("  N=%-9" PRId64 " wl=%s %-28s ok  applied=%" PRIu64
+                        " non_applied=%" PRIu64 " end_levels(bid/ask)=%zu/%zu"
+                        " best=%" PRId64 "/%" PRId64 "\n",
+                        n, workload_tag(wl), workload_desc(wl), applied, other,
+                        mbook.bids().size(), mbook.asks().size(),
+                        mbook.best_bid(), mbook.best_ask());
         }
     }
-    std::printf("--check done (all steady ops should be Applied; end levels ~2N)\n");
+    if (failures == 0) {
+        std::printf("--check PASSED: Map and Flat agree on every op of every "
+                    "stream (no divergence)\n");
+    } else {
+        std::printf("--check FAILED: %d stream(s) diverged between Map and Flat\n",
+                    failures);
+    }
+    return failures == 0 ? 0 : 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -503,7 +585,7 @@ void usage(const char* argv0) {
         "  scale     1000 | 10000 | 100000 | 1000000 | all   (default all)\n"
         "  updates=N   steady ops per timed block            (default %" PRIu64 ")\n"
         "  reps=N      timed blocks per cell; best is kept   (default %d)\n"
-        "  --check     validate stream shapes only; no timing\n",
+        "  --check     replay streams through both books, require agreement; no timing\n",
         argv0, kDefaultUpdates, kDefaultReps);
 }
 
@@ -545,8 +627,7 @@ int main(int argc, char** argv) {
     }
 
     if (check) {
-        check_streams(updates);
-        return 0;
+        return check_streams(updates); // 0 == both books agree, 1 == divergence
     }
 
     const bool want_map  = std::strcmp(impl_sel, "map") == 0 ||

@@ -1,7 +1,9 @@
 # low-latency-trading-lab
 
-A lab for experiments in low-latency C++ trading infrastructure. Each
-experiment lives in its own directory under `experiments/`.
+A lab for experiments in low-latency C++ trading infrastructure. This
+repository currently hosts a single experiment — Experiment 01, below — at the
+repo root; if more experiments land later they will be organized into their own
+top-level directories.
 
 > **Status — Experiment 01 Phase 2 (benchmark) complete:**
 > **Experiment 01 — L2 Order Book: `std::map` vs Flat Representation** is
@@ -18,7 +20,7 @@ experiment lives in its own directory under `experiments/`.
 ## Layout
 
 ```
-low-latency-orderbook/
+low-latency-trading-lab/
 ├── include/
 │   ├── types.h              # Side, L2Update, BookSnapshot, apply contract
 │   ├── map_order_book.h     # std::map baseline
@@ -28,7 +30,11 @@ low-latency-orderbook/
 ├── benchmark/
 │   └── order_book_bench.cpp # deterministic steady-state apply() benchmark
 ├── scripts/
-│   └── bench.sh             # build + run the full benchmark matrix
+│   └── bench.sh             # canonical per-process run + quick both-mode check
+├── cmake/
+│   └── assert_nonzero_exit.cmake  # ctest guard for the test exit-code self-test
+├── docs/
+│   └── results/             # canonical committed benchmark results + metadata
 ├── CMakeLists.txt
 └── README.md
 ```
@@ -73,7 +79,7 @@ book/sides, a new best price appearing, snapshot loading, sequence-gap
 desync, recovery via a fresh snapshot, and best-price discipline across the
 spread. The suite also covers negative quantity, out-of-range updates,
 malformed-snapshot rejection, best-price deletion with an adjacent next-best
-over a very large price domain, and a differential fuzzer that applies
+over a large (1M-tick) price domain, and a differential fuzzer that applies
 thousands of random well-formed updates (including periodic snapshot resyncs)
 to both books and asserts parity at every checkpoint.
 
@@ -89,28 +95,41 @@ deliberately deterministic and honest about what it excludes:
 - **The timed region is a pure `apply()` replay.** Sequence numbers advance by
   exactly 1 and the book starts snapshot-loaded (the only way a fresh book
   becomes usable), so every timed op is `Applied` — the benchmark never times a
-  rejected/`Stale` update. `--check` replays every stream against a reference
-  book and prints the resulting shape so no degenerate stream is measured.
+  rejected/`Stale` update. `--check` replays the identical stream through **both**
+  books at once and requires they agree on every op's result, sync state,
+  sequence, and best bid/ask (price and qty); any divergence exits non-zero and
+  is never timed.
 - **Each cell reports the best of `reps` blocks.** Every block cold-starts a
   fresh book from the same snapshot and replays the identical op stream, so the
   only difference between two books' timings is the book implementation. Best-of
   discounts scheduling noise (which only ever adds latency).
-- **Two book designs never share one process.** Run one implementation per
-  process (`orderbook_bench map …` / `orderbook_bench flat …`) — required for
-  profile runs (Phase 3) so perf counters are never attributed to a mixed run.
+- **Canonical runs use one book design per process.** `orderbook_bench map …`
+  and `orderbook_bench flat …` are separate invocations. A long, CPU-saturating
+  run of one design can thermally throttle the machine, so measuring both
+  back-to-back in one process would bias the second; the `both` mode is only a
+  quick local sanity check and is never used for reported results.
 
 Price-domain model: the configured domain is `[1, 2N]` where `N` is the scale in
 price levels. Each side starts with `N` live levels (bids at `N+1..2N`, asks at
-`1..N`), and every workload keeps its side at ~`N` levels, so each cell measures
-steady state, never a draining book. Workloads:
+`1..N`), and every workload keeps its side at approximately `N` levels, so each
+cell measures steady state, never a draining book. "Approximately" because only
+A holds the live count at exactly `N` throughout; see the notes under the
+workload table. Workloads:
 
-| Workload | What it does |
-|----------|--------------|
-| A update-only | every op re-quantifies a random present level |
-| B 10% deletes | every 10th op deletes a present level; the rest restore a random absent one |
-| C frequent best deletion | ~45% delete the current best level (forces the flat book's inward re-scan); the rest refill the vacated level, so the best churns at the touch while the side stays full |
-| D concentrated top-of-book | ops touch only a small window at the best end; ~15% deletes inside it |
-| E uniformly random | fair side coin, price uniform over the whole region, half delete / half restore |
+| Workload | What it does | Live levels over a run |
+|----------|--------------|------------------------|
+| A update-only | every op re-quantifies a random present level; the level set never changes | exactly N throughout |
+| B 10% deletes | ~10% of ops delete a random present level; the rest add at a random absent level (restoring what was deleted) | ~N: conserved (each delete is later restored); exactly N at every prefix where the restore has caught up |
+| C frequent best deletion | ~45% delete the current best level (forces the flat book's inward re-scan); the rest refill the most recently vacated level, which restores it just below the current best | ~N: conserved (refill rate ≥ delete rate); returns to exactly N whenever the side is full with no pending hole |
+| D concentrated top-of-book | ops touch only a small window at the best end; ~15% delete a present window level, ~85% add at an absent window level | ~N: conserved inside the window; the levels below the window never move |
+| E uniformly random | fair side coin, price uniform over the whole region, 50% delete / 50% add | ~0.9N: NOT conserved — a random walk that settles at a stochastic equilibrium below N |
+
+So A is the only workload whose live level count is exactly `N` for the whole
+timed block; B/C/D hold it approximately `N` (conserved but with transient
+deficits); E does not conserve it and settles near `0.9N`. All keep the side far
+from empty, so every cell measures steady state — and because each workload
+replays the identical stream through both books, any of these level-count
+profiles is exactly matched between map and flat.
 
 ### Build & run
 
@@ -125,40 +144,55 @@ scripts/bench.sh               # full matrix: map/flat x A-E x 1k..1M levels
 ```
 
 The benchmark target always compiles with `-O3 -DNDEBUG` (CMake forces it
-regardless of build type, so a debug build cannot accidentally time
-unoptimized code). `-march=native` is opt-in via
-`cmake -DENABLE_NATIVE_ARCH=ON` and only applied when the compiler supports it
-(Apple clang uses `-mcpu=apple-m1`).
+regardless of build type, so a debug build cannot accidentally time unoptimized
+code). CPU/arch tuning is **opt-in and free-form** via `BENCH_ARCH_FLAGS`, and a
+flag the compiler does not support is detected at configure time and dropped
+with a warning instead of failing the build:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBENCH_ARCH_FLAGS="-march=native"  # gcc/clang on Linux
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBENCH_ARCH_FLAGS="-mcpu=apple-m3"  # Apple clang on M3
+```
+
+The canonical results below were built with **no** arch flag (the compiler
+default for the target).
 
 ### Results
 
-Measured on this machine (Apple M3 Max / arm64, macOS, Apple clang 15,
-Release `-O3 -DNDEBUG`, no `-march=native`). Reported time is the **best of 3**
-timed blocks per cell (each block cold-starts a fresh book from the same
-snapshot and replays the identical 2,000,000-update stream). Units: ns per
-`apply()`. **Map and flat were measured in separate processes** (each book
-design alone in its own process) so a 6-minute CPU-saturating run of one design
-cannot thermally throttle the other; this is why the numbers below are
-internally consistent (flat is ~flat across scales, map grows with scale).
+Canonical measurement environment:
+
+| | |
+|---|---|
+| Machine | Apple MacBook Pro (Apple M3 Max), model identifier `Mac15,10` |
+| CPU | Apple M3 Max, `arm64` |
+| OS | macOS 14.2.1 (Build 23C71) |
+| Compiler | Apple clang 15.0.0 (`clang-1500.1.0.2.5`), target `arm64-apple-darwin23.2.0` |
+| Build | CMake 4.4.3; `-O3 -DNDEBUG` forced on the benchmark target; **no** arch flag (compiler default) |
+| Stream | 2,000,000 steady `apply()` ops per timed block |
+| Reps | 3 per cell; reported = **best of 3** (min wall time) |
+| Isolation | map and flat measured in **separate processes** |
+| Date | 2026-09-07 |
+
+Units: ns per `apply()`. Rows are ns/update; the full raw CSV and machine
+metadata are committed under `docs/results/`.
 
 | levels | impl | A upd-only | B 10% del | C best-del | D top-of-bk | E uniform |
 |--------|------|-----------:|----------:|-----------:|------------:|----------:|
 | 1,000  | map  |    32.5    |    36.1   |    42.8    |    33.1     |   61.6    |
-| 1,000  | flat |    4.5     |    4.4    |    5.9     |    4.7      |    5.1    |
+| 1,000  | flat |    4.4     |    4.4    |    5.9     |    4.7      |    5.1    |
 | 10,000 | map  |    60.8    |    72.3   |    48.1    |    49.2     |  134.9    |
-| 10,000 | flat |    4.4     |    4.5    |    6.1     |    4.5      |    5.0    |
+| 10,000 | flat |    4.3     |    4.5    |    6.1     |    4.5      |    5.0    |
 | 100,000| map  |    85.1    |   159.7   |    61.0    |   104.2     |  502.3    |
 | 100,000| flat |    4.4     |    4.5    |    6.1     |    4.5      |    5.0    |
 | 1,000,000 | map |  182.7    |   181.5   |    70.6    |   128.1     |  383.5    |
 | 1,000,000 | flat |   4.3    |    4.5    |    5.9     |    4.5      |    5.1    |
 
-(Rows are ns/update; full CSV in `results/results_2M_reps3_isolated.csv`.)
-
-**What these measure.** All numbers are for a book that stays at ~`N` live
-levels per side for the whole timed block; snapshot loading, stream generation
-and the clock read are excluded. The timed loop is a pure `apply()` replay of
-pre-recorded updates with a per-iteration compiler barrier (so the optimizer
-cannot prove the flat book's stores dead or reorder across `apply()` calls).
+**What these measure.** All numbers are for a book that stays at approximately
+`N` live levels per side for the whole timed block; snapshot loading, stream
+generation and the clock read are excluded. The timed loop is a pure `apply()`
+replay of pre-recorded updates with a per-iteration compiler barrier (so the
+optimizer cannot prove the flat book's stores dead or reorder across `apply()`
+calls).
 
 **Reading the results.**
 
@@ -168,28 +202,47 @@ cannot prove the flat book's stores dead or reorder across `apply()` calls).
   ~183 ns as levels go 1k → 1M. The uniformly-random workload (E) is the worst
   case — deletes/adds land anywhere in the tree, maximizing pointer chasing
   (~62 ns → ~384 ns).
-- **Flat cost is essentially constant.** The dense book is a direct array
-  store; the 1M-level working set is ~16 MB, larger than L2 but the update
-  touches one random cache line regardless, so cost stays ~4.3–6.1 ns at every
-  scale. This is the flat representation's whole point: `apply()` latency is
-  independent of how many levels are in the book.
+- **Flat cost stays nearly flat over the tested range — on this machine.** The
+  dense book is a direct array store: a price maps to one slot, so an update
+  touches a single array element (plus the cached-best bookkeeping) and follows
+  no pointers. That is an O(1) *algorithmic* bound; the measured ~4.3–6.1 ns at
+  every scale is an empirical result for this machine and memory layout. At the
+  largest scale the active working set is ~8 MB per side (~16 MB across both
+  sides; each side's live levels occupy a contiguous half of its 2N-slot
+  array), far beyond the stream's private cache, yet an update still touches
+  just one randomly chosen cache line of it — which is why the number moves so
+  little from 1k to 1M levels. Do not read "nearly flat here" as a guarantee at
+  other scales, on other hardware, or under a memory layout where the update's
+  cache line is not already resident.
 - **Best-price deletion (C) costs both designs extra but is cheap for flat.**
   Deleting the best forces the flat book to rescan inward from the adjacent
   slot (~6 ns vs ~4.4 ns update-only); the map just erases the root node, so C
   is actually map's *cheapest* workload at scale (~71 ns at 1M). The structural
   difference shows in D (top-of-book churn): map ~128 ns, flat ~4.5 ns at 1M.
 - **Speedups are large and grow with scale.** At 1,000 levels flat is ~7–12×
-  faster; at 1,000,000 levels it is **~40–90×** faster on update-only and
-  uniformly-random workloads. Where the map's structure is heavily exercised
-  (random full-book churn, E), flat is ~75× faster; on the flat book's own
-  stress test (best deletion, C) the gap narrows to ~12×.
+  faster; at 1,000,000 levels the update-only (A) speedup is ~42× and the
+  uniformly-random (E) speedup is ~75× — the largest in the matrix. Where the
+  map's structure is heavily exercised (random full-book churn, E), flat is
+  ~75× faster; on the flat book's own stress test (best deletion, C) the gap
+  narrows to ~12×.
 
-**Methodology notes / limitations.** Workloads A/B/D hold their side at exactly
-`N` levels; E drifts slightly (density ~0.9N in steady state) but identically on
-both books, so the comparison stays fair. Best-of-3 blocks was chosen to
-discount scheduler noise; running on a shared/heterogeneous machine would add
-variance. These are single-core, single-writer throughput numbers — the books
-are intentionally lock-free because they are single-writer by design.
+**Methodology notes / limitations.**
+
+- **Live level counts are approximate except for A.** Only workload A holds its
+  live count at exactly `N` for the whole block. B/C/D conserve levels but with
+  transient deficits (count returns to `N` once deletes are restored); E is a
+  random walk that settles near ~0.9N. Because every workload replays the
+  *identical* stream through both books, whatever level-count profile a workload
+  has is exactly matched between map and flat, so the comparison stays fair.
+- **One implementation per process.** A long, CPU-saturating run of one design
+  can thermally throttle the machine, so map and flat were measured in separate
+  process invocations; the `both` mode (back-to-back in one process) is only a
+  quick local sanity check and is not used for reported numbers.
+- **Scope.** These are single-core, single-writer mean throughput reads of
+  `apply()` on an otherwise quiet machine; they are not latency percentiles
+  (Phase 4), and best-of-3 was chosen to discount scheduler noise. Running on a
+  shared/heterogeneous machine would add variance. Snapshot load and stream
+  generation are excluded by construction.
 
 ## Next phases
 

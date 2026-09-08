@@ -548,17 +548,24 @@ void test_malformed_snapshot() {
 }
 
 // ---------------------------------------------------------------------------
-// 15. Large-domain best-price deletion. Best and next-best sit adjacent to each
-//     other inside a domain whose extreme edge is far away; the delete must
-//     find the adjacent next-best, not (incorrectly) rescan from the far edge.
+// 15. Adjacent best-price deletion. Best and next-best sit adjacent to each
+//     other inside a domain whose far edge is well away; deleting the current
+//     best must promote the ADJACENT next-best, not scan from the far edge.
+//
+//     This is a CORRECTNESS test, so the domain is deliberately modest
+//     ([1, 1M] => 16 MB of flat storage, not gigabytes). It verifies only that
+//     the inward re-scan finds the adjacent level. Best-deletion SCAN COST is
+//     a throughput property and belongs in the benchmark (workload C), not in
+//     a unit-test-sized book.
 // ---------------------------------------------------------------------------
 void test_large_domain_adjacent_best_delete() {
-    // Domain [1, 100_000_000]: flat storage is 2 * 1e8 * 8 bytes = 1.6 GB.
-    // A best at 90_000_000 with the next-best at 89_999_999 means the new best
-    // is directly adjacent; any scan of the domain's far edge would still find
-    // it, but a scan from the *wrong* extreme would be catastrophic.
-    const int64_t MIN_T = 1, MAX_T = 100'000'000;
-    const int64_t kBest = 90'000'000, kNext = 89'999'999, kLow = 10'000'000;
+    // Domain [1, 1_000_000]: flat storage is 2 * 1e6 * 8 bytes = 16 MB. A best
+    // at 900_000 with the next-best at 899_999 keeps the new best directly
+    // adjacent while the far edge of the domain (price 1_000_000) is ~100k
+    // ticks away — far enough that a scan from the wrong extreme would have to
+    // traverse most of the domain.
+    const int64_t MIN_T = 1, MAX_T = 1'000'000;
+    const int64_t kBest = 900'000, kNext = 899'999, kLow = 100'000;
     Books b(MIN_T, MAX_T);
 
     BookSnapshot snap = make_snapshot(

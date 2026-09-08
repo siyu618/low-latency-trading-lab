@@ -60,26 +60,25 @@ if(BUILD_BENCHMARKS)
     # Override any build type: the benchmark hot path must always run optimized.
     target_compile_options(orderbook_bench PRIVATE -O3 -DNDEBUG)
 
-    # -march=native (or the closest Apple clang equivalent) materially changes
-    # which instructions the timed loop compiles to, so it is opt-in and guarded
-    # so a compiler without support simply omits it instead of failing.
-    option(ENABLE_NATIVE_ARCH
-        "Compile the benchmark with -march=native when the compiler supports it" OFF)
-    if(ENABLE_NATIVE_ARCH)
-        if(CMAKE_SYSTEM_NAME MATCHES "Darwin" AND CMAKE_CXX_COMPILER_ID MATCHES "AppleClang")
-            check_cxx_compiler_flag("-mcpu=apple-m1" CXX_SUPPORTS_APPLE_M1)
-            if(CXX_SUPPORTS_APPLE_M1)
-                target_compile_options(orderbook_bench PRIVATE -mcpu=apple-m1)
-            else()
-                message(WARNING "ENABLE_NATIVE_ARCH: -mcpu=apple-m1 unsupported, building without it")
-            endif()
+    # CPU/arch tuning is OPT-IN and free-form so it is never hard-coded to one
+    # machine. The canonical M3 measurements in the README were built WITHOUT
+    # any arch flag (the compiler's default for the target). To tune for the
+    # host, pass an explicit, compiler-validated flag:
+    #   cmake -DBENCH_ARCH_FLAGS="-march=native"      # gcc/clang on Linux
+    #   cmake -DBENCH_ARCH_FLAGS="-mcpu=apple-m1"     # Apple clang on M1-era
+    #   cmake -DBENCH_ARCH_FLAGS="-mcpu=apple-m3"     # Apple clang on M3, if the
+    #                                                 # installed clang accepts it
+    # An unsupported flag is detected at configure time and dropped with a
+    # warning rather than failing the build.
+    set(BENCH_ARCH_FLAGS "" CACHE STRING
+        "Extra arch flags for the benchmark target (e.g. -march=native). Empty = compiler default")
+    if(NOT BENCH_ARCH_FLAGS STREQUAL "")
+        check_cxx_compiler_flag("${BENCH_ARCH_FLAGS}" CXX_SUPPORTS_BENCH_ARCH)
+        if(CXX_SUPPORTS_BENCH_ARCH)
+            target_compile_options(orderbook_bench PRIVATE ${BENCH_ARCH_FLAGS})
         else()
-            check_cxx_compiler_flag("-march=native" CXX_SUPPORTS_MARCH_NATIVE)
-            if(CXX_SUPPORTS_MARCH_NATIVE)
-                target_compile_options(orderbook_bench PRIVATE -march=native)
-            else()
-                message(WARNING "ENABLE_NATIVE_ARCH: -march=native unsupported, building without it")
-            endif()
+            message(WARNING "BENCH_ARCH_FLAGS '${BENCH_ARCH_FLAGS}' unsupported by this compiler; "
+                            "building the benchmark with the compiler default")
         endif()
     endif()
 endif()
