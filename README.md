@@ -5,11 +5,13 @@ repository currently hosts a single experiment — Experiment 01, below — at t
 repo root; if more experiments land later they will be organized into their own
 top-level directories.
 
-> **Status — Experiment 01 Phase 2 (benchmark) complete:**
+> **Status — Experiment 01 Phase 2 frozen; Phase 3 tooling added (not yet run):**
 > **Experiment 01 — L2 Order Book: `std::map` vs Flat Representation** is
-> implemented, its correctness tests are green, and the deterministic
-> benchmark has measured steady-state `apply()` throughput across both
-> implementations, five workloads, and four book sizes. Results are below.
+> implemented, its correctness tests are green, the deterministic benchmark has
+> measured steady-state `apply()` throughput across both implementations, five
+> workloads, and four book sizes, and a Linux `perf` profiling harness
+> (`scripts/perf-profile.sh`, guide under `docs/profiling/`) is in place to
+> answer the "why" questions Phase 2 raised. Results below.
 
 ## Experiments
 
@@ -30,11 +32,13 @@ low-latency-trading-lab/
 ├── benchmark/
 │   └── order_book_bench.cpp # deterministic steady-state apply() benchmark
 ├── scripts/
-│   └── bench.sh             # canonical per-process run + quick both-mode check
+│   ├── bench.sh             # canonical per-process run + quick both-mode check
+│   └── perf-profile.sh      # Linux perf profiling harness (Phase 3, per-cell)
 ├── cmake/
 │   └── assert_nonzero_exit.cmake  # ctest guard for the test exit-code self-test
 ├── docs/
-│   └── results/             # canonical committed benchmark results + metadata
+│   ├── results/             # canonical committed benchmark results + metadata
+│   └── profiling/           # Phase 3 Linux perf guide (how to profile each cell)
 ├── CMakeLists.txt
 └── README.md
 ```
