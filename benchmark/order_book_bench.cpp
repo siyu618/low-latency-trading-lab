@@ -26,29 +26,34 @@
 //     of the reps blocks — a common low-latency summary that discounts
 //     scheduling noise (which only ever adds latency).
 //   * CANONICAL measurements run ONE implementation per process
-//     (`orderbook_bench map …` / `orderbook_bench flat …`): a long,
-//     CPU-saturating run of one design can thermally throttle the machine, so
-//     measuring both back-to-back in one process contaminates the second. The
-//     `both` mode exists only as a quick local sanity check and is NOT used
+//     (`orderbook_bench map …` / `orderbook_bench flat …`), never the two
+//     interleaved in a shared address space. What per-process runs buy is clean
+//     process/address-space isolation, no mixed implementation state, and clean
+//     profiling/perf attribution (Phase 3). They do NOT buy thermal isolation:
+//     thermal state and system-level load survive process exit, so back-to-back
+//     long, CPU-saturating runs can still drift. The `both` mode (map then flat
+//     in one process) exists only as a quick local sanity check and is NOT used
 //     for reported results.
 //   * The stream never contains a negative qty or an out-of-domain price, and
 //     seq advances by exactly 1, so it is legal for both books.
 //
 // Price-domain model: domain is [1, 2N] where N is the requested scale in price
-// levels. Each side carries ~N live levels:
+// levels. Each side starts with N live levels:
 //   * bids occupy N+1 .. 2N   (best bid = 2N initially)
 //   * asks occupy  1 .. N     (best ask = 1 initially)
 // A candidate level `idx` on a side is idx steps from the touch (idx 0 == the
 // best price), so both sides share one bookkeeping model. Workloads differ only
 // in WHICH levels they touch and how often they delete the best. Live-level
-// count over a run is "~N" for the workloads below, not exactly N: A never
-// changes the level set (stays exactly N); B/D conserve levels (each delete is
-// later restored, so the count is exactly N at every prefix where a restore
-// has caught up); C conserves levels (refill rate >= delete rate, count returns
-// to exactly N); E does not conserve levels — it deletes/adds at random and the
-// count settles at a stochastic equilibrium below N (~0.9N). Every workload
-// keeps the side far from empty, so each cell measures steady state, never a
-// draining book.
+// count over a run: A never changes the level set (stays exactly N); B/D
+// conserve levels (each delete is later restored, so the count is N at every
+// prefix where a restore has caught up); C conserves levels (refill rate >=
+// delete rate, count returns to N). E does NOT conserve levels — it deletes and
+// adds at random, so occupancy may drift below the starting N; the exact
+// finite-run value depends on scale, update count, the RNG stream, and the
+// generator's retry/fallback behavior, and is NOT hard-coded here (--check
+// prints the actual ending level counts of the generated stream). Every
+// workload keeps the side far from empty, so each cell measures steady state,
+// never a draining book.
 //
 //   A  update-only               every op re-quantifies a random present level;
 //                                the level set never changes (exactly N)
@@ -69,8 +74,8 @@
 //                                conserved); levels below the window never move
 //   E  uniformly random          fair side coin; price uniform over that side's
 //                                whole region; 50% delete a present level, 50%
-//                                add at an absent one; level count settles near
-//                                a random-walk equilibrium below N
+//                                add at an absent one; occupancy may drift
+//                                below the starting N (not hard-coded)
 //
 // Usage:
 //   orderbook_bench [impl] [workload] [scale] [updates=N] [reps=N] [--check]
@@ -86,7 +91,9 @@
 //   ./orderbook_bench map all all      then separately
 //   ./orderbook_bench flat all all
 // `both` runs map then flat back-to-back in one process and is only a quick
-// local sanity check (thermal drift makes its flat half optimistic).
+// local sanity check: it shares one address space between the two designs and
+// the second run follows a long CPU-saturating first run, so it is NOT used for
+// reported numbers.
 //
 // Release config is set in CMakeLists: -O3 -DNDEBUG. CPU arch tuning is OPT-IN
 // and free-form via -DBENCH_ARCH_FLAGS="<flags>" (e.g. -march=native,
@@ -543,7 +550,7 @@ int check_streams(uint64_t updates) {
 
 void print_header(uint64_t updates, int reps) {
     std::printf("# orderbook_bench - deterministic steady-state apply() throughput\n");
-    std::printf("# domain [1, 2N]; N live levels/side; fill untimed; "
+    std::printf("# domain [1, 2N]; starts with N live levels/side; fill untimed; "
                 "best of %d reps; %" PRIu64 " steady ops per block\n",
                 reps, updates);
     std::printf("# impl,wl,scale_n,updates,best_ms,best_ns_per_update,best_updates_per_s\n");

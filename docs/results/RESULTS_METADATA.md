@@ -13,10 +13,22 @@ truth for the summary table in the README.
 
 ## How it was measured
 
-Each cell is one `orderbook_bench` invocation of one implementation against one
-workload and one scale. The two implementations were measured in **separate
-processes** so a long, CPU-saturating run of one design could not thermally
-throttle the other. For every cell:
+The canonical run used **two process invocations**, one per implementation —
+the same procedure as `scripts/bench.sh`:
+
+1. one `MapOrderBook` process covering its whole workload × scale matrix
+   (`orderbook_bench map all all`, 20 rows);
+2. one `FlatOrderBook` process covering its whole workload × scale matrix
+   (`orderbook_bench flat all all`, 20 rows).
+
+Within each process every cell is one `(impl, workload, scale)` cell of that
+matrix, best-of-3. Running the two implementations in **separate processes**
+buys process/address-space isolation, no mixed implementation state, and clean
+profiling/perf attribution (Phase 3) — it does **not** buy thermal isolation:
+thermal state and system-level load survive process exit, and the two long,
+CPU-saturating runs still happened back-to-back on one machine.
+
+For every cell:
 
 1. The full deterministic stream was generated up front, off the clock
    (fixed-seed, well-formed, sequence-continuous).
@@ -40,14 +52,18 @@ throttle the other. For every cell:
 | Build | CMake 4.4.3, `-O3 -DNDEBUG` forced on the benchmark target |
 | Arch flags | **none** — compiler default (no `-march=native` / `-mcpu=…`) |
 | Workloads | A update-only, B 10% deletes, C frequent best deletion, D concentrated top-of-book, E uniformly random |
-| Scales (`N` live levels/side) | 1,000 / 10,000 / 100,000 / 1,000,000 |
+| Scales (`N` starting live levels/side) | 1,000 / 10,000 / 100,000 / 1,000,000 |
 
 ## Notes
 
-- Domain is `[1, 2N]` ticks; bids occupy `N+1..2N`, asks `1..N`.
-- Live level count over a run is *approximately* N for every workload except A
-  (exactly N); E settles near ~0.9N. Each workload replays the identical stream
-  through both books, so profiles are matched between the two implementations.
+- Domain is `[1, 2N]` ticks; bids occupy `N+1..2N`, asks `1..N`. Each side
+  starts with `N` live levels.
+- Live level count over a run: A holds exactly `N`; B/C/D conserve levels
+  (approximately `N`, with transient deficits); E does not conserve levels and
+  may drift below `N` — the exact finite-run value is not hard-coded here
+  (`orderbook_bench --check` prints the actual ending level counts of each
+  generated stream). Each workload replays the identical stream through both
+  books, so profiles are matched between the two implementations.
 - These are single-core, single-writer **mean** throughput reads of `apply()`,
   not latency percentiles (Phase 4). Snapshot load and stream generation are
   outside the timed region.

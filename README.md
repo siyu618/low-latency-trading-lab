@@ -104,17 +104,22 @@ deliberately deterministic and honest about what it excludes:
   only difference between two books' timings is the book implementation. Best-of
   discounts scheduling noise (which only ever adds latency).
 - **Canonical runs use one book design per process.** `orderbook_bench map …`
-  and `orderbook_bench flat …` are separate invocations. A long, CPU-saturating
-  run of one design can thermally throttle the machine, so measuring both
-  back-to-back in one process would bias the second; the `both` mode is only a
-  quick local sanity check and is never used for reported results.
+  and `orderbook_bench flat …` are separate invocations, never the two designs
+  interleaved in a shared address space. Per-process runs buy clean
+  process/address-space isolation, no mixed implementation state, and clean
+  profiling/perf attribution (Phase 3) — but they do **not** buy thermal
+  isolation: thermal state and system-level load survive process exit, so
+  back-to-back long runs can still drift. The `both` mode (map then flat in one
+  process) is only a quick local sanity check and is never used for reported
+  results.
 
 Price-domain model: the configured domain is `[1, 2N]` where `N` is the scale in
 price levels. Each side starts with `N` live levels (bids at `N+1..2N`, asks at
-`1..N`), and every workload keeps its side at approximately `N` levels, so each
-cell measures steady state, never a draining book. "Approximately" because only
-A holds the live count at exactly `N` throughout; see the notes under the
-workload table. Workloads:
+`1..N`). Workloads differ in how close to `N` they hold that count afterward —
+A holds exactly `N` throughout, B/C/D hold approximately `N` (conserved), E may
+drift below `N` — but all keep the side far from empty, so each cell measures
+steady state, never a draining book. See the notes under the workload table.
+Workloads:
 
 | Workload | What it does | Live levels over a run |
 |----------|--------------|------------------------|
@@ -122,14 +127,21 @@ workload table. Workloads:
 | B 10% deletes | ~10% of ops delete a random present level; the rest add at a random absent level (restoring what was deleted) | ~N: conserved (each delete is later restored); exactly N at every prefix where the restore has caught up |
 | C frequent best deletion | ~45% delete the current best level (forces the flat book's inward re-scan); the rest refill the most recently vacated level, which restores it just below the current best | ~N: conserved (refill rate ≥ delete rate); returns to exactly N whenever the side is full with no pending hole |
 | D concentrated top-of-book | ops touch only a small window at the best end; ~15% delete a present window level, ~85% add at an absent window level | ~N: conserved inside the window; the levels below the window never move |
-| E uniformly random | fair side coin, price uniform over the whole region, 50% delete / 50% add | ~0.9N: NOT conserved — a random walk that settles at a stochastic equilibrium below N |
+| E uniformly random | fair side coin, price uniform over the whole region, 50% delete / 50% add | ≤ N: NOT conserved — random deletes/adds, occupancy may drift below N; the exact finite-run value is not hard-coded (see below) |
 
 So A is the only workload whose live level count is exactly `N` for the whole
 timed block; B/C/D hold it approximately `N` (conserved but with transient
-deficits); E does not conserve it and settles near `0.9N`. All keep the side far
-from empty, so every cell measures steady state — and because each workload
+deficits); E does not conserve it — it starts at `N`, and since deletes and
+adds are chosen at random the occupancy may drift below `N`. All keep the side
+far from empty, so every cell measures steady state — and because each workload
 replays the identical stream through both books, any of these level-count
 profiles is exactly matched between map and flat.
+
+For E, how far below `N` occupancy drifts over a finite run depends on the
+scale, the update count, the RNG stream, and the generator's retry/fallback
+behavior — so no single equilibrium value is claimed here. `--check` replays
+each stream and prints the actual ending level counts, so the generated stream
+can be inspected directly rather than assumed.
 
 ### Build & run
 
@@ -170,7 +182,7 @@ Canonical measurement environment:
 | Build | CMake 4.4.3; `-O3 -DNDEBUG` forced on the benchmark target; **no** arch flag (compiler default) |
 | Stream | 2,000,000 steady `apply()` ops per timed block |
 | Reps | 3 per cell; reported = **best of 3** (min wall time) |
-| Isolation | map and flat measured in **separate processes** |
+| Process isolation | map and flat measured in **separate process invocations** (process isolation, not thermal isolation) |
 | Date | 2026-09-07 |
 
 Units: ns per `apply()`. Rows are ns/update; the full raw CSV and machine
@@ -187,12 +199,12 @@ metadata are committed under `docs/results/`.
 | 1,000,000 | map |  182.7    |   181.5   |    70.6    |   128.1     |  383.5    |
 | 1,000,000 | flat |   4.3    |    4.5    |    5.9     |    4.5      |    5.1    |
 
-**What these measure.** All numbers are for a book that stays at approximately
-`N` live levels per side for the whole timed block; snapshot loading, stream
-generation and the clock read are excluded. The timed loop is a pure `apply()`
-replay of pre-recorded updates with a per-iteration compiler barrier (so the
-optimizer cannot prove the flat book's stores dead or reorder across `apply()`
-calls).
+**What these measure.** All numbers are for a book that **starts** at `N` live
+levels per side (A keeps it at exactly `N`; B/C/D keep it approximately `N`;
+E may drift below `N`); snapshot loading, stream generation and the clock read
+are excluded. The timed loop is a pure `apply()` replay of pre-recorded updates
+with a per-iteration compiler barrier (so the optimizer cannot prove the flat
+book's stores dead or reorder across `apply()` calls).
 
 **Reading the results.**
 
@@ -214,11 +226,16 @@ calls).
   little from 1k to 1M levels. Do not read "nearly flat here" as a guarantee at
   other scales, on other hardware, or under a memory layout where the update's
   cache line is not already resident.
-- **Best-price deletion (C) costs both designs extra but is cheap for flat.**
-  Deleting the best forces the flat book to rescan inward from the adjacent
-  slot (~6 ns vs ~4.4 ns update-only); the map just erases the root node, so C
-  is actually map's *cheapest* workload at scale (~71 ns at 1M). The structural
-  difference shows in D (top-of-book churn): map ~128 ns, flat ~4.5 ns at 1M.
+- **Best-price deletion (C) costs the flat book extra but is comparatively
+  cheap for the map — an observation, not yet explained.** Deleting the best
+  forces the flat book to rescan inward from the adjacent slot (~6 ns vs ~4.4
+  ns update-only). On the map side, C is *empirically* cheaper than several
+  other map workloads (~71 ns at 1M, versus ~128 ns for D and ~183 ns for A).
+  Why is not established here: the map still does a keyed `erase()` with
+  red-black lookup and rebalancing, and repeated near-touch access may improve
+  locality, branch predictability, or tree-path locality — but Phase 2 only
+  records the observation. Determining the actual reason is a Phase 3 perf
+  job, not something to assert from these throughput numbers.
 - **Speedups are large and grow with scale.** At 1,000 levels flat is ~7–12×
   faster; at 1,000,000 levels the update-only (A) speedup is ~42× and the
   uniformly-random (E) speedup is ~75× — the largest in the matrix. Where the
@@ -228,16 +245,22 @@ calls).
 
 **Methodology notes / limitations.**
 
-- **Live level counts are approximate except for A.** Only workload A holds its
-  live count at exactly `N` for the whole block. B/C/D conserve levels but with
-  transient deficits (count returns to `N` once deletes are restored); E is a
-  random walk that settles near ~0.9N. Because every workload replays the
-  *identical* stream through both books, whatever level-count profile a workload
-  has is exactly matched between map and flat, so the comparison stays fair.
-- **One implementation per process.** A long, CPU-saturating run of one design
-  can thermally throttle the machine, so map and flat were measured in separate
-  process invocations; the `both` mode (back-to-back in one process) is only a
-  quick local sanity check and is not used for reported numbers.
+- **Live level counts are exact only for A.** Only workload A holds its live
+  count at exactly `N` for the whole block. B/C/D conserve levels but with
+  transient deficits (count returns to `N` once deletes are restored). E does
+  not conserve levels: it starts at `N` and may drift below it — how far depends
+  on scale, update count, the RNG stream, and generator fallback behavior, so
+  no single value is asserted. Because every workload replays the *identical*
+  stream through both books, whatever level-count profile a workload has is
+  exactly matched between map and flat, so the comparison stays fair.
+- **One implementation per process, for process isolation — not thermal
+  isolation.** map and flat were measured in separate process invocations so no
+  single address space mixes the two designs and profiling/perf attribution
+  stays clean (Phase 3). Separate processes do not guarantee thermal isolation
+  or eliminate system-level drift: thermal state and background load survive
+  process exit, and the two long, CPU-saturating runs still happened
+  back-to-back on one machine. The `both` mode (back-to-back in one process) is
+  only a quick local sanity check and is not used for reported numbers.
 - **Scope.** These are single-core, single-writer mean throughput reads of
   `apply()` on an otherwise quiet machine; they are not latency percentiles
   (Phase 4), and best-of-3 was chosen to discount scheduler noise. Running on a

@@ -4,8 +4,10 @@
 # Builds the benchmark (fresh Release dir) and runs the full matrix with ONE
 # implementation per process (the canonical methodology):
 #   2 implementations (map, flat) x 5 workloads (A-E) x 4 scales (1k..1M),
-#   map measured to completion, then flat in its own process — so a long,
-#   CPU-saturating run of one design cannot thermally throttle the other.
+#   map measured to completion, then flat in its own process.
+# This buys process/address-space isolation, no mixed implementation state, and
+# clean profiling/perf attribution (Phase 3) — NOT thermal isolation (thermal
+# state and system-level load survive process exit).
 # Output goes to results/bench_<timestamp>.csv (plus a terminal copy).
 #
 # Usage:
@@ -18,8 +20,7 @@
 # Reported time is the BEST (minimum) of `reps` timed blocks per cell.
 #
 # The benchmark also has a `both` mode (map then flat back-to-back in ONE
-# process) — that is only a quick local sanity check and is NOT used here,
-# because thermal drift would contaminate whichever implementation runs second.
+# process) — that is only a quick local sanity check and is NOT used here.
 #
 # For per-process profile runs (Phase 3) invoke the binary directly, e.g.:
 #   perf stat ./build-bench/orderbook_bench flat all all
@@ -43,14 +44,14 @@ OUT="results/bench_${UPDATES}up_${REPS}reps_$(date +%Y%m%d-%H%M%S).csv"
 # file (tee'd to the terminal) so its rows are captured deterministically.
 {
     printf '# orderbook_bench - deterministic steady-state apply() throughput (per-process, canonical)\n'
-    printf '# domain [1, 2N]; N live levels/side; fill untimed; best of %s reps; %s steady ops per block\n' "$REPS" "$UPDATES"
+    printf '# domain [1, 2N]; starts with N live levels/side; fill untimed; best of %s reps; %s steady ops per block\n' "$REPS" "$UPDATES"
     printf '# machine: %s  %s  %s\n' "$(hostname)" "$(uname -m)" "$(date)"
     printf '# impl,wl,scale_n,updates,best_ms,best_ns_per_update,best_updates_per_s\n'
 } > "${OUT}"
 
 for impl in map flat; do
     TMP="results/.${impl}.tmp"
-    echo "==> Running ${impl} in its own process (canonical)"
+    echo "==> Running ${impl} in its own process (canonical; process isolation, not thermal isolation)"
     ./build-bench/orderbook_bench "${impl}" all all updates="${UPDATES}" reps="${REPS}" \
         | tee "${TMP}"
     grep -E "^${impl}," "${TMP}" >> "${OUT}"

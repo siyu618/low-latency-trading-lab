@@ -1,5 +1,5 @@
 # orderbook_bench - deterministic steady-state apply() throughput
-# domain [1, 2N]; N live levels/side; fill untimed; best of 3 reps; 2000000 steady ops per block
+# domain [1, 2N]; starts with N live levels/side; fill untimed; best of 3 reps; 2000000 steady ops per block
 # impl,wl,scale_n,updates,best_ms,best_ns_per_update,best_updates_per_s
 map,A,1000,2000000,64.913,32.456,30810509
 map,B,1000,2000000,72.294,36.147,27664797
