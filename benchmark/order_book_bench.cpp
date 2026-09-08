@@ -36,13 +36,15 @@
 //     for reported results.
 //   * OPTIONAL profiling gate (Phase 3.1): when the env var LLOB_PERF_CONTROL
 //     is set to a named control fifo that perf is listening on (see the Phase 3
-//     harness, scripts/perf-profile.sh), the timed loop is bracketed by a perf
-//     enable/ack + disable/ack handshake so perf stat counters cover ONLY the
-//     steady-state apply() loop, not the untimed cold-start. The handshake lives
-//     OUTSIDE the loop (before t0 and after t1) and is a strict no-op when the
-//     env var is unset, so normal Phase 2 runs are byte-for-byte unchanged, and
-//     the reported best_ns_per_update is unchanged in meaning (only the fifo
-//     handshake adds time, before t0 and after t1).
+//     harness, scripts/perf-profile.sh), each timed block is bracketed by a perf
+//     enable/ack handshake (before t0) and a disable/ack handshake (immediately
+//     after t1, before the end-state reads), so perf stat counters cover exactly
+//     the same apply() block that the wall clock times — not the untimed
+//     cold-start. Perf's ack is the literal "ack\n" (tools/perf util/evlist.h).
+//     The gate is a strict no-op when the env var is unset, so normal Phase 2
+//     runs are byte-for-byte unchanged, and the reported best_ns_per_update is
+//     unchanged in meaning (only the fifo handshake adds time, before t0 and
+//     after t1, outside both the chrono and the PMU windows).
 //   * The stream never contains a negative qty or an out-of-domain price, and
 //     seq advances by exactly 1, so it is legal for both books.
 //
@@ -435,11 +437,10 @@ inline void memory_barrier() noexcept {
 //     hands their paths to perf via --control=fifo:<ctl>,<ack>. perf opens its
 //     ends at startup. The harness also exports LLOB_PERF_CONTROL=<base> to the
 //     benchmark child, where <base> names the fifo pair.
-//   * The BENCHMARK only OPENS those fifos. It never mkfifos. In time_book,
-//     before the timed loop it writes "enable\n" to <ctl> and reads the "enable"
-//     ack echo back from <ack>; after the loop's end-state reads it writes
-//     "disable\n" and reads the "disable" ack. perf's counters therefore span
-//     exactly the measured block(s).
+//   * The BENCHMARK only OPENS those fifos. It never mkfifos. In time_book it
+//     writes "enable\n" to <ctl> and waits for perf's ack, runs the timed
+//     apply() loop, then writes "disable\n" and waits for the second ack. perf's
+//     counters therefore span exactly the measured block(s).
 //   * Fifo path = <base> + "_ctl" / "_ack" (no per-block suffix): ONE stable
 //     pair per benchmark process, matching the harness's single --control pair.
 //     The profiling harness runs reps=1, so the counted window is exactly the
@@ -460,8 +461,17 @@ namespace {
 
 constexpr const char* kPerfControlVar = "LLOB_PERF_CONTROL";
 
-// Send one perf control command and wait for its ack echo. Returns false (and
-// prints why) when the handshake cannot complete. ctl/ack are fifo paths.
+// Send one perf control command ("enable" or "disable") and wait for perf's
+// acknowledgement. Returns false (and prints why) when the handshake cannot
+// complete. ctl/ack are fifo paths.
+//
+// Perf's ack protocol (Linux tools/perf/util/evlist.h):
+//   #define EVLIST_CTL_CMD_ACK_TAG "ack\n"
+// and perf writes sizeof(EVLIST_CTL_CMD_ACK_TAG) bytes to the ack fifo after a
+// control command completes — i.e. the literal "ack\n" (4 bytes: "ack", '\n',
+// and a trailing NUL), REGARDLESS of which command was sent. The ack does NOT
+// echo the command. A non-"ack" response means the handshake is out of sync, so
+// we treat it as a failure.
 bool perf_ctrl(const char* base, const char* cmd, int timeout_ms) {
     char ctl[1024];
     char ack[1024];
@@ -507,6 +517,9 @@ bool perf_ctrl(const char* base, const char* cmd, int timeout_ms) {
         ::close(ctl_fd);
         return false;
     }
+    // The ack is the literal "ack\n" (plus a trailing NUL in perf's write) for
+    // BOTH enable and disable — it never echoes the command. Accept the prefix
+    // "ack"; anything else means the controller is not perf / out of sync.
     char buf[16];
     const ssize_t got = ::read(ack_fd, buf, sizeof(buf) - 1);
     ::close(ack_fd);
@@ -516,9 +529,10 @@ bool perf_ctrl(const char* base, const char* cmd, int timeout_ms) {
         return false;
     }
     buf[got] = '\0';
-    if (std::strstr(buf, cmd) == nullptr) {
-        std::fprintf(stderr, "perf-control: ack '%s' does not echo '%s'\n", buf,
-                     cmd);
+    if (std::strncmp(buf, "ack", 3) != 0) {
+        std::fprintf(stderr, "perf-control: ack for '%s' is '%s', expected "
+                             "'ack\\n' (perf protocol)\n",
+                     cmd, buf);
         return false;
     }
     return true;
@@ -563,9 +577,10 @@ TimedResult time_book(const BookSnapshot& snap,
 
     // One perf enable/disable window per timed block. The gate is a no-op when
     // LLOB_PERF_CONTROL is unset; when set (Phase 3.1 profiling) it makes perf's
-    // counters span exactly the timed loop below. The handshake is OUTSIDE the
-    // loop and outside the Clock::now() window, so the reported ns/update is
-    // unchanged in meaning.
+    // counters span exactly the timed apply() loop: enable/ack before t0,
+    // disable/ack after t1, and the end-state reads AFTER disable. So the PMU
+    // window and the Clock::now() window cover the same apply() block, and the
+    // reported ns/update is unchanged in meaning.
 #if defined(__linux__)
     const char* gate_base = std::getenv(kPerfControlVar);
     const bool  gated     = gate_base != nullptr && gate_base[0] != '\0';
@@ -592,17 +607,21 @@ TimedResult time_book(const BookSnapshot& snap,
         }
         const auto t1 = Clock::now();
 
+        // Drop perf's counters immediately after t1, BEFORE the end-state
+        // reads: the PMU window [enable..disable] and the chrono window
+        // [t0..t1] must cover exactly the same apply() block. The end-state
+        // reads are off the clock AND off the PMU; they only make the timed
+        // writes observable.
+#if defined(__linux__)
+        if (gated && !perf_ctrl(gate_base, "disable", 5000)) std::exit(2);
+#endif
+
         // End-state reads (off the clock). Common API across both books; pin
         // best_bid/best_ask (which reflect cache writes made during the timed
         // loop) and the live-level count so the final state is observable.
         sink ^= static_cast<uint64_t>(book.best_bid());
         sink ^= static_cast<uint64_t>(book.best_ask());
         sink ^= static_cast<uint64_t>(book.level_count());
-
-        // And drop perf's counters again after the end-state reads.
-#if defined(__linux__)
-        if (gated && !perf_ctrl(gate_base, "disable", 5000)) std::exit(2);
-#endif
 
         const double ns =
             static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());

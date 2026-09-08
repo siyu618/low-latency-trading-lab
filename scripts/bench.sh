@@ -31,8 +31,13 @@ cd "$(dirname "$0")/.."            # project root
 UPDATES="${1:-2000000}"
 REPS="${2:-3}"
 
-echo "==> Configuring (Release)"
-cmake -S . -B build-bench -DCMAKE_BUILD_TYPE=Release >/dev/null
+echo "==> Configuring (Release, fresh build-bench dir — no stale cache/arch flags)"
+# Canonical runs must be reproducible: a stale build-bench CMakeCache could carry
+# a leftover BENCH_ARCH_FLAGS from a manual tuned build. Recreate the dir and
+# configure explicitly with no arch flags so a canonical run is always the
+# compiler default for the target.
+rm -rf build-bench
+cmake -S . -B build-bench -DCMAKE_BUILD_TYPE=Release -DBENCH_ARCH_FLAGS= >/dev/null
 echo "==> Building"
 cmake --build build-bench >/dev/null
 
