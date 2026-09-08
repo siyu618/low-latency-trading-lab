@@ -34,6 +34,15 @@
 //     long, CPU-saturating runs can still drift. The `both` mode (map then flat
 //     in one process) exists only as a quick local sanity check and is NOT used
 //     for reported results.
+//   * OPTIONAL profiling gate (Phase 3.1): when the env var LLOB_PERF_CONTROL
+//     is set to a named control fifo that perf is listening on (see the Phase 3
+//     harness, scripts/perf-profile.sh), the timed loop is bracketed by a perf
+//     enable/ack + disable/ack handshake so perf stat counters cover ONLY the
+//     steady-state apply() loop, not the untimed cold-start. The handshake lives
+//     OUTSIDE the loop (before t0 and after t1) and is a strict no-op when the
+//     env var is unset, so normal Phase 2 runs are byte-for-byte unchanged, and
+//     the reported best_ns_per_update is unchanged in meaning (only the fifo
+//     handshake adds time, before t0 and after t1).
 //   * The stream never contains a negative qty or an out-of-domain price, and
 //     seq advances by exactly 1, so it is legal for both books.
 //
@@ -111,6 +120,13 @@
 #include <cstring>
 #include <random>
 #include <vector>
+
+#if defined(__linux__)
+#include <fcntl.h>    // open
+#include <poll.h>     // poll (wait for perf to open the fifo)
+#include <sys/stat.h> // mkfifo
+#include <unistd.h>   // read, write, close
+#endif
 
 using llob::ApplyResult;
 using llob::BookSnapshot;
@@ -402,6 +418,131 @@ inline void memory_barrier() noexcept {
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// Optional perf-control gate (Phase 3.1).
+//
+// perf can be told to keep its counters disabled until an explicit `enable`
+// arrives, then disabled again, via the perf control interface
+// (perf man page, `--control=fifo:<ctl>[,<ack>]` together with `--delay=-1`):
+//   perf stat -D -1 --control=fifo:OUTDIR/gate_ctl,OUTDIR/gate_ack ...
+// That lets a profiler measure ONLY the timed steady-state apply() loop instead
+// of the whole process (which also contains the untimed stream generation and
+// snapshot cold-start — enormous for map at 1M levels, and not what Phase 2
+// measured). This gate is the benchmark half of that handshake.
+//
+// Roles and ownership (so the two halves agree):
+//   * The HARNESS (scripts/perf-profile.sh) creates both fifos with mkfifo and
+//     hands their paths to perf via --control=fifo:<ctl>,<ack>. perf opens its
+//     ends at startup. The harness also exports LLOB_PERF_CONTROL=<base> to the
+//     benchmark child, where <base> names the fifo pair.
+//   * The BENCHMARK only OPENS those fifos. It never mkfifos. In time_book,
+//     before the timed loop it writes "enable\n" to <ctl> and reads the "enable"
+//     ack echo back from <ack>; after the loop's end-state reads it writes
+//     "disable\n" and reads the "disable" ack. perf's counters therefore span
+//     exactly the measured block(s).
+//   * Fifo path = <base> + "_ctl" / "_ack" (no per-block suffix): ONE stable
+//     pair per benchmark process, matching the harness's single --control pair.
+//     The profiling harness runs reps=1, so the counted window is exactly the
+//     one measured block.
+//   * Open semantics follow perf's own documented example: each fifo is opened
+//     O_RDWR (never blocks, regardless of which side connected first), then the
+//     ack is read with a bounded poll so a missing perf cannot hang the run.
+//
+// Normal Phase 2 runs are UNAFFECTED: with LLOB_PERF_CONTROL unset, the gate is
+// never entered and the timed loop is byte-for-byte identical. When the gate is
+// active but a handshake fails (no perf listening, fifo gone, no ack), the run
+// FAILS LOUDLY: a counter set that silently never enabled would look like an
+// empty measured region — an empty (not zero) window is strictly worse than an
+// error the operator can see.
+// ---------------------------------------------------------------------------
+#if defined(__linux__)
+namespace {
+
+constexpr const char* kPerfControlVar = "LLOB_PERF_CONTROL";
+
+// Send one perf control command and wait for its ack echo. Returns false (and
+// prints why) when the handshake cannot complete. ctl/ack are fifo paths.
+bool perf_ctrl(const char* base, const char* cmd, int timeout_ms) {
+    char ctl[1024];
+    char ack[1024];
+    std::snprintf(ctl, sizeof(ctl), "%s_ctl", base);
+    std::snprintf(ack, sizeof(ack), "%s_ack", base);
+
+    // O_RDWR: opening a fifo write-only or read-only blocks until the other
+    // side connects; read-write never blocks (perf's documented example).
+    const int ctl_fd = ::open(ctl, O_RDWR);
+    if (ctl_fd < 0) {
+        std::fprintf(stderr, "perf-control: cannot open control fifo %s "
+                             "(%s)\n",
+                     ctl, std::strerror(errno));
+        return false;
+    }
+    const int ack_fd = ::open(ack, O_RDWR);
+    if (ack_fd < 0) {
+        std::fprintf(stderr, "perf-control: cannot open ack fifo %s (%s)\n",
+                     ack, std::strerror(errno));
+        ::close(ctl_fd);
+        return false;
+    }
+
+    char out[16];
+    const int n = std::snprintf(out, sizeof(out), "%s\n", cmd);
+    const ssize_t wrote = ::write(ctl_fd, out, static_cast<size_t>(n));
+    if (wrote != n) {
+        std::fprintf(stderr, "perf-control: write '%s' to %s failed\n", cmd,
+                     ctl);
+        ::close(ack_fd);
+        ::close(ctl_fd);
+        return false;
+    }
+
+    // perf writes the ack only after acting on the command; bound the wait so a
+    // wedged handshake fails loudly instead of hanging the whole run.
+    struct pollfd p = {ack_fd, POLLIN, 0};
+    const int pr = ::poll(&p, 1, timeout_ms);
+    if (pr <= 0) {
+        std::fprintf(stderr, "perf-control: no ack for '%s' within %d ms\n",
+                     cmd, timeout_ms);
+        ::close(ack_fd);
+        ::close(ctl_fd);
+        return false;
+    }
+    char buf[16];
+    const ssize_t got = ::read(ack_fd, buf, sizeof(buf) - 1);
+    ::close(ack_fd);
+    ::close(ctl_fd);
+    if (got <= 0) {
+        std::fprintf(stderr, "perf-control: empty ack for '%s'\n", cmd);
+        return false;
+    }
+    buf[got] = '\0';
+    if (std::strstr(buf, cmd) == nullptr) {
+        std::fprintf(stderr, "perf-control: ack '%s' does not echo '%s'\n", buf,
+                     cmd);
+        return false;
+    }
+    return true;
+}
+
+// On Linux the gate must FAIL when the env var is set but the fifos cannot be
+// opened (e.g. the harness is not actually running perf): a profile whose
+// counters never enabled would be an empty window presented as data. Runs the
+// check once, up front, before any block is timed.
+void perf_gate_probe(const char* base) {
+    char ctl[1024];
+    std::snprintf(ctl, sizeof(ctl), "%s_ctl", base);
+    if (::access(ctl, F_OK) != 0) {
+        std::fprintf(stderr,
+                     "LLOB_PERF_CONTROL=%s but control fifo %s is missing — "
+                     "perf gate cannot arm. Refusing to run.\n",
+                     base, ctl);
+        std::exit(2);
+    }
+}
+
+} // namespace
+#endif // defined(__linux__)
+
 struct TimedResult {
     double best_ns_total      = 0.0; // best-of-reps wall time of the timed loop
     double best_ns_per_update = 0.0; // best_ns_total / updates
@@ -420,6 +561,16 @@ TimedResult time_book(const BookSnapshot& snap,
     TimedResult best;
     best.best_ns_per_update = 1e300;
 
+    // One perf enable/disable window per timed block. The gate is a no-op when
+    // LLOB_PERF_CONTROL is unset; when set (Phase 3.1 profiling) it makes perf's
+    // counters span exactly the timed loop below. The handshake is OUTSIDE the
+    // loop and outside the Clock::now() window, so the reported ns/update is
+    // unchanged in meaning.
+#if defined(__linux__)
+    const char* gate_base = std::getenv(kPerfControlVar);
+    const bool  gated     = gate_base != nullptr && gate_base[0] != '\0';
+#endif
+
     uint64_t sink = 0;
 
     for (int rep = 0; rep < reps; ++rep) {
@@ -430,6 +581,10 @@ TimedResult time_book(const BookSnapshot& snap,
             std::exit(2);
         }
 
+        // Bring perf's counters up just before t0.
+#if defined(__linux__)
+        if (gated && !perf_ctrl(gate_base, "enable", 5000)) std::exit(2);
+#endif
         const auto t0 = Clock::now();
         for (const L2Update& u : ops) {
             sink ^= static_cast<uint64_t>(book.apply(u));
@@ -443,6 +598,11 @@ TimedResult time_book(const BookSnapshot& snap,
         sink ^= static_cast<uint64_t>(book.best_bid());
         sink ^= static_cast<uint64_t>(book.best_ask());
         sink ^= static_cast<uint64_t>(book.level_count());
+
+        // And drop perf's counters again after the end-state reads.
+#if defined(__linux__)
+        if (gated && !perf_ctrl(gate_base, "disable", 5000)) std::exit(2);
+#endif
 
         const double ns =
             static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
@@ -592,7 +752,9 @@ void usage(const char* argv0) {
         "  scale     1000 | 10000 | 100000 | 1000000 | all   (default all)\n"
         "  updates=N   steady ops per timed block            (default %" PRIu64 ")\n"
         "  reps=N      timed blocks per cell; best is kept   (default %d)\n"
-        "  --check     replay streams through both books, require agreement; no timing\n",
+        "  --check     replay streams through both books, require agreement; no timing\n"
+        "  env LLOB_PERF_CONTROL=<base>   (Linux, profiling only) handshake with perf via\n"
+        "                   <base>_ctl / <base>_ack fifos; see scripts/perf-profile.sh\n",
         argv0, kDefaultUpdates, kDefaultReps);
 }
 
@@ -646,6 +808,17 @@ int main(int argc, char** argv) {
         usage(argv[0]);
         return 2;
     }
+
+#if defined(__linux__)
+    // Phase 3.1 profiling gate: if the env var is set, the perf control fifos
+    // must exist before we print anything or time anything. Probe once, up
+    // front — a profile whose counters never enabled would be an empty window
+    // presented as data, so the run refuses loudly instead.
+    {
+        const char* g = std::getenv(kPerfControlVar);
+        if (g != nullptr && g[0] != '\0') perf_gate_probe(g);
+    }
+#endif
 
     print_header(updates, reps);
     if (want_map) run_impl<MapOrderBook>("map", wl_sel, scale_sel, updates, reps);

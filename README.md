@@ -5,13 +5,17 @@ repository currently hosts a single experiment — Experiment 01, below — at t
 repo root; if more experiments land later they will be organized into their own
 top-level directories.
 
-> **Status — Experiment 01 Phase 2 frozen; Phase 3 tooling added (not yet run):**
+> **Status — Experiment 01 Phase 2 frozen; Phase 3A (profiling tooling) complete;
+> Phase 3B (Linux measurements) pending:**
 > **Experiment 01 — L2 Order Book: `std::map` vs Flat Representation** is
-> implemented, its correctness tests are green, the deterministic benchmark has
-> measured steady-state `apply()` throughput across both implementations, five
-> workloads, and four book sizes, and a Linux `perf` profiling harness
-> (`scripts/perf-profile.sh`, guide under `docs/profiling/`) is in place to
-> answer the "why" questions Phase 2 raised. Results below.
+> implemented, its correctness tests are green, and the deterministic benchmark
+> has measured steady-state `apply()` throughput across both implementations,
+> five workloads, and four book sizes (Phase 2, frozen). A Linux `perf` profiling
+> harness (`scripts/perf-profile.sh`, guide under `docs/profiling/`) is in place,
+> with an opt-in perf-control gate that measures **only** the timed `apply()`
+> loop. No perf numbers exist yet: the tooling was authored and validated on an
+> Apple M3 Max (macOS) that has no `perf`; actually running it on a Linux host
+> and committing the measured counters is **Phase 3B (pending)**.
 
 ## Experiments
 
@@ -37,8 +41,9 @@ low-latency-trading-lab/
 ├── cmake/
 │   └── assert_nonzero_exit.cmake  # ctest guard for the test exit-code self-test
 ├── docs/
-│   ├── results/             # canonical committed benchmark results + metadata
-│   └── profiling/           # Phase 3 Linux perf guide (how to profile each cell)
+│   ├── results/             # committed datasets: phase2-m3max/ (frozen) + phase3-linux-*/ (pending)
+│   │   └── README.md        # layout + honesty rule
+│   └── profiling/           # Phase 3 Linux perf guide (gated boundary, cells, counters)
 ├── CMakeLists.txt
 └── README.md
 ```
@@ -173,6 +178,10 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBENCH_ARCH_FLAGS="-mcpu=apple-m
 The canonical results below were built with **no** arch flag (the compiler
 default for the target).
 
+Phase 3 profiling (Linux `perf`) uses a dedicated `build-perf/` directory and
+an opt-in perf-control gate so counters measure only the timed `apply()` loop;
+see `docs/profiling/README.md`.
+
 ### Results
 
 Canonical measurement environment:
@@ -190,7 +199,7 @@ Canonical measurement environment:
 | Date | 2026-09-07 |
 
 Units: ns per `apply()`. Rows are ns/update; the full raw CSV and machine
-metadata are committed under `docs/results/`.
+metadata are committed under `docs/results/phase2-m3max/`.
 
 | levels | impl | A upd-only | B 10% del | C best-del | D top-of-bk | E uniform |
 |--------|------|-----------:|----------:|-----------:|------------:|----------:|

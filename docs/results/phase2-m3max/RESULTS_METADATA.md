@@ -1,9 +1,14 @@
-# Experiment 01, Phase 2 — canonical benchmark results
+# Experiment 01, Phase 2 — canonical benchmark results (Apple M3 Max)
 
-This directory holds the **one canonical result dataset** for the Phase 2
-steady-state `apply()` benchmark. It was produced exactly as described here; no
-numbers were invented or adjusted after measurement. The CSV is the source of
-truth for the summary table in the README.
+This directory holds the **one canonical Phase 2 result dataset** for the
+steady-state `apply()` throughput benchmark, measured on the Apple M3 Max dev
+machine (`phase2-m3max`). It was produced exactly as described here; no numbers
+were invented or adjusted after measurement. The CSV is the source of truth for
+the summary table in the README.
+
+Phase 3 counter data, when measured on a Linux host, lives under the sibling
+`docs/results/phase3-linux-<machine>/` directory — it is a different measurement
+family (perf counters) on a different machine and is never mixed into this file.
 
 ## Data file
 
