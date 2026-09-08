@@ -5,17 +5,20 @@ repository currently hosts a single experiment — Experiment 01, below — at t
 repo root; if more experiments land later they will be organized into their own
 top-level directories.
 
-> **Status — Experiment 01 Phase 2 frozen; Phase 3A (profiling tooling) complete;
-> Phase 3B (Linux measurements) pending:**
+> **Status — Experiment 01 Phase 2 frozen; profiling tooling complete
+> (Phase 3M/macOS workflow READY, Phase 3L/Linux tooling READY); no profiling
+> measurements captured yet:**
 > **Experiment 01 — L2 Order Book: `std::map` vs Flat Representation** is
 > implemented, its correctness tests are green, and the deterministic benchmark
 > has measured steady-state `apply()` throughput across both implementations,
-> five workloads, and four book sizes (Phase 2, frozen). A Linux `perf` profiling
-> harness (`scripts/perf-profile.sh`, guide under `docs/profiling/`) is in place,
-> with an opt-in perf-control gate that measures **only** the timed `apply()`
-> loop. No perf numbers exist yet: the tooling was authored and validated on an
-> Apple M3 Max (macOS) that has no `perf`; actually running it on a Linux host
-> and committing the measured counters is **Phase 3B (pending)**.
+> five workloads, and four book sizes (Phase 2, frozen). Profiling is split into
+> **Phase 3M** — macOS / Apple Silicon, using Apple Instruments against the same
+> M3 Max that produced Phase 2 (workflow READY; needs full Xcode to record) —
+> and **Phase 3L** — Linux `perf` (tooling READY; native Linux measurement
+> DEFERRED, no Linux host). Both use opt-in markers around the timed `apply()`
+> loop: an os_signpost interval on Apple (`LLOB_SIGNPOSTS=1`) and a perf-control
+> gate on Linux (`LLOB_PERF_CONTROL`). No profiling numbers exist anywhere in
+> this repository.
 
 ## Experiments
 
@@ -37,13 +40,17 @@ low-latency-trading-lab/
 │   └── order_book_bench.cpp # deterministic steady-state apply() benchmark
 ├── scripts/
 │   ├── bench.sh             # canonical per-process run + quick both-mode check
-│   └── perf-profile.sh      # Linux perf profiling harness (Phase 3, per-cell)
+│   ├── perf-profile.sh      # Linux perf profiling harness (Phase 3L, per-cell)
+│   ├── collect-macos-profile-metadata.sh  # Phase 3M host/chip/toolchain metadata
+│   └── phase3m-instruments.sh             # Phase 3M xctrace/Instruments recorder (needs full Xcode)
 ├── cmake/
 │   └── assert_nonzero_exit.cmake  # ctest guard for the test exit-code self-test
 ├── docs/
-│   ├── results/             # committed datasets: phase2-m3max/ (frozen) + phase3-linux-*/ (pending)
+│   ├── results/             # committed datasets: phase2-m3max/ (frozen), phase3-macos-*/ (empty),
+│   │   │                    #   phase3-linux-*/ (deferred)
 │   │   └── README.md        # layout + honesty rule
-│   └── profiling/           # Phase 3 Linux perf guide (gated boundary, cells, counters)
+│   └── profiling/           # Phase 3 guides: Linux perf (README.md) + macOS Instruments
+│                            #   (MACOS_INSTRUMENTS.md); split into Phase 3M / Phase 3L
 ├── CMakeLists.txt
 └── README.md
 ```
@@ -178,9 +185,12 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBENCH_ARCH_FLAGS="-mcpu=apple-m
 The canonical results below were built with **no** arch flag (the compiler
 default for the target).
 
-Phase 3 profiling (Linux `perf`) uses a dedicated `build-perf/` directory and
-an opt-in perf-control gate so counters measure only the timed `apply()` loop;
-see `docs/profiling/README.md`.
+Phase 3 profiling uses a dedicated `build-perf/` directory (fresh Release, no
+arch flag). On Apple it adds an opt-in os_signpost interval (`LLOB_SIGNPOSTS=1`)
+around the timed loop for Instruments; on Linux an opt-in perf-control gate
+(`LLOB_PERF_CONTROL`) does the same for `perf`. Both are no-ops in normal runs.
+See `docs/profiling/README.md` (Phase 3M/3L) and
+`docs/profiling/MACOS_INSTRUMENTS.md`.
 
 ### Results
 
@@ -282,5 +292,6 @@ book's stores dead or reorder across `apply()` calls).
 
 ## Next phases
 
-Phase 3 (Linux `perf` tooling), Phase 4 (latency percentiles),
-Phase 5 (engineering write-up).
+Phase 3M (macOS Instruments capture) when a full-Xcode Mac is available; Phase
+3L (Linux `perf` measurement) when a Linux host is available; Phase 4 (latency
+percentiles); Phase 5 (engineering write-up).

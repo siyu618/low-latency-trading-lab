@@ -6,9 +6,12 @@ machine (`phase2-m3max`). It was produced exactly as described here; no numbers
 were invented or adjusted after measurement. The CSV is the source of truth for
 the summary table in the README.
 
-Phase 3 counter data, when measured on a Linux host, lives under the sibling
-`docs/results/phase3-linux-<machine>/` directory — it is a different measurement
-family (perf counters) on a different machine and is never mixed into this file.
+Phase 3 profiling data never mixes into this file. Phase 3M (Apple Instruments
+on this same M3 Max host, read against these same-host numbers) lives under the
+sibling `docs/results/phase3-macos-apple-silicon/` directory; Phase 3L (Linux
+perf counters, a different measurement family on a different machine) lives
+under `docs/results/phase3-linux-<machine>/`. Neither is ever spliced into this
+canonical dataset.
 
 ## Data file
 

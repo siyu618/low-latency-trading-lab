@@ -45,6 +45,16 @@
 //     runs are byte-for-byte unchanged, and the reported best_ns_per_update is
 //     unchanged in meaning (only the fifo handshake adds time, before t0 and
 //     after t1, outside both the chrono and the PMU windows).
+//   * OPTIONAL macOS signpost interval (Phase 3M): when the env var
+//     LLOB_SIGNPOSTS=1 is set (Apple platforms only), the SAME timed block is
+//     bracketed by os_signpost_interval_begin/end on a "llob.apply.block"
+//     interval so macOS Instruments / the `log` CLI can show the exact apply()
+//     region. The marker lives OUTSIDE the per-update loop, just outside t0/t1,
+//     and is compiled only on __APPLE__. It has a small fixed boundary overhead
+//     (an os_signpost_enabled() check per begin/end) that is NOT part of the
+//     timed loop; the profile must read the marker as the region of interest,
+//     not as extra per-update work. When LLOB_SIGNPOSTS is unset (the default)
+//     the interval is not emitted and normal runs are unchanged.
 //   * The stream never contains a negative qty or an out-of-domain price, and
 //     seq advances by exactly 1, so it is legal for both books.
 //
@@ -128,6 +138,9 @@
 #include <poll.h>     // poll (wait for perf to open the fifo)
 #include <sys/stat.h> // mkfifo
 #include <unistd.h>   // read, write, close
+#elif defined(__APPLE__)
+#include <os/log.h>      // OS_LOG_DEFAULT
+#include <os/signpost.h> // os_signpost_interval_begin/end, os_signpost_id_t
 #endif
 
 using llob::ApplyResult;
@@ -557,6 +570,47 @@ void perf_gate_probe(const char* base) {
 } // namespace
 #endif // defined(__linux__)
 
+// ---------------------------------------------------------------------------
+// Optional macOS signpost interval (Phase 3M).
+//
+// os_signpost intervals are the Apple Instruments-native way to mark a region
+// of interest in a standalone executable: Instruments' Time Profiler / CPU
+// Counters / the `log` CLI can show "llob.apply.block" as one interval with a
+// start and an end. The region it marks is the SAME steady-state apply() block
+// that the wall clock times — a separate mechanism from the Linux perf gate
+// above, and macOS-only.
+//
+//   * Opt-in via the env var LLOB_SIGNPOSTS=1. Default (unset) emits nothing,
+//     so normal Phase 2 runs are byte-for-byte unchanged.
+//   * The interval is emitted once per TIMED BLOCK (not once per update): begin
+//     just before t0, end just after t1 — the tightest practical wrapper around
+//     the apply() loop that does not put a call inside the loop. There is a
+//     small FIXED boundary overhead per block (an os_signpost_enabled() check
+//     plus the begin/end emission), entirely outside the timed region, so it is
+//     NOT part of the measured ns/update. A profile must be read at the interval
+//     granularity, not as per-update instrumentation cost.
+//   * Compiled only on Apple platforms (__APPLE__), never on Linux.
+// ---------------------------------------------------------------------------
+#if defined(__APPLE__)
+namespace {
+
+constexpr const char* kSignpostVar = "LLOB_SIGNPOSTS";
+
+// Non-zero when the caller requested signposts (env LLOB_SIGNPOSTS=1). Read
+// once so the marker never re-checks the environment inside a timed block.
+bool signposts_requested() noexcept {
+    const char* e = std::getenv(kSignpostVar);
+    return e != nullptr && e[0] != '\0' && e[0] != '0';
+}
+
+// The os_signpost API is designed around an os_log_t handle; OS_LOG_DEFAULT is
+// the system default and is what a plain standalone binary emits signposts to
+// (there is no app-level subsystem here to scope a custom log to).
+inline os_log_t signpost_log() noexcept { return OS_LOG_DEFAULT; }
+
+} // namespace
+#endif // defined(__APPLE__)
+
 struct TimedResult {
     double best_ns_total      = 0.0; // best-of-reps wall time of the timed loop
     double best_ns_per_update = 0.0; // best_ns_total / updates
@@ -575,15 +629,19 @@ TimedResult time_book(const BookSnapshot& snap,
     TimedResult best;
     best.best_ns_per_update = 1e300;
 
-    // One perf enable/disable window per timed block. The gate is a no-op when
-    // LLOB_PERF_CONTROL is unset; when set (Phase 3.1 profiling) it makes perf's
-    // counters span exactly the timed apply() loop: enable/ack before t0,
-    // disable/ack after t1, and the end-state reads AFTER disable. So the PMU
-    // window and the Clock::now() window cover the same apply() block, and the
-    // reported ns/update is unchanged in meaning.
+    // One perf enable/disable window (Linux, Phase 3L) and one os_signpost
+    // interval (macOS, Phase 3M) per timed block. Both are no-ops when unset;
+    // when set, each makes its tool's observation window span exactly the timed
+    // apply() loop: enable/begin before t0, disable/end after t1, and the
+    // end-state reads AFTER. So each tool's window and the Clock::now() window
+    // cover the same apply() block, and the reported ns/update is unchanged in
+    // meaning. A small fixed boundary overhead (the handshake / the signpost
+    // check) sits between each marker and t0/t1, outside the timed region.
 #if defined(__linux__)
     const char* gate_base = std::getenv(kPerfControlVar);
     const bool  gated     = gate_base != nullptr && gate_base[0] != '\0';
+#elif defined(__APPLE__)
+    const bool  signposts = signposts_requested();
 #endif
 
     uint64_t sink = 0;
@@ -596,9 +654,15 @@ TimedResult time_book(const BookSnapshot& snap,
             std::exit(2);
         }
 
-        // Bring perf's counters up just before t0.
+        // Bring perf's counters (Linux) / begin the signpost interval (macOS)
+        // up just before t0.
 #if defined(__linux__)
         if (gated && !perf_ctrl(gate_base, "enable", 5000)) std::exit(2);
+#elif defined(__APPLE__)
+        if (signposts) {
+            os_signpost_interval_begin(signpost_log(), OS_SIGNPOST_ID_EXCLUSIVE,
+                                       "llob.apply.block");
+        }
 #endif
         const auto t0 = Clock::now();
         for (const L2Update& u : ops) {
@@ -607,13 +671,19 @@ TimedResult time_book(const BookSnapshot& snap,
         }
         const auto t1 = Clock::now();
 
-        // Drop perf's counters immediately after t1, BEFORE the end-state
-        // reads: the PMU window [enable..disable] and the chrono window
-        // [t0..t1] must cover exactly the same apply() block. The end-state
-        // reads are off the clock AND off the PMU; they only make the timed
-        // writes observable.
+        // Drop perf's counters (Linux) / end the signpost interval (macOS)
+        // immediately after t1, BEFORE the end-state reads: the tool window
+        // [enable..disable] / [begin..end] and the chrono window [t0..t1] must
+        // cover exactly the same apply() block. The end-state reads are off the
+        // clock AND off the observed window; they only make the timed writes
+        // observable.
 #if defined(__linux__)
         if (gated && !perf_ctrl(gate_base, "disable", 5000)) std::exit(2);
+#elif defined(__APPLE__)
+        if (signposts) {
+            os_signpost_interval_end(signpost_log(), OS_SIGNPOST_ID_EXCLUSIVE,
+                                     "llob.apply.block");
+        }
 #endif
 
         // End-state reads (off the clock). Common API across both books; pin
@@ -773,7 +843,9 @@ void usage(const char* argv0) {
         "  reps=N      timed blocks per cell; best is kept   (default %d)\n"
         "  --check     replay streams through both books, require agreement; no timing\n"
         "  env LLOB_PERF_CONTROL=<base>   (Linux, profiling only) handshake with perf via\n"
-        "                   <base>_ctl / <base>_ack fifos; see scripts/perf-profile.sh\n",
+        "                   <base>_ctl / <base>_ack fifos; see scripts/perf-profile.sh\n"
+        "  env LLOB_SIGNPOSTS=1           (macOS, profiling only) emit os_signpost interval\n"
+        "                   'llob.apply.block' around the timed apply loop (Instruments/log)\n",
         argv0, kDefaultUpdates, kDefaultReps);
 }
 

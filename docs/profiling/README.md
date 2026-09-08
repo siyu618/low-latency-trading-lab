@@ -1,37 +1,58 @@
-# Phase 3 — profiling the Experiment 01 benchmark with Linux `perf`
+# Phase 3 — profiling the Experiment 01 benchmark
 
 Phase 3 provides the tooling to answer the "why" questions that Phase 2's
 throughput numbers raised but could not answer. Phase 2 measured *how fast*
 `apply()` is for each design; Phase 3 profiles *where the time goes*.
 
-Phase 3 has two halves:
+## Platform decision (Phase 3M / Phase 3L)
 
-- **3A — profiling tooling**: the gated measurement boundary in the benchmark
-  (opt-in, no-op for normal runs), the Linux perf harness
-  (`scripts/perf-profile.sh`), this guide, and the result-layout under
-  `docs/results/`. This is **complete** — the tooling is authored, validated,
-  and committed. A final correctness pass aligned the gate with the real perf
-  ack protocol (`"ack\n"`, not a command echo), made the PMU window exactly
-  match the chrono window, enforced `reps=1`, and removed cross-architecture
-  counter/latency pairing.
-- **3B — Linux measurements and analysis**: actually running the harness on a
-  Linux host with perf and committing the measured counter data. This is
-  **pending** — no profile has been captured.
+Phase 2's canonical numbers were measured on **Apple Silicon (Apple M3 Max,
+macOS)** — see `docs/results/phase2-m3max/`. The currently available profiling
+environment is that **same macOS machine**. Two profiling tracks therefore
+exist:
+
+- **Phase 3M — macOS / Apple Silicon profiling (ACTIVE).** Because the
+  available host is the same machine that produced the Phase 2 dataset, Phase 3M
+  profiles that machine with **Apple's native tools (Instruments)**. Latency
+  (Phase 2 ns/update) and the microarchitectural / call-tree observations
+  (Instruments) therefore come from the **same platform** — the M3 Max and its
+  memory system — rather than from a different machine whose counters would not
+  explain these numbers. Phase 3M uses an opt-in **os_signpost interval**
+  (`LLOB_SIGNPOSTS=1`, Apple-only) around the timed `apply()` block so
+  Instruments can scope a profile to exactly the measured region. See
+  `MACOS_INSTRUMENTS.md`.
+- **Phase 3L — Linux perf profiling (DEFERRED).** The Linux `perf` harness
+  (`scripts/perf-profile.sh`) and its guide are preserved and ready, but there
+  is **no Linux host** with perf on this project, so **no Linux PMU numbers
+  exist**. Phase 3L will run on a real Linux machine when one is available.
+
+Two honesty rules follow:
+
+1. **Apple Instruments metrics and Linux perf PMU events are NOT directly
+   equivalent.** They are different tools on different ISAs with different
+   counter definitions (e.g. "CPU Counters" bottleneck categories vs perf's
+   `cycles`/`cache-misses`). Do not treat a Phase 3M observation as if it were a
+   Linux perf counter, and do not splice the two.
+2. **Do not run Linux PMU experiments inside a VM and present them as native
+   hardware measurements.** A hypervisor does not expose authentic hardware
+   counters. Linux PMU data, when it exists, must come from a real Linux host.
 
 ## Status & honesty box
 
-**No perf numbers are presented anywhere in this repository — none have been
-measured.** The dev machine is an Apple M3 Max (macOS) with no `perf`, no full
-Xcode, and no Linux VM. The harness and this guide are authored to run on a
-Linux host and have NOT been executed end-to-end against a real PMU. Any
-illustrative perf output you may see in other docs is a labeled placeholder,
-never a measured claim. When Phase 3B runs for real on Linux, its measured
-`perf stat`/`perf report` output belongs in `docs/results/phase3-linux-<machine>/`
-with the provenance discipline below.
+**No profiling numbers (perf OR Instruments) are presented anywhere in this
+repository — none have been measured.** The Phase 3M tooling is authored and
+committed, and the os_signpost marker is compile-validated on this Mac, but no
+Instruments trace has been captured on it (this host has Command Line Tools
+only — no full Xcode/Instruments). The Phase 3L harness is authored to run on a
+Linux host and has not been executed against a real PMU. Any illustrative
+output you may see in other docs is a labeled placeholder, never a measured
+claim. Real Phase 3M results belong in
+`docs/results/phase3-macos-apple-silicon/`; real Phase 3L results in
+`docs/results/phase3-linux-<machine>/`.
 
-The benchmark CLI and the normal Phase 2 hot path are FROZEN. Phase 3.1/3A added
-a strictly opt-in profiling gate (see below); a normal run — no
-`LLOB_PERF_CONTROL` env var — is byte-for-byte unchanged.
+The benchmark CLI and the normal Phase 2 hot path are FROZEN. Phase 3 added
+strictly opt-in profiling markers (below); a normal run — no `LLOB_PERF_CONTROL`
+env var, no `LLOB_SIGNPOSTS` — is byte-for-byte unchanged.
 
 ## Why profile? — the open questions from Phase 2
 
@@ -68,7 +89,7 @@ go 1k → 1M) must be explained by *traversal* — pointer-chasing cache misses,
 pressure, branch behavior — not by allocator churn, because A never changes the
 level set. If allocator cost matters, measure it on B or E, which do.
 
-## How the measurement boundary works (Phase 3.1)
+## How the measurement boundary works (Phase 3.1 / 3L)
 
 Phase 2 measured a **pure `apply()` replay**: the stream is generated up front
 (off the clock), the book is snapshot-loaded (untimed), and the timed region is
@@ -101,6 +122,17 @@ sent before `t0`, disable is sent immediately after `t1`, and the end-state
 reads come after disable. What perf counted and what the wall clock timed are the
 same loop iterations.
 
+**Boundary overhead is real but small and fixed.** The gate is tightly aligned
+around the apply() block, but it is not literally instruction-for-instruction
+identical to the `[t0, t1]` chrono window: there is a small fixed cost between
+perf enable/ack and `t0`, and between `t1` and the actual perf disable (the
+handshake itself). This boundary overhead is **per timed block, not per update**,
+and the measured block is large (2,000,000 updates by default), so the overhead
+is negligible relative to the block. It is outside both the chrono and the PMU
+window, so it does not change the reported ns/update's meaning — but a profile
+must be read at block granularity, not as if every boundary instruction were
+part of an update.
+
 The wall time that pairs with a counter row is the **benchmark's own chrono
 ns/update** from that run. perf's "seconds time elapsed" line is NOT used as the
 gated wall time (it can span a different enabled/alive window and is not a
@@ -127,7 +159,27 @@ Two consequences:
   `-fno-omit-frame-pointer` rebuild needed); a frame-pointer build is only a
   documented alternative if DWARF unwinding is unavailable.
 
-## Prerequisites (Linux)
+### macOS (Phase 3M): the os_signpost marker
+
+On Apple platforms the benchmark offers a separate, macOS-only opt-in marker for
+the same timed region:
+
+```
+LLOB_SIGNPOSTS=1 ./build-perf/orderbook_bench map C 1000000 updates=2000000 reps=1
+```
+
+With `LLOB_SIGNPOSTS=1` the benchmark wraps the identical apply() block (begin
+just before `t0`, end just after `t1`) in an **os_signpost interval** named
+`llob.apply.block` on the default log. Instruments (Time Profiler / CPU Counters)
+and signpost-aware `log` queries can then scope a recording to exactly that
+interval. Like the perf gate it is **strictly opt-in** — unset (the default)
+emits nothing and normal runs are byte-for-byte unchanged — and it sits outside
+the per-update loop, adding only the same small fixed per-block boundary cost
+described above. It is compiled only on `__APPLE__` and is never present on
+Linux. See `MACOS_INSTRUMENTS.md` for the full workflow and how this CLT-only
+host limits what can be captured here.
+
+## Prerequisites (Linux — Phase 3L)
 
 - A Linux host (the code is portable C++20; `orderbook_bench` builds the same
   way — see the top-level README Build & test).
@@ -140,7 +192,7 @@ Two consequences:
 - The harness uses `taskset` (for the optional `--cpu=N` pin) and records full
   host metadata; it does **not** auto-change system settings.
 
-## How to run
+## How to run (Linux — Phase 3L)
 
 Build and profile one cell (Linux only):
 
@@ -210,7 +262,7 @@ question needs **B or E** with the same passes — A cannot answer it. For map-C
 `branch-misses` (core) is the discriminator between a locality story and a
 branch-predictability story.
 
-### Same-host Linux throughput baseline
+### Same-host Linux throughput baseline (Phase 3L)
 
 Mechanistic conclusions pair **Linux counters with Linux latency from the same
 machine, compiler, and build**. Each `phase3-linux-<machine>/` dataset therefore
@@ -224,6 +276,10 @@ A profiled cell's own run also carries a wall time — the benchmark's gated
 chrono ns/update from the same measured window — which is directly comparable to
 its counters (cycles ÷ updates, etc.). Both are kept: the per-run gated ns/update
 and the ungated baseline together anchor the counters in Linux latency.
+
+The same principle holds for Phase 3M: Apple Instruments observations are read
+against the same-host macOS ns/update — the Phase 2 canonical M3 Max numbers —
+not against a Linux number.
 
 ## What the counters mean for these two designs
 
@@ -245,33 +301,68 @@ and the ungated baseline together anchor the counters in Linux latency.
 - **`dTLB-load-misses`** — the flat's 1M-level working set is ~16 MB across both
   sides; the map's nodes scatter. TLB pressure is part of the flat-vs-map gap.
 
-**Which latency do counters explain?** Linux PMU counters must be paired with
-**Linux** latency from the **same machine/compiler/build** — the same-host Linux
-baseline described above, or the profiled cell's own gated chrono ns/update.
-They must NOT be used to explain the absolute ns/update of the Apple M3 Max Phase
-2 dataset: those numbers come from a different CPU, ISA, compiler, and memory
-system, so a Linux `cache-misses` count has no quantitative meaning against an
-M3 Max nanosecond figure.
+**Which latency do counters explain?** A profiling observation must be paired
+with the latency measured on the **same machine, compiler, and build**. Because
+Phase 3M and Phase 3L are on different platforms, each has its own pairing:
 
-The two measurement families therefore play distinct roles:
+- **Phase 3M (macOS, this machine)** — Instruments observations are read
+  against the **same-host macOS ns/update** (the Phase 2 canonical M3 Max
+  numbers, or a fresh same-host run with the same build). The M3 Max is the only
+  machine that produced Phase 2 latency, so Phase 3M observations can explain it.
+- **Phase 3L (Linux, future)** — Linux perf counters must be paired with
+  **Linux** latency from the **same Linux machine/compiler/build** (a same-host
+  Linux baseline or the profiled cell's own gated chrono ns/update). Linux
+  counters must NOT be used to explain the absolute M3 Max Phase 2 numbers: those
+  come from a different CPU, ISA, compiler, and memory system.
 
-- **Apple M3 Max Phase 2** (`docs/results/phase2-m3max/`) — an independent
+The measurement families play distinct roles:
+
+- **Apple M3 Max Phase 2** (`docs/results/phase2-m3max/`) — the canonical
   throughput dataset, measured once, on the M3 Max. Frozen.
-- **Linux Phase 3 host** (`docs/results/phase3-linux-<machine>/`) — a Linux
+- **Phase 3M results** (`docs/results/phase3-macos-apple-silicon/`) — Apple
+  Instruments observations on that same M3 Max host (Time Profiler call trees,
+  CPU Counters where supported), read against the same-host Phase 2 ns/update.
+- **Linux Phase 3L host** (`docs/results/phase3-linux-<machine>/`) — a Linux
   throughput baseline **plus** Linux PMU counters, from the same machine /
-  compiler / build. All mechanistic conclusions (pointer-chasing, TLB,
-  branches, the "why is map C cheap" question) use **Linux latency ↔ Linux
-  counters**.
+  compiler / build. All mechanistic conclusions made on Linux use **Linux
+  latency ↔ Linux counters**.
 
-The M3 Max dataset may be used only for **high-level cross-platform trend
+Cross-platform, the M3 Max dataset may be used only for **high-level trend
 comparison** (e.g. "map scales with book size on both platforms, flat is flat on
-both"), never as the absolute latency paired with Linux hardware counters.
-Counters explain the time; they do not replace it — and they explain the time
-that was measured on the same host they were counted on.
+both"), never as the absolute latency paired with another platform's counters.
+Observations explain the time that was measured on the same host they were taken
+on; they do not replace it.
 
-## Recording real results (Phase 3B)
+## Recording real results
 
-When run on Linux, commit the measured artifacts under
+The two tracks record under different `docs/results/` trees.
+
+### Phase 3M (macOS) — `docs/results/phase3-macos-apple-silicon/`
+
+This tree exists now (empty of data until a real recording). After an
+Instruments capture is inspected, commit per cell:
+
+```
+docs/results/phase3-macos-apple-silicon/<cell>/        e.g. map_A_1000000/
+  host.txt                  scripts/collect-macos-profile-metadata.sh output
+  command.txt               the exact benchmark + instrumentation command(s)
+  bench_stdout.txt          the benchmark's same-host ns/update row(s)
+  time_profiler_<n>.txt     exported Time Profiler summary (call tree)
+  cpu_counters_<n>.txt      exported CPU Counters summary (where supported)
+  trace_notes.md            what was recorded, template, signpost interval used
+```
+
+The Phase 2 canonical M3 Max CSV (`docs/results/phase2-m3max/`) is the
+same-host latency baseline this track reads against. Each cell's `host.txt`
+records macOS/chip/build provenance via
+`scripts/collect-macos-profile-metadata.sh`. The per-cell
+`PHASE3_MACOS_ANALYSIS.md` (top-level of the track) must label every claim
+`MEASURED` / `OBSERVED IN INSTRUMENTS` / `INTERPRETATION` / `LIMITATION` and
+never present a hypothesis as measured fact.
+
+### Phase 3L (Linux) — `docs/results/phase3-linux-<machine>/`
+
+When run on a real Linux host, commit the measured artifacts under
 `docs/results/phase3-linux-<machine>/` (e.g. `phase3-linux-cpl-9010/`) — one
 subdirectory per cell, named `perf_<impl>_<wl>_<scale>_<timestamp>/` exactly as
 the harness produced it:
@@ -296,34 +387,41 @@ the same build, committed alongside the cells. Every cell's counters are read
 against that baseline (or the cell's own gated chrono ns/update), never against
 the M3 Max CSV.
 
-The provenance split keeps the two measurement families clean:
+The provenance split keeps the measurement families clean:
 
 - `docs/results/phase2-m3max/` — the Phase 2 canonical **M3 Max** throughput
   dataset (CSV + metadata; Apple M3 Max, macOS, Apple clang). Frozen,
-  independent — used only for high-level cross-platform trend comparison.
-- `docs/results/phase3-linux-<machine>/` — Phase 3 **Linux** data: the same-host
+  independent — used only as the same-host latency baseline for Phase 3M and for
+  high-level cross-platform trend comparison.
+- `docs/results/phase3-macos-apple-silicon/` — Phase 3M **Apple Instruments**
+  data on the M3 Max host. Empty until a real recording.
+- `docs/results/phase3-linux-<machine>/` — Phase 3L **Linux** data: the same-host
   Linux throughput baseline **plus** the PMU counters, from whatever Linux box
   actually ran perf. Each cell's `host.txt` records that box's
   compiler/build/flags. Linux counters are paired with Linux latency from the
   same machine/compiler/build — never spliced against M3 Max numbers as if they
   were one environment.
 
-A results `README.md` under each `phase3-linux-<machine>/` adds the per-cell
-table (cell, counters, cycles/update, IPC, miss rates) plus a metadata block in
-the style of `RESULTS_METADATA.md`. **Only commit after inspection**: the raw
-stat text shows the counters are real (`<not supported>` would be visible
-there), and the bench row is present. Never invent numbers; only what a real
-`perf` reported.
+A results `README.md` under each tree adds the per-cell table plus a metadata
+block in the style of `RESULTS_METADATA.md`. **Only commit after inspection**:
+for Linux the raw stat text shows the counters are real (`<not supported>` would
+be visible there), and the bench row is present. Never invent numbers; only what
+a real tool reported.
 
 ## Scope notes
 
-- This profiles the **steady-state timed region**: with the fifo gate, perf
-  stat's counters cover exactly the timed apply loop (the untimed
-  snapshot/stream setup runs with counters disabled). perf record is gated to
-  the same region when the installed perf supports record `--control`; a
-  whole-process fallback (labeled `record_gated=0`) must be read filtered to
-  the `apply()` frames.
+- This profiles the **steady-state timed region** of the benchmark. Phase 3L
+  gates perf stat/record to the apply() block with the fifo control interface;
+  Phase 3M scopes an Instruments capture to the os_signpost `llob.apply.block`
+  interval. Both keep the untimed snapshot/stream setup out of the observed
+  region.
 - Single-core, single-writer, mean-throughput (same scope caveats as Phase 2).
-  `--cpu=N` + `taskset` optionally pins to one core; the harness records CPU
-  affinity and host metadata but never changes system settings itself.
+  The Linux harness optionally pins via `taskset --cpu=N`; the macOS track does
+  NOT claim core pinning (Apple Silicon P/E cores and the OS scheduler move
+  threads freely — see `collect-macos-profile-metadata.sh` and
+  `MACOS_INSTRUMENTS.md`). Neither tool changes system settings.
+- Phase 3L (Linux) status — **tooling READY, native measurement DEFERRED** (no
+  Linux host). Phase 3M (macOS) status — **workflow READY, no Instruments trace
+  captured yet** on this CLT-only host. No profiling numbers exist anywhere in
+  this repository.
 - Phase 4 (latency percentiles) and Phase 5 (write-up) are not started.
