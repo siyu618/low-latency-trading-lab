@@ -127,9 +127,15 @@ fi
 # so the variable reaches orderbook_bench (not just xctrace). Not every xctrace
 # supports --env the same way, so probe the local tool and fall back to an
 # inherited export rather than inventing arguments.
+#
+# NOTE: this must NOT be a live `... | grep -q` pipeline. Under `set -o pipefail`
+# a match would SIGPIPE-kill the producer (xctrace) once grep -q exits, making
+# the probe report "unsupported" even when --env exists. Capture the help text
+# first, then grep the captured string (no early-exit pipe).
 XCTRACE_ENV=()
 if [[ "$SIGNPOSTS" -eq 1 ]]; then
-    if xcrun xctrace record --help 2>&1 | grep -q -- '--env'; then
+    record_help="$(xcrun xctrace record --help 2>&1 || true)"
+    if printf '%s\n' "$record_help" | grep -q -- '--env'; then
         XCTRACE_ENV=(--env LLOB_SIGNPOSTS=1)
         SIGNPOST_MEANS="xctrace --env"
     else

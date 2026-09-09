@@ -102,15 +102,32 @@ template is unavailable the helper lists what is installed and exits 3. A
 recording needs a large update count so the apply() block yields enough samples
 (see §6).
 
+> **CLI-recording limitation (observed, not a permanent host claim):** on this
+> machine (Xcode 15.4, macOS 14.2.1) a `xctrace record` of the short-lived
+> `orderbook_bench` produced well-formed traces — the process ran and exited 0,
+> time-profile / kdebug samples were captured — but the **`os-signpost` /
+> `os-signpost-interval` tables stayed empty**, even for the `Logging` template
+> and a ~1 s process (20 M updates). So the `llob.apply.block` interval emitted
+> under `LLOB_SIGNPOSTS=1` is **not captured by the CLI helper** on this host;
+> the `.trace` still gives you the Time Profiler call tree, just no signpost to
+> scope it to. Apple's documentation says a custom subsystem with the
+> `PointsOfInterest` category *is* auto-captured by Instruments, which points to
+> the deferred CLI launch (not the subsystem choice) as the cause; signpost
+> scoping therefore needs the **GUI recording path** below (record live in
+> Instruments, or open/attach there). Re-check this on the machine that actually
+> records — do not assume the CLI captures signposts everywhere.
+
 ### 4. Using Time Profiler
 
 - Record the cell with Time Profiler selected.
 - In the trace, find the `orderbook_bench` process and drill into its call tree.
 - **Scope to the measured block** by selecting the `llob.apply.block` signpost
-  interval (Time Profiler shows signpost intervals for the process; selecting
-  one restricts the samples to that interval). This keeps the enormous untimed
-  snapshot load (map at 1M levels builds a million-node tree) and the stream
-  generation out of what you read.
+  interval — Time Profiler shows it as a Points of Interest interval for the
+  process; selecting it restricts the samples to that interval. This keeps the
+  enormous untimed snapshot load (map at 1M levels builds a million-node tree)
+  and the stream generation out of what you read. Signpost scoping is available
+  on recordings that captured the interval (GUI/live recordings); see the
+  CLI-recording limitation note in §3 for when the interval is absent.
 - Read the **call tree / heavy path** for the functions in §7.
 
 ### 5. Using CPU Counters (when available)
