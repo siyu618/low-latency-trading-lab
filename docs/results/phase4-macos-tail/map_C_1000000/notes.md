@@ -1,8 +1,14 @@
-# Notes — `map C 1000000` (Phase 4 canonical)
+# Notes — `map C 1000000` (pre-Phase-4.1 artifact — NOT canonical)
+
+> ⚠️ Produced by the pre-fix buggy tooling: this cell's `summary.txt` and
+> `raw_samples.csv` came from TWO independent benchmark runs, and the summary's
+> distribution included the trailing 128-update partial batch. The numbers in
+> this file are INVALID — do not cite. See `./README.md` in this directory; the
+> cell must be re-measured with the hardened tooling.
 
 ## Run
 
-Canonical Phase 4 cell: full deterministic distribution run,
+Pre-fix Phase 4 cell (NOT canonical): full deterministic distribution run,
 `--updates 10000000 --batch-size 512`, default Phase 2 seed, one process.
 See `command.txt` for the exact command, `host.txt` for run-time metadata.
 

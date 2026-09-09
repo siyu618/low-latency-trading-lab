@@ -1,54 +1,53 @@
 # Phase 4 — macOS tail-latency results
 
-**Status: populated — six real Phase 4 canonical tail-latency datasets,
-committed and reviewed.**
+> **⚠️ INVALID / NOT canonical — retained as a labeled historical artifact.**
+>
+> The six cells in this tree were produced with the **pre-Phase-4.1 tooling**,
+> which had two P0 reproducibility bugs (both since fixed in
+> `orderbook_tail_bench` / `scripts/tail-bench.sh`):
+>
+> 1. **Each cell ran the benchmark TWICE** — once for `summary.txt`, once for
+>    `raw_samples.csv`. The two files therefore describe **two independent
+>    latency distributions**, and the summary can NOT be recomputed from its own
+>    raw CSV. `scripts/verify-tail-summary.sh` now proves this: run against any
+>    cell here it fails on every metric.
+> 2. **The trailing 128-update partial batch leaked into the summary's
+>    distribution.** `min`/percentiles/`max` could include the partial and the
+>    mean numerator included its elapsed time while the denominator still used
+>    the full-batch count (e.g. `map_A_1000000` reports `min=71.77` — that value
+>    is the 128-op partial's elapsed normalized by 512, not a real full-batch
+>    min).
+>
+> **Do not cite any number from this tree.** Phase 4 canonical measurement is
+> **PENDING**: the canonical matrix must be re-measured with the hardened
+> tooling before any Phase 4 result is presented. The history is kept here only
+> so the pre-fix artifacts remain inspectable; nothing below is a measured claim.
 
-This tree is the committed home for Phase 4 (tail latency / jitter) measurements
-made with `orderbook_tail_bench` on the Apple Silicon macOS host. It holds six
-real canonical runs from the **same Apple M3 Max / macOS 14.2.1 machine** that
-produced the Phase 2 canonical dataset (`../phase2-m3max/`) and the Phase 3M
-traces (`../phase3-macos-apple-silicon/`), so those are the same-host baselines
-these distributions are read against. Every number is measured by the benchmark;
-nothing is invented.
+## What this tree is
 
-## The dataset
+A historical snapshot of six Phase 4 (tail latency / jitter) runs made with
+`orderbook_tail_bench` on the Apple M3 Max / macOS 14.2.1 host that produced the
+Phase 2 dataset (`../phase2-m3max/`) and the Phase 3M traces
+(`../phase3-macos-apple-silicon/`). Every `raw_samples.csv` here is a real
+benchmark output (nothing was invented), but the paired `summary.txt` came from a
+*separate* benchmark run and is **not derivable** from that CSV, and its
+distribution included the trailing partial batch — so the dataset is **not a
+valid canonical Phase 4 dataset** and predates the Phase 4.1 hardening fixes.
 
-Six cells, each a full deterministic distribution run at the spec's canonical
-defaults — `--updates 10000000 --batch-size 512`, default Phase 2 seed, one
-process per book — produced 2026-09-09 (UTC+8):
+## Layout of each cell directory (pre-fix artifacts)
 
-| Cell | mean | p50 | p99 | p99.9 | max | max/p50 |
-|---|---|---|---|---|---|---|
-| `map_A_1000` | 34.22 | 33.45 | 55.66 | 132.24 | 511.88 | 15.3× |
-| `map_A_1000000` | 285.48 | 267.58 | 496.91 | 637.04 | 1164.79 | 4.4× |
-| `map_C_1000000` | 77.04 | 75.60 | 105.14 | 213.54 | 273.84 | 3.6× |
-| `map_E_1000000` | 615.33 | 550.13 | 1281.98 | 1627.85 | 5077.07 | 9.2× |
-| `flat_A_1000000` | 5.13 | 5.04 | 11.96 | 28.48 | 284.59 | 56.4× |
-| `flat_C_1000000` | 6.23 | 6.10 | 9.20 | 22.05 | 59.90 | 9.8× |
-
-All values are **batch-normalized ns/update** (full 512-update batches,
-nearest-rank percentile). Each cell produced 19,531 full batches for the
-distribution + one recorded-and-excluded trailing 128-update partial batch
-(`total_samples=19532`, `distribution_samples=19531`). The full analysis is in
-`PHASE4_ANALYSIS.md`.
-
-## What is in each cell directory
-
-- `summary.txt` — the benchmark's key:value summary (MEASURED distribution +
-  DERIVED percentiles/jitter ratios + final-state validation).
-- `raw_samples.csv` — the raw batch samples (source of truth), one row per batch.
-- `command.txt` — the exact reproduction command.
+- `summary.txt` — from run #1 of the old (buggy) runner. **Invalid**: distribution
+  included the partial batch; not recomputable from the CSV below.
+- `raw_samples.csv` — from run #2 of the old (buggy) runner. A real sample of one
+  run, but unpaired with a valid summary.
+- `command.txt` — the old runner's provenance (omitted `--stats-out`/`--samples-out`).
 - `host.txt` — machine/tool/build metadata at run time.
-- `notes.md` — per-cell interpretation (labeled INTERPRETATION) and LIMITATION.
+- `notes.md` / `PHASE4_ANALYSIS.md` — written against the invalid summaries; read
+  only as an example of the analysis format, never as results.
 
-## Provenance / honesty
+## Regeneration path
 
-- `host.txt` per cell records commit `34c0f17` with `tree: DIRTY` — the only
-  dirty change at run time was the `scripts/tail-bench.sh` exec-bit fix
-  (100644→100755), which is committed together with this dataset; no benchmark
-  or binary semantics changed between the run and the commit.
-- Final-state validation passed in every cell (`final_synced=1`; `final_seq` =
-  `2N + updates`). Ending level counts < 2N for workloads C and E are the
-  workloads' expected level drift, not validation failures (see per-cell notes).
-- Every claim in `notes.md` / `PHASE4_ANALYSIS.md` is labeled
-  `MEASURED` / `DERIVED` / `INTERPRETATION` / `LIMITATION`.
+Run the hardened canonical runner and commit the verified cells under a fresh
+`docs/results/phase4-macos-tail/` layout (each cell now from ONE invocation,
+verified by `scripts/verify-tail-summary.sh`). Then update this README and
+`docs/profiling/PHASE4_TAIL_LATENCY.md` with real, recomputable numbers.

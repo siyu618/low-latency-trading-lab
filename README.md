@@ -5,26 +5,32 @@ repository currently hosts a single experiment — Experiment 01, below — at t
 repo root; if more experiments land later they will be organized into their own
 top-level directories.
 
-> **Status — Experiment 01 Phase 2 frozen; profiling tooling complete
-> (Phase 3M/macOS workflow READY, Phase 3L/Linux tooling READY); no profiling
-> measurements captured yet:**
+> **Status — Experiment 01: Phase 1 & 2 FROZEN; Phase 3L and Phase 3M READY /
+> DEFERRED; Phase 4 tooling COMPLETE / FROZEN; Phase 4 canonical measurement
+> PENDING:**
 > **Experiment 01 — L2 Order Book: `std::map` vs Flat Representation** is
 > implemented, its correctness tests are green, and the deterministic benchmark
 > has measured steady-state `apply()` throughput across both implementations,
-> five workloads, and four book sizes (Phase 2, frozen). Profiling is split into
-> **Phase 3M** — macOS / Apple Silicon, using Apple Instruments against the same
-> M3 Max that produced Phase 2 (workflow READY; needs full Xcode to record) —
-> and **Phase 3L** — Linux `perf` (tooling READY; native Linux measurement
-> DEFERRED, no Linux host). Both use opt-in markers around the timed `apply()`
-> loop: an os_signpost interval on Apple (`LLOB_SIGNPOSTS=1`) and a perf-control
-> gate on Linux (`LLOB_PERF_CONTROL`). No profiling numbers exist anywhere in
-> this repository.
+> five workloads, and four book sizes (Phase 2, FROZEN). Profiling — where the
+> time goes — is split into **Phase 3M** — macOS / Apple Instruments on the same
+> M3 Max that produced Phase 2 (tooling READY; six real recordings committed
+> under `docs/results/phase3-macos-apple-silicon/`, but per-function call-tree
+> symbolization still needs an Instruments GUI pass, so analysis is DEFERRED) —
+> and **Phase 3L** — Linux `perf` (tooling READY; native measurement DEFERRED,
+> no Linux host). Both use opt-in markers around the timed `apply()` loop: an
+> os_signpost interval on Apple (`LLOB_SIGNPOSTS=1`) and a perf-control gate on
+> Linux (`LLOB_PERF_CONTROL`). Phase 4 tail-latency distribution **tooling**
+> (`orderbook_tail_bench`, `scripts/tail-bench.sh`) is COMPLETE / FROZEN, but
+> **no measured Phase 4 result is claimed — canonical measurement is PENDING**.
+> The pre-Phase-4.1 cells under `docs/results/phase4-macos-tail/` were produced
+> by buggy tooling and are INVALID (retained only as a labeled historical
+> artifact).
 
 ## Experiments
 
 | # | Experiment | Status |
 |---|------------|--------|
-| 01 | L2 Order Book: `std::map` vs Flat Representation | correctness done; benchmark done |
+| 01 | L2 Order Book: `std::map` vs Flat Representation | correctness done; Phase 2 benchmark FROZEN; Phase 3 tooling READY (measurement deferred); Phase 4 tooling done — canonical latency measurement pending |
 
 ## Layout
 
@@ -46,11 +52,11 @@ low-latency-trading-lab/
 ├── cmake/
 │   └── assert_nonzero_exit.cmake  # ctest guard for the test exit-code self-test
 ├── docs/
-│   ├── results/             # committed datasets: phase2-m3max/ (frozen), phase3-macos-*/ (empty),
-│   │   │                    #   phase3-linux-*/ (deferred)
+│   ├── results/             # committed datasets: phase2-m3max/ (FROZEN), phase3-macos-apple-silicon/
+│   │   │                    #   (six real Phase 3M recordings), phase4-macos-tail/ (pre-4.1 INVALID artifact)
 │   │   └── README.md        # layout + honesty rule
-│   └── profiling/           # Phase 3 guides: Linux perf (README.md) + macOS Instruments
-│                            #   (MACOS_INSTRUMENTS.md); split into Phase 3M / Phase 3L
+│   └── profiling/           # Phase 3 guides (README.md, MACOS_INSTRUMENTS.md) + Phase 4 tail-latency
+│                            #   methodology (PHASE4_TAIL_LATENCY.md); split into Phase 3M / Phase 3L
 ├── CMakeLists.txt
 └── README.md
 ```
@@ -292,6 +298,8 @@ book's stores dead or reorder across `apply()` calls).
 
 ## Next phases
 
-Phase 3M (macOS Instruments capture) when a full-Xcode Mac is available; Phase
-3L (Linux `perf` measurement) when a Linux host is available; Phase 4 (latency
-percentiles); Phase 5 (engineering write-up).
+Phase 3M per-function call-tree symbolization (an Instruments GUI pass over the
+six committed recordings); Phase 3L (Linux `perf` measurement) when a Linux host
+is available; **Phase 4 canonical measurement** — re-measure the six-cell matrix
+with the hardened runner, verify each summary-from-raw, then report; Phase 5
+(engineering write-up).

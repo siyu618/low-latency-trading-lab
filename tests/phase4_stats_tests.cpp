@@ -5,10 +5,15 @@
 // benchmark. Everything here is fast and deterministic:
 //   * percentile calculation (nearest-rank)
 //   * batch normalization (batch-normalized ns/update)
-//   * exact batch division and partial-batch rejection
+//   * exact batch division: a trailing PARTIAL batch is supported, recorded with
+//     its ACTUAL op count, and EXCLUDED from EVERY distribution metric
+//   * the production distribution_metrics()/full_batch_elapsed() rule (regression
+//     test with an extreme partial batch — see test_partial_excluded_extreme)
 //   * deterministic stream behavior (same seed -> identical stream; differential
 //     map-vs-flat replay agreement; seed change -> different stream)
-//   * timer-calibration path (the empty-timing-skeleton returns sane samples)
+//   * calibration plumbing (both the clock-pair and the empty-batch-harness
+//     skeletons return non-empty vectors of non-negative durations — NO wall-clock
+//     "fast enough" threshold; a CI/VM/scheduler pause must never fail a test)
 //
 // A plain CHECK macro reports file/line of the first failing assertion; any
 // failed CHECK accumulates into a total and main() returns non-zero so CTest
@@ -32,6 +37,10 @@ using llob::BookSnapshot;
 using llob::FlatOrderBook;
 using llob::L2Update;
 using llob::MapOrderBook;
+using llob_tail::BatchSample;
+using llob_tail::DistributionMetrics;
+using llob_tail::distribution_metrics;
+using llob_tail::full_batch_elapsed;
 using llob_tail::normalized_ns_per_update;
 using llob_tail::percentile_rank;
 using llob_tail::sorted_samples;
@@ -152,36 +161,89 @@ void test_batch_division() {
 }
 
 // ---------------------------------------------------------------------------
-// A trailing partial batch is EXCLUDED from the whole distribution — including
-// the MEAN, not just the percentiles. This guards the invariant that all
-// distribution metrics (mean, min, percentiles, max) are computed over FULL
-// batches only; a partial's elapsed must never leak into any of them.
+// near(a, b): exact-enough comparison for batch-normalized ns/update values
+// (integers divided by a power-of-two batch size, so the arithmetic is exact in
+// double; a tiny epsilon guards only against any FP-association difference).
 // ---------------------------------------------------------------------------
-void test_partial_excluded_from_mean() {
-    // Simulate the benchmark's storage: full-batch samples plus one partial.
-    // Distribution metrics must be identical whether the partial is absent or
-    // present (the partial is recorded but excluded).
-    const std::vector<int64_t> full_elapsed{1000, 1200, 1100}; // 3 full, 512 ops
-    const int64_t partial_elapsed = 5000;                      // 128-op partial
+bool near(double a, double b) { return std::fabs(a - b) < 1e-9; }
 
-    double mean_no_partial = 0.0;
-    for (int64_t s : full_elapsed) mean_no_partial += static_cast<double>(s);
-    mean_no_partial /= static_cast<double>(full_elapsed.size());
+// ---------------------------------------------------------------------------
+// REGRESSION TEST — P0: the trailing PARTIAL batch must be EXCLUDED from the
+// ENTIRE distribution, including the MEAN, not just the percentiles.
+//
+// The production rule lives in distribution_metrics() / full_batch_elapsed()
+// (benchmark/tail_stats.h) — the SAME functions the benchmark now calls. The
+// current implementation once iterated over ALL samples (`for (const
+// BatchSample& s : samples) full_elapsed.push_back(...)`), which copied the
+// trailing partial sample into the distribution basis: min/P50/P90/P99/P99.9/max
+// could include the partial, and the mean numerator included its elapsed time
+// while the denominator still used full_batches. This test uses an EXTREME
+// partial (ops=1, elapsed ~ a tera-nanosecond) so any leak would dominate the
+// metrics; it asserts ZERO effect on mean/min/P50/P90/P99/P99.9/max and that
+// distribution_samples == the number of full batches.
+// ---------------------------------------------------------------------------
+void test_partial_excluded_extreme() {
+    const uint64_t batch = 512;
 
-    // The buggy form would have added the partial into the sum.
-    double sum_with_partial = mean_no_partial * static_cast<double>(full_elapsed.size());
-    sum_with_partial += static_cast<double>(partial_elapsed);
-    const double mean_if_partial_leaked =
-        sum_with_partial / static_cast<double>(full_elapsed.size());
+    // Two full 512-op batches of ~2.7-2.8 us, plus an extreme partial: 1 op in
+    // ~1e12 ns (≈16 minutes-equivalent if it were a batch — impossible to miss).
+    const int64_t huge_partial_elapsed = INT64_C(1000000000000);
+    const std::vector<BatchSample> samples = {
+        BatchSample{512, 2784},
+        BatchSample{512, 2764},
+        BatchSample{1, huge_partial_elapsed}, // ACTUAL op count: 1
+    };
+    const size_t full_batches = 2;
 
-    CHECK(mean_if_partial_leaked != mean_no_partial); // the partial MUST not shift it
+    // 1. The extraction basis is EXACTLY the full batches — the partial is not
+    //    copied in (the exact bug this guards).
+    const std::vector<int64_t> basis = full_batch_elapsed(samples, full_batches);
+    CHECK(basis.size() == full_batches); // 2, never 3
+    bool partial_in_basis = false;
+    for (int64_t e : basis) partial_in_basis = partial_in_basis || e == huge_partial_elapsed;
+    CHECK(!partial_in_basis);
+
+    // 2. Metrics WITH the extreme partial present == metrics from the two full
+    //    batches alone (zero influence).
+    const DistributionMetrics with_partial = distribution_metrics(samples, full_batches, batch);
+    const DistributionMetrics full_only =
+        distribution_metrics({BatchSample{512, 2784}, BatchSample{512, 2764}},
+                             full_batches, batch);
+
+    CHECK(with_partial.distribution_samples == full_batches); // 2 == number of full batches
+    CHECK(with_partial.distribution_samples == 2u);
+
+    CHECK(near(with_partial.mean_ns_per_update, full_only.mean_ns_per_update));
+    CHECK(near(with_partial.min_ns_per_update,  full_only.min_ns_per_update));
+    CHECK(near(with_partial.p50_ns_per_update,  full_only.p50_ns_per_update));
+    CHECK(near(with_partial.p90_ns_per_update,  full_only.p90_ns_per_update));
+    CHECK(near(with_partial.p99_ns_per_update,  full_only.p99_ns_per_update));
+    CHECK(near(with_partial.p99_9_ns_per_update, full_only.p99_9_ns_per_update));
+    CHECK(near(with_partial.max_ns_per_update,  full_only.max_ns_per_update));
+
+    // 3. Hand-computed expected values (exact): mean = (2784+2764)/2/512;
+    //    sorted {2764,2784}; P50 = ceil(1)-th = 2764; P90/P99/P99.9 = 2nd = 2784.
+    CHECK(near(with_partial.mean_ns_per_update, (2784.0 + 2764.0) / 2.0 / 512.0));
+    CHECK(near(with_partial.min_ns_per_update, 2764.0 / 512.0));
+    CHECK(near(with_partial.p50_ns_per_update, 2764.0 / 512.0));
+    CHECK(near(with_partial.p90_ns_per_update, 2784.0 / 512.0));
+    CHECK(near(with_partial.p99_ns_per_update, 2784.0 / 512.0));
+    CHECK(near(with_partial.p99_9_ns_per_update, 2784.0 / 512.0));
+    CHECK(near(with_partial.max_ns_per_update, 2784.0 / 512.0));
+
+    // 4. Demonstrate the test WOULD catch the original bug: forcing the partial
+    //    into the basis (the buggy behaviour, full_batches=3) changes metrics.
+    const DistributionMetrics buggy = distribution_metrics(samples, 3u, batch);
+    CHECK(buggy.distribution_samples == 3u);
+    CHECK(!near(buggy.mean_ns_per_update, with_partial.mean_ns_per_update));
+    CHECK(!near(buggy.max_ns_per_update, with_partial.max_ns_per_update));
 }
 
-
-// the stream in (full batches + trailing partial of updates % batch) must leave
-// the book in EXACTLY the same state as applying the whole stream at once. This
-// is the correctness invariant behind the benchmark's allow-a-partial-final-batch
-// rule: every update is applied, in order, once.
+// ---------------------------------------------------------------------------
+// Applying the stream in (full batches + trailing partial of updates % batch)
+// must leave the book in EXACTLY the same state as applying the whole stream at
+// once. This is the correctness invariant behind the benchmark's
+// allow-a-partial-final-batch rule: every update is applied, in order, once.
 // ---------------------------------------------------------------------------
 void test_partial_batch_replay() {
     using namespace llob_bench;
@@ -291,37 +353,63 @@ void test_differential_replay() {
     }
 }
 
+// Compiler barrier, local to this test file (mirrors the benchmark's
+// memory_barrier(); the test deliberately does not depend on the benchmark's
+// anonymous namespace).
+inline void test_memory_barrier() noexcept {
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__ __volatile__("" ::: "memory");
+#else
+    (void)0;
+#endif
+}
+
 // ---------------------------------------------------------------------------
-// Timer-calibration path: the empty-timing-skeleton (no book work) returns a
-// sane, non-empty sample vector of non-negative durations. It also bounds the
-// overhead against what a real batch duration would be (a ~few-ns/update flat
-// batch of 512 is on the order of microseconds; a 512-iteration empty boundary
-// loop is much smaller, so the median boundary overhead must be well under a
-// microsecond on this machine).
+// Calibration plumbing: both calibration skeletons — the CLOCK-PAIR (two clock
+// reads separated by a barrier) and the EMPTY-BATCH-HARNESS (clock read +
+// batch_size empty iterations + barrier + clock read) — must return non-empty
+// vectors of NON-NEGATIVE durations. There is deliberately NO wall-clock "fast
+// enough" assertion: a CI machine, VM, scheduler interruption, or overloaded
+// host may pause a timing region for more than 1 ms, and a correctness test
+// must not fail because the machine was slow — only if the plumbing is broken.
 // ---------------------------------------------------------------------------
 void test_calibration_path() {
-    std::vector<int64_t> cal;
+    const int kReps = 64;
+    std::vector<int64_t> pair_samples;
+    std::vector<int64_t> harness_samples;
     uint64_t sink = 0;
-    {
-        // Use the exact skeleton the benchmark runs (re-implemented here to keep
-        // the test independent of the benchmark's anonymous namespace).
-        const auto t0 = std::chrono::steady_clock::now();
-        for (int i = 0; i < 512; ++i) {
-            sink += static_cast<uint64_t>(i);
-            // optimizer barrier (as in the benchmark)
-#if defined(__GNUC__) || defined(__clang__)
-            __asm__ __volatile__("" ::: "memory");
-#else
-            (void)0;
-#endif
+    for (int r = 0; r < kReps; ++r) {
+        // Clock pair: two reads, one barrier (as in calibrate_clock_pair).
+        {
+            const auto t0 = std::chrono::steady_clock::now();
+            sink ^= 1u; // observable sink; the barrier keeps the two reads apart
+            test_memory_barrier();
+            const auto t1 = std::chrono::steady_clock::now();
+            pair_samples.push_back(static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
         }
-        const auto t1 = std::chrono::steady_clock::now();
-        cal.push_back(static_cast<int64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
+        // Empty-batch harness: the exact batch skeleton, no book work (as in
+        // calibrate_empty_batch). Re-implemented here to keep the test
+        // independent of the benchmark's anonymous namespace.
+        {
+            const auto t0 = std::chrono::steady_clock::now();
+            for (int i = 0; i < 512; ++i) {
+                sink += static_cast<uint64_t>(i);
+                test_memory_barrier();
+            }
+            const auto t1 = std::chrono::steady_clock::now();
+            harness_samples.push_back(static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
+        }
     }
-    CHECK(cal.size() == 1);
-    CHECK(cal[0] >= 0);
-    CHECK(cal[0] < 1000000); // far under a millisecond for 512 empty iters
+    CHECK(pair_samples.size() == static_cast<size_t>(kReps));
+    CHECK(harness_samples.size() == static_cast<size_t>(kReps));
+    bool pair_nonneg = true;
+    bool harness_nonneg = true;
+    for (int64_t v : pair_samples) pair_nonneg = pair_nonneg && v >= 0;
+    for (int64_t v : harness_samples) harness_nonneg = harness_nonneg && v >= 0;
+    CHECK(pair_nonneg);
+    CHECK(harness_nonneg);
     (void)sink;
 }
 
@@ -345,8 +433,8 @@ int main() {
     test_partial_batch_replay();
     total += summary("partial-batch replay (all updates applied)");
 
-    test_partial_excluded_from_mean();
-    total += summary("partial batch excluded from mean");
+    test_partial_excluded_extreme();
+    total += summary("partial batch excluded from every distribution metric");
 
     test_deterministic_stream();
     total += summary("deterministic stream");

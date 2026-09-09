@@ -39,11 +39,14 @@ Two honesty rules follow:
 
 ## Status & honesty box
 
-**No profiling numbers (perf OR Instruments) are presented anywhere in this
-repository — none have been measured, and no real Instruments trace is committed
-yet.** The Phase 3M tooling is authored and committed, and the os_signpost marker
-is compile-validated, but whether a given machine can record is **detected at
-recording time** — never asserted as a permanent claim in these docs:
+**Profiling status — Phase 3M: tooling READY, measurement/analysis DEFERRED;
+Phase 3L: tooling READY, native measurement DEFERRED (no Linux host).** Six real
+Phase 3M Time Profiler recordings ARE committed under
+`docs/results/phase3-macos-apple-silicon/` (see that README), but per-function
+call-tree symbolization still needs an Instruments GUI pass, so no symbolized
+call-tree result is presented here. Whether a given machine can record is
+**detected at recording time** — never asserted as a permanent claim in these
+docs:
 
 - `xcrun --find xctrace` — present (and a real capture possible) only when full
   Xcode is installed; absent when only the command-line tools are.
@@ -352,8 +355,10 @@ The two tracks record under different `docs/results/` trees.
 
 ### Phase 3M (macOS) — `docs/results/phase3-macos-apple-silicon/`
 
-This tree exists now (empty of data until a real recording). After an
-Instruments capture is inspected, commit per cell:
+Populated — status: tooling READY, measurement/analysis DEFERRED. Six real
+recordings are committed (see that tree's README), but per-function call-tree
+symbolization is still PENDING an Instruments GUI pass. When a recording has
+been inspected and symbolized, commit per cell:
 
 ```
 docs/results/phase3-macos-apple-silicon/<cell>/        e.g. map_A_1000000/
@@ -434,8 +439,14 @@ a real tool reported.
   threads freely — see `collect-macos-profile-metadata.sh` and
   `MACOS_INSTRUMENTS.md`). Neither tool changes system settings.
 - Phase 3L (Linux) status — **tooling READY, native measurement DEFERRED** (no
-  Linux host). Phase 3M (macOS) status — **workflow/tooling READY, no real
-  Instruments trace committed yet** (a recording needs full Xcode on the machine
-  that records; capability is detected at recording time). No profiling numbers
-  exist anywhere in this repository.
-- Phase 4 (latency percentiles) and Phase 5 (write-up) are not started.
+  Linux host; no Linux PMU numbers exist). Phase 3M (macOS) status — **tooling
+  READY, measurement/analysis DEFERRED**: six real Time Profiler recordings ARE
+  committed under `docs/results/phase3-macos-apple-silicon/` (recording needs
+  full Xcode on the machine; capability is detected at recording time), but
+  per-function call-tree symbolization still needs an Instruments GUI pass, so
+  no symbolized call-tree claim is made yet.
+- Phase 4 status — **tooling COMPLETE / FROZEN** (`orderbook_tail_bench`,
+  `scripts/tail-bench.sh`; see `PHASE4_TAIL_LATENCY.md`); **canonical
+  measurement PENDING** — no measured Phase 4 result is claimed anywhere (the
+  pre-4.1 cells under `docs/results/phase4-macos-tail/` are INVALID, not
+  canonical). Phase 5 (write-up) is not started.

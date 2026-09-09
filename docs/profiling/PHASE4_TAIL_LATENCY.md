@@ -71,10 +71,19 @@ formatting inside a timed batch.
 
 ### Warmup
 
-A **separate book instance** replays the whole stream once, untimed, before the
-measured run. The measured run then starts from the original full snapshot — no
-part of the measured stream is consumed early, and warm caches/`madvise`/clock
-are representative of the measured region.
+Exactly what happens, in order: a **separate book instance** is constructed,
+loads the original snapshot, and replays the whole stream **once**, untimed;
+that warmup book is then **destroyed**; the **measured book** is constructed and
+loaded from the **original full snapshot**; and the measured stream is replayed
+**once** on the clock. So no part of the measured stream is ever consumed early.
+
+What warmup does and does not claim: replaying the stream once on a separate
+book warms the process — code/caches, the allocator's arenas, and thermal state
+are nudged toward what a warmed steady-state process looks like. It is
+**intended to approximate a warmed steady-state process**, not to *eliminate*
+scheduler or thermal noise: macOS can still move the thread across P/E cores and
+background activity can still push P99/P99.9/MAX on the measured run. No
+additional warmup dimensions (reps, soak, pinning) are modeled.
 
 ### Preallocation
 
@@ -102,17 +111,29 @@ op count. (The exclusion-from-the-mean rule is covered by a unit test.)
 > 512-update batches form the distribution, and the final 128-update partial
 > batch is recorded but excluded.
 
-### Timer-boundary calibration
+### Calibration (`--calibrate`) — terminology is deliberate
 
-`--calibrate` measures the same timing skeleton (clock read, `batch_size` empty
-iterations with the optimizer barrier, clock read) with **no book work**, many
-times. It reports the **median and P99 boundary overhead** per batch and the
-observed max. The overhead is **not auto-subtracted** from latency samples
-(subtracting an unverified constant would be a correction we cannot justify);
-instead it is reported so you can judge whether the batch is large enough. If
-the boundary overhead is material relative to a typical flat batch duration at
-`batch_size=512`, use a larger batch (e.g. 1024). The benchmark lets you choose
-the batch size rather than silently changing it.
+`--calibrate` measures **no book work**, many times, and reports **two distinct
+groups** — neither is "pure timer-boundary overhead", so the keys say exactly
+what each measures:
+
+- **`clock_pair_*`** — pure clock cost: two `steady_clock` reads separated only
+  by a compiler barrier. This is the timer floor of one clock-read pair (on
+  macOS the median is typically below the clock's tick resolution → ~0 ns, with
+  the observed p99/max being the real per-read cost).
+- **`empty_batch_harness_*`** — the exact **batch-sized empty timing skeleton**:
+  clock read + `batch_size` empty iterations with the optimizer barrier and sink
+  arithmetic + clock read. This is the *whole* timing skeleton with no book work
+  — it is **NOT just the clock cost** (it carries the loop/barrier/sink
+  overhead), so it is the honest fixed per-batch cost to compare against a full
+  batch's duration.
+
+Both groups report `median` / `p99` / `max` ns. **Neither is auto-subtracted**
+from the measured book samples (subtracting an unverified constant would be a
+correction we cannot justify). Use `empty_batch_harness` to judge whether the
+batch is large enough: if it is material relative to a typical flat batch
+duration at `batch_size=512`, use a larger batch (e.g. 1024). The benchmark lets
+you choose the batch size rather than silently changing it.
 
 ### Distribution metrics & percentile definition
 
@@ -165,13 +186,14 @@ next):
 ./build-perf/orderbook_tail_bench --book flat --workload C --levels 1000000 --updates 10000000 --batch-size 512 --samples-out results/flat_C_1M_raw.csv
 ```
 
-`results/` is git-ignored; real, inspected datasets are committed under
-`docs/results/phase4-macos-tail/`.
-
-`scripts/tail-bench.sh` automates the full matrix above (fresh Release build,
-summary + raw CSV + `command.txt`/`host.txt` provenance per cell into a dated
-`results/phase4_<ts>/`), or one cell:
-`scripts/tail-bench.sh map C 1000000`.
+`results/` is git-ignored. `scripts/tail-bench.sh` automates the full matrix
+above (fresh Release build, summary + raw CSV + `command.txt`/`host.txt`
+provenance per cell into a dated `results/phase4_<ts>/`), or one cell:
+`scripts/tail-bench.sh map C 1000000`. Each cell invokes the benchmark **exactly
+once** with both `--stats-out` and `--samples-out`, then **verifies** the raw
+CSV recomputes the summary (see the [Status](#status) note on the Phase 4.1
+hardening pass — a committed pre-fix dataset under `docs/results/phase4-macos-tail/`
+is INVALID and is **not** canonical).
 
 ## Report categories (every claim is labeled)
 
@@ -204,6 +226,18 @@ Documented limitations:
 - Phase 3L — READY / DEFERRED
 - Phase 3M — READY / DEFERRED (six real recordings committed; call-tree GUI
   pass still pending — see `docs/results/phase3-macos-apple-silicon/`)
-- **Phase 4 tooling — COMPLETE**
-- **Phase 4 real canonical measurement — COLLECTED AND REVIEWED** (2026-09-09,
-  six cells under `docs/results/phase4-macos-tail/`).
+- **Phase 4 tooling — COMPLETE / FROZEN** (as of the Phase 4.1 hardening pass:
+  trailing-partial-batch exclusion is fixed and covered by a regression test,
+  the canonical runner issues ONE invocation per cell and verifies summary-from-
+  raw, calibration terminology is split into `clock_pair_*` / `empty_batch_harness_*`,
+  and post-measurement validation refuses an invalid run)
+- **Phase 4 canonical measurement — PENDING.** No measured Phase 4 result is
+  claimed. The six cells previously committed under
+  `docs/results/phase4-macos-tail/` were produced by the **pre-4.1 tooling** and
+  are **INVALID / NOT canonical**: each cell's `summary.txt` and `raw_samples.csv`
+  came from two *independent* benchmark runs (they describe two different
+  distributions — `scripts/verify-tail-summary.sh` now proves they do not
+  recompute each other), and the summary distribution included the trailing
+  128-update partial batch. That tree is retained only as a labeled historical
+  artifact; the canonical dataset must be re-measured with the hardened tooling
+  before any Phase 4 number is presented.

@@ -1,12 +1,16 @@
 # Phase 4 analysis — tail latency and jitter on the Apple M3 Max
 
-**Status: real canonical data, reviewed.** Six cells, each a full deterministic
-distribution run (`--updates 10000000 --batch-size 512`, default seed, one
-process per book) on the same Apple M3 Max / macOS 14.2.1 host as the Phase 2
-and Phase 3M datasets. Every number below is measured by the benchmark
-(`summary.txt` / `raw_samples.csv`); labels follow the honesty rule.
+> **⚠️ INVALID — pre-Phase-4.1 artifacts. NOT canonical.**
+> This analysis was written against summaries produced by the **old buggy
+> tooling**: per cell the summary came from a *different* benchmark run than the
+> raw CSV, and the summary's distribution included the trailing 128-update
+> partial batch. Every number below is therefore **not a valid Phase 4 result**
+> and must not be cited. See `./README.md` in this directory for the full
+> explanation. Phase 4 canonical measurement is PENDING — re-measure with the
+> hardened tooling, then re-run this analysis. This page is retained only to
+> document the analysis format and the pre-fix state.
 
-## Method recap (what these numbers are)
+## Method recap (what these numbers would be)
 
 - Each metric is **batch-normalized** `elapsed_ns / 512` over a fixed 512-update
   batch — a batch average, NOT a directly measured single-update latency (which
