@@ -105,7 +105,7 @@
 //     -h|--help              this text
 //
 // Example:
-//   ./orderbook_tail_bench --book flat --workload C --levels 1000000 \
+//   ./orderbook_tail_bench --book flat --workload C --levels 1000000
 //       --updates 10000000 --batch-size 512 --samples-out raw.csv
 //
 // The canonical Phase 4 cells and reproduction commands are in

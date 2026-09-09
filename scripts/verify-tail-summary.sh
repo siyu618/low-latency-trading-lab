@@ -3,10 +3,15 @@
 # recomputed from ITS OWN raw_samples.csv.
 #
 # Recomputes, from the already-written raw CSV, the documented distribution
-# metrics — sample count, mean, P50, P99, P99.9, max (plus min) — over FULL
+# metrics — sample count, mean, min, P50, P90, P99, P99.9, max — over FULL
 # batches only, using the nearest-rank definition that orderbook_tail_bench
 # documents, and requires summary.txt (from THE SAME invocation) to match within
-# formatting tolerance (0.001 ns/update — the summary prints %.6f).
+# formatting tolerance. It also recomputes the derived ratios P99/P50, P99.9/P50
+# and max/P50 from the same raw basis (identical to the summary's derivation:
+# sample-to-sample ratios of the nearest-rank full-batch durations, so the
+# batch_size cancels). Float tolerance is 0.001 in the metric's own units
+# (ns/update for the durations; dimensionless for the ratios — the summary
+# prints %.6f).
 #
 # It does NOT rerun the benchmark. If summary and raw came from two DIFFERENT
 # runs, or a trailing partial batch leaked into the summary's distribution
@@ -45,13 +50,21 @@ want_partial_ops="$(get partial_batch_ops)"
 want_mean="$(get mean_batch_normalized_ns_per_update)"
 want_min="$(get min_batch_normalized_ns_per_update)"
 want_p50="$(get p50_batch_normalized_ns_per_update)"
+want_p90="$(get p90_batch_normalized_ns_per_update)"
 want_p99="$(get p99_batch_normalized_ns_per_update)"
 want_p999="$(get p99_9_batch_normalized_ns_per_update)"
 want_max="$(get max_batch_normalized_ns_per_update)"
+want_r_p99="$(get ratio_p99_p50)"
+want_r_p999="$(get ratio_p99_9_p50)"
+want_r_max="$(get ratio_max_p50)"
 
-if [[ -z "$bs" || -z "$want_dist" || -z "$want_total" ]]; then
+if [[ -z "$bs" || -z "$want_dist" || -z "$want_total" || -z "$want_mean" \
+      || -z "$want_p50" || -z "$want_p90" || -z "$want_p99" \
+      || -z "$want_p999" || -z "$want_max" || -z "$want_r_p99" \
+      || -z "$want_r_p999" || -z "$want_r_max" ]]; then
     echo "verify-tail-summary: '$sum' is missing required keys (batch_size /" \
-         "distribution_samples / total_samples); not a Phase 4 summary." >&2
+         "distribution_samples / total_samples / p90 / ratio_*_p50); not a" \
+         "hardened Phase 4.1 summary." >&2
     exit 2
 fi
 
@@ -98,18 +111,27 @@ metrics="$(awk -v n="$n_full" -v bs="$bs" '
         printf "mean=%.6f\n", s / n / bs
         printf "min=%.6f\n",  v[1] / bs
         printf "p50=%.6f\n",  v[ceil(0.50 * n)] / bs
+        printf "p90=%.6f\n",  v[ceil(0.90 * n)] / bs
         printf "p99=%.6f\n",  v[ceil(0.99 * n)] / bs
         printf "p999=%.6f\n", v[ceil(0.999 * n)] / bs
         printf "max=%.6f\n",  v[n] / bs
+        # Derived ratios from the SAME raw basis (batch_size cancels).
+        printf "r_p99=%.6f\n",  v[ceil(0.99 * n)]  / v[ceil(0.50 * n)]
+        printf "r_p999=%.6f\n", v[ceil(0.999 * n)] / v[ceil(0.50 * n)]
+        printf "r_max=%.6f\n",  v[n]               / v[ceil(0.50 * n)]
     }
 ' "$full_sorted")"
 
 re_mean="$(printf '%s\n' "$metrics" | sed -n 's/^mean=//p')"
 re_min="$(printf '%s\n' "$metrics" | sed -n 's/^min=//p')"
 re_p50="$(printf '%s\n' "$metrics" | sed -n 's/^p50=//p')"
+re_p90="$(printf '%s\n' "$metrics" | sed -n 's/^p90=//p')"
 re_p99="$(printf '%s\n' "$metrics" | sed -n 's/^p99=//p')"
 re_p999="$(printf '%s\n' "$metrics" | sed -n 's/^p999=//p')"
 re_max="$(printf '%s\n' "$metrics" | sed -n 's/^max=//p')"
+re_r_p99="$(printf '%s\n' "$metrics" | sed -n 's/^r_p99=//p')"
+re_r_p999="$(printf '%s\n' "$metrics" | sed -n 's/^r_p999=//p')"
+re_r_max="$(printf '%s\n' "$metrics" | sed -n 's/^r_max=//p')"
 
 # --- compare ----------------------------------------------------------------
 fail=0
@@ -156,12 +178,16 @@ check() { # name want got
     fi
 }
 
-check 'mean' "$want_mean" "$re_mean"
-check 'min'  "$want_min"  "$re_min"
-check 'p50'  "$want_p50"  "$re_p50"
-check 'p99'  "$want_p99"  "$re_p99"
-check 'p99.9' "$want_p999" "$re_p999"
-check 'max'  "$want_max"  "$re_max"
+check 'mean'    "$want_mean"    "$re_mean"
+check 'min'     "$want_min"     "$re_min"
+check 'p50'     "$want_p50"     "$re_p50"
+check 'p90'     "$want_p90"     "$re_p90"
+check 'p99'     "$want_p99"     "$re_p99"
+check 'p99.9'   "$want_p999"    "$re_p999"
+check 'max'     "$want_max"     "$re_max"
+check 'p99/p50'   "$want_r_p99"   "$re_r_p99"
+check 'p99.9/p50' "$want_r_p999"  "$re_r_p999"
+check 'max/p50'   "$want_r_max"   "$re_r_max"
 
 if [[ "$fail" -ne 0 ]]; then
     echo "verify-tail-summary: FAILED — '$raw' and '$sum' do NOT agree." >&2
