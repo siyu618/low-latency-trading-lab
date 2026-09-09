@@ -33,6 +33,14 @@ target_compile_options(orderbook_tests PRIVATE -Wall -Wextra)
 
 add_test(NAME orderbook_tests COMMAND orderbook_tests)
 
+# Phase 4: lightweight tail-latency statistics tests (percentiles, batch
+# normalization, stream determinism, calibration path). Fast — never runs the
+# canonical multi-million-update tail benchmark.
+add_executable(phase4_stats_tests tests/phase4_stats_tests.cpp)
+target_link_libraries(phase4_stats_tests PRIVATE llob_core)
+target_compile_options(phase4_stats_tests PRIVATE -Wall -Wextra)
+add_test(NAME phase4_stats_tests COMMAND phase4_stats_tests)
+
 # Guard against a regression of the exit-code bug: the self-test mode runs only
 # a deliberately failing CHECK and must return non-zero. If it ever returns 0
 # (e.g. the runner stops propagating failures), CTest reports this test as
@@ -60,6 +68,12 @@ if(BUILD_BENCHMARKS)
     # Override any build type: the benchmark hot path must always run optimized.
     target_compile_options(orderbook_bench PRIVATE -O3 -DNDEBUG)
 
+    # Phase 4: tail-latency / jitter benchmark (fixed-batch sampling). Same
+    # forced-optimized contract as the Phase 2 benchmark.
+    add_executable(orderbook_tail_bench benchmark/order_book_tail_bench.cpp)
+    target_link_libraries(orderbook_tail_bench PRIVATE llob_core)
+    target_compile_options(orderbook_tail_bench PRIVATE -O3 -DNDEBUG)
+
     # CPU/arch tuning is OPT-IN and free-form so it is never hard-coded to one
     # machine. The canonical M3 measurements in the README were built WITHOUT
     # any arch flag (the compiler's default for the target). To tune for the
@@ -76,6 +90,7 @@ if(BUILD_BENCHMARKS)
         check_cxx_compiler_flag("${BENCH_ARCH_FLAGS}" CXX_SUPPORTS_BENCH_ARCH)
         if(CXX_SUPPORTS_BENCH_ARCH)
             target_compile_options(orderbook_bench PRIVATE ${BENCH_ARCH_FLAGS})
+            target_compile_options(orderbook_tail_bench PRIVATE ${BENCH_ARCH_FLAGS})
         else()
             message(WARNING "BENCH_ARCH_FLAGS '${BENCH_ARCH_FLAGS}' unsupported by this compiler; "
                             "building the benchmark with the compiler default")

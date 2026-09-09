@@ -125,6 +125,7 @@
 
 #include "flat_order_book.h"
 #include "map_order_book.h"
+#include "stream_gen.h"
 
 #include <chrono>
 #include <cinttypes>
@@ -153,259 +154,21 @@ using llob::L2Update;
 using llob::MapOrderBook;
 using llob::Side;
 
+// Workload vocabulary and the deterministic stream generator now live in
+// stream_gen.h, the single source shared with the Phase 4 tail benchmark.
+using llob_bench::Workload;
+using llob_bench::StreamGen;
+using llob_bench::kDefaultSeed;
+using llob_bench::kWorkloadCount;
+using llob_bench::workload_desc;
+using llob_bench::workload_tag;
+
 namespace {
 
 constexpr uint64_t kDefaultUpdates = 2'000'000;
 constexpr int      kDefaultReps    = 3;
-constexpr uint64_t kDefaultSeed    = 0x5EED'C0FF'EEULL;
 
 constexpr int64_t kScaleLevels[4] = {1'000, 10'000, 100'000, 1'000'000};
-
-enum class Workload : int { A, B, C, D, E };
-constexpr int kWorkloadCount = 5;
-
-const char* workload_tag(Workload w) {
-    switch (w) {
-        case Workload::A: return "A";
-        case Workload::B: return "B";
-        case Workload::C: return "C";
-        case Workload::D: return "D";
-        case Workload::E: return "E";
-    }
-    return "?";
-}
-
-const char* workload_desc(Workload w) {
-    switch (w) {
-        case Workload::A: return "update-only";
-        case Workload::B: return "10% deletes";
-        case Workload::C: return "frequent best deletion";
-        case Workload::D: return "concentrated top-of-book";
-        case Workload::E: return "uniformly random";
-    }
-    return "?";
-}
-
-// ---------------------------------------------------------------------------
-// Deterministic pre-stream generator.
-//
-// "Level idx" = a candidate price slot on one side, idx steps from the touch
-// (idx 0 == the best price). present_[side][idx] records, in generator time
-// only, whether that level is live in the book — so deletes can target levels
-// that actually exist and adds can restore absent ones. Because the generator
-// and the measured book receive the same ops, present_ is always an exact
-// mirror of the book's live set (validated by --check). All of this is OFF the
-// clock and never reaches the timed book.
-// ---------------------------------------------------------------------------
-class StreamGen {
-public:
-    // Cold-start snapshot: a full book with N live levels per side. The ONLY
-    // way a fresh MapOrderBook/FlatOrderBook becomes usable is load_snapshot()
-    // (both start unsynced and reject every apply() until then); an incremental
-    // apply()-based fill is never valid on a fresh book. Deterministic and
-    // identical for every impl/workload.
-    static BookSnapshot fill_snapshot(int64_t n) {
-        BookSnapshot snap;
-        snap.seq = static_cast<uint64_t>(2 * n); // steady stream continues at 2N+1
-        snap.bids.prices.reserve(static_cast<size_t>(n));
-        snap.bids.qtys.reserve(static_cast<size_t>(n));
-        snap.asks.prices.reserve(static_cast<size_t>(n));
-        snap.asks.qtys.reserve(static_cast<size_t>(n));
-        for (int64_t idx = 0; idx < n; ++idx) {
-            snap.bids.prices.push_back(price(Side::Bid, n, idx)); // 2N..N+1, best first
-            snap.bids.qtys.push_back(qty_of(idx));
-        }
-        for (int64_t idx = 0; idx < n; ++idx) {
-            snap.asks.prices.push_back(price(Side::Ask, n, idx)); // 1..N, best first
-            snap.asks.qtys.push_back(qty_of(idx));
-        }
-        return snap;
-    }
-
-    // Full steady-state op stream. Sequence numbers begin right after the fill
-    // snapshot (at 2N+1), so the stream can be replayed immediately after
-    // load_snapshot(fill_snapshot(n)).
-    static std::vector<L2Update> steady_ops(Workload wl, int64_t n,
-                                            uint64_t updates) {
-        StreamGen g(wl, n);
-        std::vector<L2Update> ops;
-        ops.reserve(static_cast<size_t>(updates));
-        for (uint64_t i = 0; i < updates; ++i) ops.push_back(g.next());
-        return ops;
-    }
-
-private:
-    static int64_t qty_of(int64_t idx) { return 10 + (idx % 997); }
-
-    // Candidate price for level `idx` on `side` under scale `n`.
-    static int64_t price(Side s, int64_t n, int64_t idx) {
-        return llob::is_bid(s) ? 2 * n - idx : 1 + idx;
-    }
-
-    StreamGen(Workload wl, int64_t n)
-        : wl_(wl)
-        , n_(n)
-        , seq_(static_cast<uint64_t>(2 * n)) // continues after the 2N fill ops
-        , rng_(kDefaultSeed ^ static_cast<uint64_t>(n)) {
-        // Top-of-book window (C refill radius, D touch band): a small slice of
-        // N, but never tiny and never larger than N.
-        win_ = n / 128;
-        if (win_ < 16) win_ = 16;
-        if (win_ > n) win_ = n;
-        present_[0].assign(static_cast<size_t>(n), 1);
-        present_[1].assign(static_cast<size_t>(n), 1);
-        best_[0] = 0;
-        best_[1] = 0;
-    }
-
-    static size_t side_i(Side s) { return llob::is_bid(s) ? 0u : 1u; }
-
-    // Uniform integer in [lo, hi] (inclusive). Requires lo <= hi.
-    int64_t rnd(int64_t lo, int64_t hi) {
-        std::uniform_int_distribution<int64_t> d(lo, hi);
-        return d(rng_);
-    }
-
-    // Uniform PRESENT level index on a side. present_ stays dense, so retries
-    // are rare; the fallback only triggers on an effectively-full side.
-    int64_t rnd_present(size_t si) {
-        for (int tries = 0; tries < 4096; ++tries) {
-            const int64_t idx = rnd(0, n_ - 1);
-            if (present_[si][static_cast<size_t>(idx)]) return idx;
-        }
-        return 0;
-    }
-
-    // Uniform ABSENT level index on a side, or -1 when the side is full.
-    int64_t rnd_absent(size_t si) {
-        for (int tries = 0; tries < 4096; ++tries) {
-            const int64_t idx = rnd(0, n_ - 1);
-            if (!present_[si][static_cast<size_t>(idx)]) return idx;
-        }
-        return -1;
-    }
-
-    L2Update make(Side s, int64_t idx, int64_t qty) {
-        return L2Update{++seq_, price(s, n_, idx), qty, s};
-    }
-
-    // Mirror operations on present_/best_. delete_level removes a present level
-    // (caller guarantees present); add_level restores an absent one.
-    void delete_level(size_t si, int64_t idx) {
-        present_[si][static_cast<size_t>(idx)] = 0;
-        if (idx == best_[si]) {
-            // The best was removed: rescan upward for the next present level.
-            int64_t j = idx + 1;
-            while (j < n_ && !present_[si][static_cast<size_t>(j)]) ++j;
-            best_[si] = (j < n_) ? j : -1;
-        }
-    }
-
-    void add_level(size_t si, int64_t idx) {
-        present_[si][static_cast<size_t>(idx)] = 1;
-        if (best_[si] < 0 || idx < best_[si]) best_[si] = idx;
-    }
-
-    // One steady-state op per the workload's distribution.
-    L2Update next() {
-        const Side s    = (rnd(0, 1) == 0) ? Side::Bid : Side::Ask;
-        const size_t si = side_i(s);
-        switch (wl_) {
-            case Workload::A: {
-                // Re-quantify a random present level; the level set never moves.
-                return make(s, rnd_present(si), qty_of(rnd(0, n_ - 1)));
-            }
-            case Workload::B: {
-                if (rnd(0, 9) < 1) { // 10% delete a present level
-                    const int64_t idx = rnd_present(si);
-                    delete_level(si, idx);
-                    return make(s, idx, 0);
-                }
-                // 90% add: restore an absent level first so density stays ~N.
-                if (const int64_t a = rnd_absent(si); a >= 0) {
-                    add_level(si, a);
-                    return make(s, a, qty_of(rnd(0, n_ - 1)));
-                }
-                return make(s, rnd_present(si), qty_of(rnd(0, n_ - 1)));
-            }
-            case Workload::C: {
-                // Best-price churn. Deleting the best level of a FULL side only
-                // conserves density if each delete is matched by a refill of the
-                // vacated level (any other add at full density is a re-quantify
-                // and the side would drain — see probes in the commit notes). So
-                // the delete rate must not exceed the refill rate:
-                //   ~45% of ops delete the CURRENT best level (forces the
-                //         inward best re-scan on the flat book);
-                //   ~55% refill the most recently vacated best (LIFO hole), which
-                //         restores it just below the current best, so the best
-                //         churns between a few adjacent prices while the side
-                //         stays at exactly N live levels. A refill with no
-                //         pending hole is a re-quantify of the best region.
-                const int64_t best = best_[si]; // -1 only if the side emptied
-                if (best >= 0 && rnd(0, 99) < 45) {
-                    delete_level(si, best);
-                    holes_[si].push_back(best);
-                    return make(s, best, 0);
-                }
-                if (!holes_[si].empty()) {
-                    const int64_t idx = holes_[si].back(); // newest hole (just below best)
-                    holes_[si].pop_back();
-                    add_level(si, idx);
-                    return make(s, idx, qty_of(rnd(0, n_ - 1)));
-                }
-                // Book full, no pending hole: re-quantify a present near-best level.
-                const int64_t a = best >= 0 ? best : 0;
-                return make(s, a, qty_of(rnd(0, n_ - 1)));
-            }
-            case Workload::D: {
-                // Touch band only: levels [0, win_).
-                if (rnd(0, 99) < 15) { // 15% delete a present window level
-                    for (int tries = 0; tries < 128; ++tries) {
-                        const int64_t idx = rnd(0, win_ - 1);
-                        if (present_[si][static_cast<size_t>(idx)]) {
-                            delete_level(si, idx);
-                            return make(s, idx, 0);
-                        }
-                    }
-                    return make(s, rnd_present(si), qty_of(rnd(0, n_ - 1)));
-                }
-                // 85% add in the window; restore an absent window level first.
-                for (int tries = 0; tries < 128; ++tries) {
-                    const int64_t idx = rnd(0, win_ - 1);
-                    if (!present_[si][static_cast<size_t>(idx)]) {
-                        add_level(si, idx);
-                        return make(s, idx, qty_of(rnd(0, n_ - 1)));
-                    }
-                }
-                const int64_t idx = rnd(0, win_ - 1); // window is full: re-quantify
-                return make(s, idx, qty_of(rnd(0, n_ - 1)));
-            }
-            case Workload::E: {
-                // Uniformly random over the whole side region.
-                if (rnd(0, 1) == 0) { // 50% delete a present level
-                    const int64_t idx = rnd_present(si);
-                    delete_level(si, idx);
-                    return make(s, idx, 0);
-                }
-                if (const int64_t a = rnd_absent(si); a >= 0) { // 50% restore
-                    add_level(si, a);
-                    return make(s, a, qty_of(rnd(0, n_ - 1)));
-                }
-                return make(s, rnd_present(si), qty_of(rnd(0, n_ - 1)));
-            }
-        }
-        return L2Update{0, 0, 0, Side::Bid}; // unreachable
-    }
-
-    Workload             wl_;
-    int64_t              n_;
-    int64_t              win_ = 0;
-    int64_t              best_[2] = {0, 0};
-    uint64_t             seq_;
-    std::mt19937_64      rng_;
-    std::vector<uint8_t> present_[2];
-    std::vector<int64_t> holes_[2]; // workload C: vacated best slots awaiting refill
-};
 
 // ---------------------------------------------------------------------------
 // Timing
