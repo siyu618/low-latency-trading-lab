@@ -1,0 +1,6 @@
+# Phase 4 tail benchmark command
+command: ./build-perf/orderbook_tail_bench --book map --workload A --levels 1000 --updates 10000000 --batch-size 512
+time:    2026-09-09T03:11:47Z
+updates: 10000000
+batch:   512
+seed:    default (Phase 2)

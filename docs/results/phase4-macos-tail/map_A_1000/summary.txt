@@ -1,0 +1,31 @@
+# Phase 4 tail-latency summary. Units: ns per update, batch-normalized over 512 updates/batch.
+# Distribution metrics (mean/percentiles/ratios) cover FULL batches only; see distribution_samples and the partial_batch_* keys.
+# impl=map wl=A(update-only) levels=1000 updates=10000000 batch_size=512 seed=407715774446
+impl=map
+wl=A
+wl_desc=update-only
+levels=1000
+updates=10000000
+batch_size=512
+seed=407715774446
+total_samples=19532
+distribution_samples=19531
+partial_batch_present=1
+partial_batch_ops=128
+partial_ns_per_update=41.343750
+mean_batch_normalized_ns_per_update=34.219586
+min_batch_normalized_ns_per_update=10.335938
+p50_batch_normalized_ns_per_update=33.447266
+p90_batch_normalized_ns_per_update=35.644531
+p99_batch_normalized_ns_per_update=55.664062
+p99_9_batch_normalized_ns_per_update=132.242188
+max_batch_normalized_ns_per_update=511.882812
+ratio_p99_p50=1.664234
+ratio_p99_9_p50=3.953752
+ratio_max_p50=15.304175
+final_synced=1
+final_seq=10002000
+final_best_bid=2000/676
+final_best_ask=1/735
+final_level_count=2000
+percentile_definition=nearest-rank on sorted FULL-batch durations (ceil(q*N)-th smallest); a trailing partial batch is recorded in the raw CSV but excluded from the distribution

@@ -202,7 +202,8 @@ Documented limitations:
 - Phase 1 — FROZEN
 - Phase 2 — FROZEN
 - Phase 3L — READY / DEFERRED
-- Phase 3M — READY / DEFERRED
+- Phase 3M — READY / DEFERRED (six real recordings committed; call-tree GUI
+  pass still pending — see `docs/results/phase3-macos-apple-silicon/`)
 - **Phase 4 tooling — COMPLETE**
-- **Phase 4 real canonical measurement — PENDING** until real tail-latency
-  datasets are collected and reviewed.
+- **Phase 4 real canonical measurement — COLLECTED AND REVIEWED** (2026-09-09,
+  six cells under `docs/results/phase4-macos-tail/`).
