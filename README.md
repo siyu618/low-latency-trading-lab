@@ -41,13 +41,20 @@ low-latency-trading-lab/
 ├── include/
 │   ├── types.h              # Side, L2Update, BookSnapshot, apply contract
 │   ├── map_order_book.h     # std::map baseline
-│   └── flat_order_book.h    # dense tick-addressed book
+│   ├── flat_order_book.h    # dense tick-addressed book
+│   └── bitset_flat_order_book.h  # Optimization Study: hierarchical-occupancy
+│                                 #   bitmap twin of flat_order_book (drop-in)
 ├── tests/
 │   ├── order_book_tests.cpp # every scenario run against BOTH books
+│   ├── bitset_order_book_tests.cpp  # Optimization Study: three-way differential
+│   │                                 #   (map/flat/bitset) correctness suite
 │   └── phase4_stats_tests.cpp  # Phase 4 distribution/percentile regression tests
 ├── benchmark/
 │   ├── stream_gen.h            # single source of truth for the A/B/C/D/E op streams
 │   ├── order_book_bench.cpp    # Phase 2 steady-state apply() throughput benchmark
+│   ├── order_book_bitmap_bench.cpp  # Optimization Study: flat-vs-bitmap steady
+│   │                                 #   throughput + --check/--gaps/--memory/--inproc
+│   ├── order_book_gap_bench.cpp     # Optimization Study: next-best-gap ladder sweep
 │   ├── order_book_tail_bench.cpp  # Phase 4 fixed-batch tail-latency sampler
 │   └── tail_stats.h            # Phase 4 distribution metrics / percentile definitions
 ├── scripts/
@@ -61,8 +68,10 @@ low-latency-trading-lab/
 │   └── assert_nonzero_exit.cmake  # ctest guard for the test exit-code self-test
 ├── docs/
 │   ├── results/             # committed datasets (phase2-m3max/, phase3-macos-apple-silicon/,
-│   │   │                    #   phase4-macos-tail/ canonical + -pre4.1-invalid/ archived; see README.md)
+│   │   │                    #   phase4-macos-tail/ canonical + -pre4.1-invalid/ archived, and
+│   │   │                    #   orderbook-bitmap-optimization/ study; see README.md)
 │   │   └── README.md        # layout + honesty rule
+│   ├── ORDERBOOK_BITMAP_OPTIMIZATION.md  # Optimization Study analysis (item 12)
 │   └── profiling/           # Phase 3 guides (README.md, MACOS_INSTRUMENTS.md) + Phase 4
 │                            #   tail-latency methodology (PHASE4_TAIL_LATENCY.md)
 ├── CMakeLists.txt
@@ -146,22 +155,25 @@ deliberately deterministic and honest about what it excludes:
 Price-domain model: the configured domain is `[1, 2N]` where `N` is the scale in
 price levels. Each side starts with `N` live levels (bids at `N+1..2N`, asks at
 `1..N`). Workloads differ in how close to `N` they hold that count afterward —
-A holds exactly `N` throughout, B/C/D hold approximately `N` (conserved), E may
-drift below `N` — but all keep the side far from empty, so each cell measures
-steady state, never a draining book. See the notes under the workload table.
+A holds exactly `N` throughout, B/C/D maintain it near `N` (each delete is later
+restored, so density returns toward `N`; transient holes may exist in a finite
+prefix before the restore catches up), E may drift below `N` — but all keep the
+side far from empty, so each cell measures steady state, never a draining book.
+See the notes under the workload table.
 Workloads:
 
 | Workload | What it does | Live levels over a run |
 |----------|--------------|------------------------|
 | A update-only | every op re-quantifies a random present level; the level set never changes | exactly N throughout |
-| B 10% deletes | ~10% of ops delete a random present level; the rest add at a random absent level (restoring what was deleted) | ~N: conserved (each delete is later restored); exactly N at every prefix where the restore has caught up |
-| C frequent best deletion | ~45% delete the current best level (forces the flat book's inward re-scan); the rest refill the most recently vacated level, which restores it just below the current best | ~N: conserved (refill rate ≥ delete rate); returns to exactly N whenever the side is full with no pending hole |
-| D concentrated top-of-book | ops touch only a small window at the best end; ~15% delete a present window level, ~85% add at an absent window level | ~N: conserved inside the window; the levels below the window never move |
-| E uniformly random | fair side coin, price uniform over the whole region, 50% delete / 50% add | ≤ N: NOT conserved — random deletes/adds, occupancy may drift below N; the exact finite-run value is not hard-coded (see below) |
+| B 10% deletes | ~10% of ops delete a random present level; the rest add at a random absent level (restoring what was deleted) | ~N: maintained near N (each delete is later restored, density returns toward N); exactly N at every prefix where the restore has caught up, transient holes possible before it does |
+| C frequent best deletion | ~45% delete the current best level (forces the flat book's inward re-scan); the rest refill the most recently vacated level, which restores it just below the current best | ~N: restored toward N (refill rate ≥ delete rate); exactly N whenever the side is full with no pending hole — a finite stream may end with a small pending-hole deficit |
+| D concentrated top-of-book | ops touch only a small window at the best end; ~15% delete a present window level, ~85% add at an absent window level | ~N inside the window: maintained near full (each delete is later restored; transient holes possible); the levels below the window never move |
+| E uniformly random | fair side coin, price uniform over the whole region, 50% delete / 50% add | ≤ N: NOT conserved — random deletes/adds let occupancy drift below N; the exact finite-run value is not hard-coded (see below) |
 
 So A is the only workload whose live level count is exactly `N` for the whole
-timed block; B/C/D hold it approximately `N` (conserved but with transient
-deficits); E does not conserve it — it starts at `N`, and since deletes and
+timed block; B/C/D hold it approximately `N` (maintained near `N` — restored
+toward it after each delete, with transient holes possible in any finite
+prefix); E does not conserve it — it starts at `N`, and since deletes and
 adds are chosen at random the occupancy may drift below `N`. All keep the side
 far from empty, so every cell measures steady state — and because each workload
 replays the identical stream through both books, any of these level-count
@@ -283,9 +295,11 @@ book's stores dead or reorder across `apply()` calls).
 **Methodology notes / limitations.**
 
 - **Live level counts are exact only for A.** Only workload A holds its live
-  count at exactly `N` for the whole block. B/C/D conserve levels but with
-  transient deficits (count returns to `N` once deletes are restored). E does
-  not conserve levels: it starts at `N` and may drift below it — how far depends
+  count at exactly `N` for the whole block. B/C/D maintain it near `N` — each
+  delete is restored by a later refill, so density returns toward `N`, but a
+  finite prefix may contain transient holes (the count returns to `N` once the
+  deletes are restored). E does not conserve levels: it starts at `N` and may
+  drift below it — how far depends
   on scale, update count, the RNG stream, and generator fallback behavior, so
   no single value is asserted. Because every workload replays the *identical*
   stream through both books, whatever level-count profile a workload has is
@@ -303,6 +317,22 @@ book's stores dead or reorder across `apply()` calls).
   (Phase 4), and best-of-3 was chosen to discount scheduler noise. Running on a
   shared/heterogeneous machine would add variance. Snapshot load and stream
   generation are excluded by construction.
+
+## Experiment 01 Optimization Study (internal, complete)
+
+A post-Phase-4 internal study evaluated a hierarchical-occupancy-bitmap twin of
+the flat book (`include/bitset_flat_order_book.h`) — same semantics, no
+inheritance, bitmap maintained only on occupancy transitions. **Status:
+complete.** It is a regime-dependent *alternative*, not a replacement, and no
+frozen implementation or result was changed. Measured on the same M3 Max:
+correctness (three-way differential vs `MapOrderBook` and `FlatOrderBook`,
+sanitizer- and strict-warning-clean), memory overhead of the occupancy hierarchy
+≈ 1.59 % of the quantity arrays at 1M levels, and a best-delete crossover gap of
+**4–8 price ticks** — a regime the frozen A–E workloads never reach (only C
+deletes the best in volume, always at distance ≤ 1). The bitmap is faster on
+requantify-heavy streams (A/D), slower on delete-heavy ones (B), and in the
+noise on C/E. See `docs/ORDERBOOK_BITMAP_OPTIMIZATION.md` for the full
+analysis and `docs/results/orderbook-bitmap-optimization/` for the raw data.
 
 ## Next phases
 

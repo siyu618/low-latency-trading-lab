@@ -1,0 +1,3 @@
+# gaps: wl=D N=1000000 updates=1000000  best_deletes=18 (side_emptied=0)
+# gaps: rescan-distance cumulative distribution (of best deletes):
+# gaps:   distance<=1 : 100.00%  (n=18)

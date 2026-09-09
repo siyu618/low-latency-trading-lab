@@ -1,0 +1,21 @@
+cmd: ./build/orderbook_bitmap_bench both all all --memory
+# memory N=1000 domain=[1,2000] per-side slot span=2000
+# memory quantity_arrays_bytes=32000  (0.0305176 MiB; 0.0152588 MiB/side)
+# memory occupancy_L0_words_per_side=32 L1=1 L2=1
+# memory occupancy_bytes=544  (0.000518799 MiB; per side L0=0.25 KiB L1=0.0078125 KiB L2=8 B)
+# memory occupancy_is_fraction_of_quantity=1.7000%
+# memory N=10000 domain=[1,20000] per-side slot span=20000
+# memory quantity_arrays_bytes=320000  (0.305176 MiB; 0.152588 MiB/side)
+# memory occupancy_L0_words_per_side=313 L1=5 L2=1
+# memory occupancy_bytes=5104  (0.00486755 MiB; per side L0=2.44531 KiB L1=0.0390625 KiB L2=8 B)
+# memory occupancy_is_fraction_of_quantity=1.5950%
+# memory N=100000 domain=[1,200000] per-side slot span=200000
+# memory quantity_arrays_bytes=3200000  (3.05176 MiB; 1.52588 MiB/side)
+# memory occupancy_L0_words_per_side=3125 L1=49 L2=1
+# memory occupancy_bytes=50800  (0.0484467 MiB; per side L0=24.4141 KiB L1=0.382812 KiB L2=8 B)
+# memory occupancy_is_fraction_of_quantity=1.5875%
+# memory N=1000000 domain=[1,2000000] per-side slot span=2000000
+# memory quantity_arrays_bytes=32000000  (30.5176 MiB; 15.2588 MiB/side)
+# memory occupancy_L0_words_per_side=31250 L1=489 L2=8
+# memory occupancy_bytes=507952  (0.484421 MiB; per side L0=244.141 KiB L1=3.82031 KiB L2=64 B)
+# memory occupancy_is_fraction_of_quantity=1.5874%

@@ -41,6 +41,23 @@ target_link_libraries(phase4_stats_tests PRIVATE llob_core)
 target_compile_options(phase4_stats_tests PRIVATE -Wall -Wextra)
 add_test(NAME phase4_stats_tests COMMAND phase4_stats_tests)
 
+# Experiment 01 Optimization Study: BitsetFlatOrderBook correctness. Driven
+# three-way against MapOrderBook (oracle) and FlatOrderBook over identical
+# streams; must agree on every observable. Same exit-code guard as above.
+add_executable(bitset_order_book_tests tests/bitset_order_book_tests.cpp)
+target_link_libraries(bitset_order_book_tests PRIVATE llob_core)
+target_compile_options(bitset_order_book_tests PRIVATE -Wall -Wextra)
+add_test(NAME bitset_order_book_tests COMMAND bitset_order_book_tests)
+
+add_test(NAME bitset_order_book_tests_exitcode
+         COMMAND ${CMAKE_COMMAND}
+                 -DLLDB_SELFTEST_FAIL=1
+                 -DNAME=bitset_order_book_tests_exitcode
+                 -DBINARY=$<TARGET_FILE:bitset_order_book_tests>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/assert_nonzero_exit.cmake)
+set_tests_properties(bitset_order_book_tests_exitcode PROPERTIES
+                     PASS_REGULAR_EXPRESSION "bitset_order_book_tests_exitcode: got expected non-zero exit")
+
 # Guard against a regression of the exit-code bug: the self-test mode runs only
 # a deliberately failing CHECK and must return non-zero. If it ever returns 0
 # (e.g. the runner stops propagating failures), CTest reports this test as
@@ -74,6 +91,23 @@ if(BUILD_BENCHMARKS)
     target_link_libraries(orderbook_tail_bench PRIVATE llob_core)
     target_compile_options(orderbook_tail_bench PRIVATE -O3 -DNDEBUG)
 
+    # Experiment 01 Optimization Study: deterministic steady-state benchmark of
+    # FlatOrderBook vs BitsetFlatOrderBook on the frozen A/B/C/D/E workloads,
+    # plus --check (three-way differential), --gaps (best-delete rescan-distance
+    # analysis) and --memory (quantity-array vs occupancy-hierarchy bytes).
+    # Reuses the Phase 2 methodology; canonical runs are ONE impl per process.
+    add_executable(orderbook_bitmap_bench benchmark/order_book_bitmap_bench.cpp)
+    target_link_libraries(orderbook_bitmap_bench PRIVATE llob_core)
+    target_compile_options(orderbook_bitmap_bench PRIVATE -O3 -DNDEBUG)
+
+    # Experiment 01 Optimization Study: controlled next-best-gap sweep. Ladder
+    # book whose every timed best-delete rescans exactly g slots; sweeps
+    # g = 1,2,...,1024 to find the measured crossover where the hierarchical
+    # occupancy lookup beats the adjacent linear re-scan.
+    add_executable(orderbook_gap_bench benchmark/order_book_gap_bench.cpp)
+    target_link_libraries(orderbook_gap_bench PRIVATE llob_core)
+    target_compile_options(orderbook_gap_bench PRIVATE -O3 -DNDEBUG)
+
     # CPU/arch tuning is OPT-IN and free-form so it is never hard-coded to one
     # machine. The canonical M3 measurements in the README were built WITHOUT
     # any arch flag (the compiler's default for the target). To tune for the
@@ -91,6 +125,8 @@ if(BUILD_BENCHMARKS)
         if(CXX_SUPPORTS_BENCH_ARCH)
             target_compile_options(orderbook_bench PRIVATE ${BENCH_ARCH_FLAGS})
             target_compile_options(orderbook_tail_bench PRIVATE ${BENCH_ARCH_FLAGS})
+            target_compile_options(orderbook_bitmap_bench PRIVATE ${BENCH_ARCH_FLAGS})
+            target_compile_options(orderbook_gap_bench PRIVATE ${BENCH_ARCH_FLAGS})
         else()
             message(WARNING "BENCH_ARCH_FLAGS '${BENCH_ARCH_FLAGS}' unsupported by this compiler; "
                             "building the benchmark with the compiler default")

@@ -1,0 +1,21 @@
+# cmd: orderbook_bitmap_bench both <wl> 1000000 updates=<2M|500k> --inproc=<12|16>
+# ---- workload A (updates=2000000, inproc blocks=24) ----
+# orderbook_bitmap_bench --inproc: flat vs bits interleaved in ONE process (24 blocks each, fresh snapshot per block, alternating order), 2000000 ops/block
+flat,A,1000000,2000000,4.837,5.054
+bits,A,1000000,2000000,4.439,4.790
+# ---- workload C (updates=2000000, inproc blocks=24) ----
+# orderbook_bitmap_bench --inproc: flat vs bits interleaved in ONE process (24 blocks each, fresh snapshot per block, alternating order), 2000000 ops/block
+flat,C,1000000,2000000,7.365,7.373
+bits,C,1000000,2000000,6.832,6.881
+# ---- workload D (updates=2000000, inproc blocks=24) ----
+# orderbook_bitmap_bench --inproc: flat vs bits interleaved in ONE process (24 blocks each, fresh snapshot per block, alternating order), 2000000 ops/block
+flat,D,1000000,2000000,5.107,5.157
+bits,D,1000000,2000000,3.868,3.905
+# ---- workload E (updates=2000000, inproc blocks=24) ----
+# orderbook_bitmap_bench --inproc: flat vs bits interleaved in ONE process (24 blocks each, fresh snapshot per block, alternating order), 2000000 ops/block
+flat,E,1000000,2000000,9.866,9.709
+bits,E,1000000,2000000,9.457,9.324
+# ---- workload B (updates=500000, inproc blocks=32) ----
+# orderbook_bitmap_bench --inproc: flat vs bits interleaved in ONE process (32 blocks each, fresh snapshot per block, alternating order), 500000 ops/block
+flat,B,1000000,500000,5.742,5.972
+bits,B,1000000,500000,7.055,7.273

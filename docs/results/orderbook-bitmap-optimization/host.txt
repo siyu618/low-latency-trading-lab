@@ -1,0 +1,25 @@
+# host: uname
+Darwin bogon 23.2.0 Darwin Kernel Version 23.2.0: Wed Nov 15 21:54:05 PST 2023; root:xnu-10002.61.3~2/RELEASE_ARM64_T6031 arm64
+# host: sw_vers
+ProductName:		macOS
+ProductVersion:		14.2.1
+BuildVersion:		23C71
+# host: machdep.cpu
+Apple M3 Max
+14
+# compiler
+Apple clang version 15.0.0 (clang-1500.3.9.4)
+# git
+67987ec Docs: tighten Experiment 01 claims and repo status (documentation-only)
+ M CMakeLists.txt
+ M README.md
+ M benchmark/order_book_bench.cpp
+ M cmake/assert_nonzero_exit.cmake
+ M docs/profiling/README.md
+?? benchmark/order_book_bitmap_bench.cpp
+?? benchmark/order_book_gap_bench.cpp
+?? docs/results/orderbook-bitmap-optimization/
+?? include/bitset_flat_order_book.h
+?? tests/bitset_order_book_tests.cpp
+# date
+2026-09-09T07:05:29Z

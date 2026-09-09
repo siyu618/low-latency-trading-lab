@@ -1,0 +1,35 @@
+### CMD: ./build/orderbook_bitmap_bench bits A 1000000 updates=2000000 reps=3
+# orderbook_bitmap_bench - optimization-study steady throughput (flat vs hierarchical-occupancy bitmap)
+# domain [1, 2N]; N live levels/side; fill untimed; best of 3 reps; 2000000 steady ops per block
+# impl,wl,scale_n,updates,best_ms,best_ns_per_update,best_updates_per_s
+bits,A,1000000,2000000,5.617,2.809,356046108
+# done bits
+### exit=0
+### CMD: ./build/orderbook_bitmap_bench bits B 1000000 updates=2000000 reps=3
+# orderbook_bitmap_bench - optimization-study steady throughput (flat vs hierarchical-occupancy bitmap)
+# domain [1, 2N]; N live levels/side; fill untimed; best of 3 reps; 2000000 steady ops per block
+# impl,wl,scale_n,updates,best_ms,best_ns_per_update,best_updates_per_s
+bits,B,1000000,2000000,9.785,4.893,204390137
+# done bits
+### exit=0
+### CMD: ./build/orderbook_bitmap_bench bits C 1000000 updates=2000000 reps=3
+# orderbook_bitmap_bench - optimization-study steady throughput (flat vs hierarchical-occupancy bitmap)
+# domain [1, 2N]; N live levels/side; fill untimed; best of 3 reps; 2000000 steady ops per block
+# impl,wl,scale_n,updates,best_ms,best_ns_per_update,best_updates_per_s
+bits,C,1000000,2000000,13.271,6.636,150701705
+# done bits
+### exit=0
+### CMD: ./build/orderbook_bitmap_bench bits D 1000000 updates=2000000 reps=3
+# orderbook_bitmap_bench - optimization-study steady throughput (flat vs hierarchical-occupancy bitmap)
+# domain [1, 2N]; N live levels/side; fill untimed; best of 3 reps; 2000000 steady ops per block
+# impl,wl,scale_n,updates,best_ms,best_ns_per_update,best_updates_per_s
+bits,D,1000000,2000000,7.468,3.734,267810790
+# done bits
+### exit=0
+### CMD: ./build/orderbook_bitmap_bench bits E 1000000 updates=2000000 reps=3
+# orderbook_bitmap_bench - optimization-study steady throughput (flat vs hierarchical-occupancy bitmap)
+# domain [1, 2N]; N live levels/side; fill untimed; best of 3 reps; 2000000 steady ops per block
+# impl,wl,scale_n,updates,best_ms,best_ns_per_update,best_updates_per_s
+bits,E,1000000,2000000,11.906,5.953,167985465
+# done bits
+### exit=0

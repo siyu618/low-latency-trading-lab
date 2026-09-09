@@ -42,9 +42,11 @@
 //     the same apply() block that the wall clock times — not the untimed
 //     cold-start. Perf's ack is the literal "ack\n" (tools/perf util/evlist.h).
 //     The gate is a strict no-op when the env var is unset, so normal Phase 2
-//     runs are byte-for-byte unchanged, and the reported best_ns_per_update is
-//     unchanged in meaning (only the fifo handshake adds time, before t0 and
-//     after t1, outside both the chrono and the PMU windows).
+//     runs are byte-for-byte unchanged. The PMU window contains the same apply
+//     block as the chrono window and tightly brackets it, with a small fixed
+//     control-boundary contribution outside [t0,t1] (the enable/ack-to-t0 gap
+//     and the t1-to-disable/ack gap — per timed block, not per update), so the
+//     reported best_ns_per_update is unchanged in meaning.
 //   * OPTIONAL macOS signpost interval (Phase 3M): when the env var
 //     LLOB_SIGNPOSTS=1 is set (Apple platforms only), the SAME timed block is
 //     bracketed by os_signpost_interval_begin/end on a "llob.apply.block"

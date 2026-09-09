@@ -1,0 +1,10 @@
+./build/orderbook_bitmap_bench flat A 1000000 updates=2000000 reps=3
+./build/orderbook_bitmap_bench flat B 1000000 updates=2000000 reps=3
+./build/orderbook_bitmap_bench flat C 1000000 updates=2000000 reps=3
+./build/orderbook_bitmap_bench flat D 1000000 updates=2000000 reps=3
+./build/orderbook_bitmap_bench flat E 1000000 updates=2000000 reps=3
+./build/orderbook_bitmap_bench bits A 1000000 updates=2000000 reps=3
+./build/orderbook_bitmap_bench bits B 1000000 updates=2000000 reps=3
+./build/orderbook_bitmap_bench bits C 1000000 updates=2000000 reps=3
+./build/orderbook_bitmap_bench bits D 1000000 updates=2000000 reps=3
+./build/orderbook_bitmap_bench bits E 1000000 updates=2000000 reps=3

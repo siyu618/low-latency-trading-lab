@@ -1,11 +1,16 @@
-# CMake script used by the `orderbook_tests_exitcode` CTest test.
+# CMake script used by the `*_tests_exitcode` CTest tests.
 #
 # Invoked by ctest (via cmake -P) as:
 #   cmake -DLLDB_SELFTEST_FAIL=1 -DBINARY=<path> -P assert_nonzero_exit.cmake
+#   (NAME is optional and only labels the STATUS line; it defaults to
+#    orderbook_tests_exitcode so existing callers are unchanged.)
 #
 # Purpose: prove that the test binary returns NON-ZERO when a CHECK fails.
-# Regression guard for the order-book test runner's exit-code handling.
+# Regression guard for the order-book test runners' exit-code handling.
 
+if(NOT DEFINED NAME)
+    set(NAME "orderbook_tests_exitcode")
+endif()
 if(NOT DEFINED BINARY)
     message(FATAL_ERROR "assert_nonzero_exit.cmake: BINARY not provided")
 endif()
@@ -29,4 +34,4 @@ if(_rc EQUAL 0)
         "Output was:\n${_out}\n${_err}")
 endif()
 
-message(STATUS "orderbook_tests_exitcode: got expected non-zero exit (code=${_rc})")
+message(STATUS "${NAME}: got expected non-zero exit (code=${_rc})")

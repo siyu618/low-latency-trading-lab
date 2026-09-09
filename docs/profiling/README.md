@@ -99,7 +99,7 @@ pick the workload that actually exercises that behavior:
 |---|---|---|
 | **Traversal / pointer-chasing / cache / TLB / branches / IPC** (a map update touches an existing node) | **A** update-only | A re-quantifies a random *present* level. It never inserts or erases, so it isolates the cost of *finding and touching* an existing tree node from the cost of changing the tree structure. |
 | **The map's tree walk shape** | A vs B vs C vs D vs E | the same counters, compared across workloads whose update distributions differ (full-book vs top-of-book vs best-churn). |
-| **The allocator / node create+destroy churn** | **B** (10% deletes, conserved) and **E** (uniform deletes/adds) | these actually call `insert_or_assign` on absent prices and `erase()` — the paths that allocate and free tree nodes. A does NOT. |
+| **The allocator / node create+destroy churn** | **B** (10% deletes, density restored toward N) and **E** (uniform deletes/adds) | these actually call `insert_or_assign` on absent prices and `erase()` — the paths that allocate and free tree nodes. A does NOT. |
 | The flat book's array store / cache-line behavior | **A** (or C for the re-scan) | flat A is a single-cache-line store; flat C adds the inward best re-scan. |
 
 This corrects an earlier framing: workload A does **not** allocate or erase, so
@@ -141,16 +141,18 @@ sent before `t0`, disable is sent immediately after `t1`, and the end-state
 reads come after disable. What perf counted and what the wall clock timed are the
 same loop iterations.
 
-**Boundary overhead is real but small and fixed.** The gate is tightly aligned
-around the apply() block, but it is not literally instruction-for-instruction
-identical to the `[t0, t1]` chrono window: there is a small fixed cost between
-perf enable/ack and `t0`, and between `t1` and the actual perf disable (the
-handshake itself). This boundary overhead is **per timed block, not per update**,
-and the measured block is large (2,000,000 updates by default), so the overhead
-is negligible relative to the block. It is outside both the chrono and the PMU
-window, so it does not change the reported ns/update's meaning — but a profile
-must be read at block granularity, not as if every boundary instruction were
-part of an update.
+**Boundary overhead is real but small and fixed.** The PMU window contains the
+same apply block as the chrono window and tightly brackets it: perf enable/ack
+happens before `t0`, and perf disable/ack immediately after `t1`, so the counted
+region spans the timed apply loop. It is not literally instruction-for-instruction
+identical to the `[t0, t1]` chrono window: there is a small fixed
+**control-boundary contribution outside `[t0,t1]`** — the gap between the
+enable/ack and `t0`, and between `t1` and the disable/ack. That boundary work is
+**inside the PMU window but outside the chrono window**, so a profile must be
+read at block granularity, not as if every boundary instruction were part of an
+update. The overhead is **per timed block, not per update**, and the measured
+block is large (2,000,000 updates by default), so it is negligible relative to
+the block and does not change the reported ns/update's meaning.
 
 The wall time that pairs with a counter row is the **benchmark's own chrono
 ns/update** from that run. perf's "seconds time elapsed" line is NOT used as the
@@ -276,7 +278,7 @@ throughput baseline** (below), never against the M3 Max CSV.
 | `map C 1000000` | "why is map C cheap" — near-touch locality / branches / tree-path |
 | `map D 1000000` | top-of-book concentration contrast |
 | `map E 1000000` | uniform random — worst-case pointer chasing **and** allocator churn (B/E do allocate) |
-| `map B 1000000` | allocator churn (10% deletes, conserved) |
+| `map B 1000000` | allocator churn (10% deletes, density restored toward N) |
 | `flat A 1000000` | where flat's per-op time goes (single-cache-line store) |
 | `flat C 1000000` | cost of the inward best re-scan |
 

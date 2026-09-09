@@ -32,6 +32,14 @@ measurement family. Transient raw runs land in repo-root `results/`
   tooling (two independent runs per cell; trailing partial batch leaked into the
   summary). **INVALID / NOT canonical**, retained only as a labeled historical
   artifact — never cite it. See `docs/profiling/PHASE4_TAIL_LATENCY.md`.
+- `orderbook-bitmap-optimization/` — the Experiment 01 Optimization Study
+  dataset (post-Phase-4, internal): `BitsetFlatOrderBook` (hierarchical
+  occupancy bitmap) vs the frozen `FlatOrderBook` — steady throughput on the
+  A–E workloads at 1M, a controlled best-delete gap ladder sweep, per-workload
+  best-delete re-scan-distance analysis, and occupancy-vs-quantity memory
+  accounting, all on the same Apple M3 Max. None of it is a Phase 2/4 canonical
+  dataset; it is read against them. See its `README.md` and
+  `docs/ORDERBOOK_BITMAP_OPTIMIZATION.md`.
 
 ## Honesty rule
 

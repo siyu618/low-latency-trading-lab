@@ -1,0 +1,35 @@
+### CMD: ./build/orderbook_bitmap_bench flat A 1000000 updates=2000000 reps=3
+# orderbook_bitmap_bench - optimization-study steady throughput (flat vs hierarchical-occupancy bitmap)
+# domain [1, 2N]; N live levels/side; fill untimed; best of 3 reps; 2000000 steady ops per block
+# impl,wl,scale_n,updates,best_ms,best_ns_per_update,best_updates_per_s
+flat,A,1000000,2000000,8.865,4.433,225596774
+# done flat
+### exit=0
+### CMD: ./build/orderbook_bitmap_bench flat B 1000000 updates=2000000 reps=3
+# orderbook_bitmap_bench - optimization-study steady throughput (flat vs hierarchical-occupancy bitmap)
+# domain [1, 2N]; N live levels/side; fill untimed; best of 3 reps; 2000000 steady ops per block
+# impl,wl,scale_n,updates,best_ms,best_ns_per_update,best_updates_per_s
+flat,B,1000000,2000000,8.918,4.459,224255044
+# done flat
+### exit=0
+### CMD: ./build/orderbook_bitmap_bench flat C 1000000 updates=2000000 reps=3
+# orderbook_bitmap_bench - optimization-study steady throughput (flat vs hierarchical-occupancy bitmap)
+# domain [1, 2N]; N live levels/side; fill untimed; best of 3 reps; 2000000 steady ops per block
+# impl,wl,scale_n,updates,best_ms,best_ns_per_update,best_updates_per_s
+flat,C,1000000,2000000,12.240,6.120,163403138
+# done flat
+### exit=0
+### CMD: ./build/orderbook_bitmap_bench flat D 1000000 updates=2000000 reps=3
+# orderbook_bitmap_bench - optimization-study steady throughput (flat vs hierarchical-occupancy bitmap)
+# domain [1, 2N]; N live levels/side; fill untimed; best of 3 reps; 2000000 steady ops per block
+# impl,wl,scale_n,updates,best_ms,best_ns_per_update,best_updates_per_s
+flat,D,1000000,2000000,8.865,4.432,225613723
+# done flat
+### exit=0
+### CMD: ./build/orderbook_bitmap_bench flat E 1000000 updates=2000000 reps=3
+# orderbook_bitmap_bench - optimization-study steady throughput (flat vs hierarchical-occupancy bitmap)
+# domain [1, 2N]; N live levels/side; fill untimed; best of 3 reps; 2000000 steady ops per block
+# impl,wl,scale_n,updates,best_ms,best_ns_per_update,best_updates_per_s
+flat,E,1000000,2000000,11.892,5.946,168187361
+# done flat
+### exit=0
