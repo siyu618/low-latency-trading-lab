@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Collect macOS / Apple Silicon profiling metadata for a Phase 3M (Apple
-# Instruments) recording. Phase 3M observes the SAME macOS machine that
-# produced the Phase 2 canonical numbers, so this metadata anchors a recording
-# to that machine/build. Read-only: it never changes system settings.
+# Collect macOS / Apple Silicon benchmark metadata for a measured run on this
+# machine. It is shared by the Phase 3M Apple Instruments recordings (which
+# observe the SAME macOS machine that produced the Phase 2 canonical numbers)
+# and the Phase 4 tail-bench cells (scripts/tail-bench.sh), so the heading is
+# intentionally generic — "macOS / Apple Silicon benchmark metadata" — rather
+# than naming one phase. In each case the metadata anchors the measured
+# artifact to this machine/build. Read-only: it never changes system settings.
 #
 # Usage:
 #   scripts/collect-macos-profile-metadata.sh [outfile]
@@ -26,7 +29,7 @@ kv()       { printf '%-24s %s\n' "$1:" "$2" >>"$OUT"; }
 
 umask 022   # results are shared/committed; keep the metadata world-readable
 
-printf '# Phase 3M (macOS / Apple Silicon) profiling metadata — %s\n' \
+printf '# macOS / Apple Silicon benchmark metadata — %s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$OUT"
 
 # ---- OS / machine -------------------------------------------------------------

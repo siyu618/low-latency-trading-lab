@@ -17,13 +17,16 @@
 // A candidate level `idx` on a side is idx steps from the touch (idx 0 == the
 // best price), so both sides share one bookkeeping model. Workloads differ only
 // in WHICH levels they touch and how often they delete the best. Live-level
-// count over a run: A never changes the level set (stays exactly N); B/D
-// conserve levels (each delete is later restored, so the count is N at every
-// prefix where a restore has caught up); C conserves levels (refill rate >=
-// delete rate, count returns to N). E does NOT conserve levels — it deletes and
-// adds at random, so occupancy may drift below the starting N; the exact
-// finite-run value depends on scale, update count, the RNG stream, and the
-// generator's retry/fallback behavior, and is NOT hard-coded anywhere (the
+// count over a run: A never changes the level set — it holds exactly N
+// throughout. B/C/D are designed to RESTORE deleted levels and keep density near
+// the starting N, but they do not pin the count to exactly N at every instant: a
+// delete is undone only by a later refill, so any finite prefix may contain
+// transient holes, and C in particular can finish with a small pending-hole
+// deficit if the stream ends before the last vacated best is refilled (a finite
+// run's exact end count is not hard-coded). E does NOT conserve levels — it
+// deletes and adds at random, so occupancy may drift below the starting N; the
+// exact finite-run value depends on scale, update count, the RNG stream, and
+// the generator's retry/fallback behavior, and is NOT hard-coded anywhere (the
 // Phase 2 --check pass prints the actual ending level counts of the generated
 // stream). Every workload keeps the side far from empty, so each cell measures
 // steady state, never a draining book.
@@ -33,18 +36,22 @@
 //   B  10% deletes               each op picks a side; with 10% probability it
 //                                deletes a random present level, otherwise it
 //                                adds at a random ABSENT level (restoring the
-//                                one that was deleted); level count stays N
+//                                one that was deleted); density stays near N
+//                                (each delete is later restored)
 //   C  frequent best deletion    ~45% of ops delete the CURRENT best level
 //                                (forcing the inward best re-scan); the rest
 //                                refill the most recently vacated level, which
-//                                restores it just below the current best. The
-//                                best churns across a few adjacent prices while
-//                                the level count stays exactly N
+//                                restores it just below the current best, so
+//                                the best churns across a few adjacent prices
+//                                while density returns toward N (a finite
+//                                stream may end with a few vacated-best holes
+//                                still pending)
 //   D  concentrated top-of-book  ops touch only a small window [0, N/128) at
 //                                the best end; ~15% of ops delete a present
 //                                window level, ~85% add at an absent window
-//                                level (level count inside the window is
-//                                conserved); levels below the window never move
+//                                level (density inside the window is restored
+//                                toward full; transient holes possible);
+//                                levels below the window never move
 //   E  uniformly random          fair side coin; price uniform over that side's
 //                                whole region; 50% delete a present level, 50%
 //                                add at an absent one; occupancy may drift
@@ -244,17 +251,20 @@ private:
             }
             case Workload::C: {
                 // Best-price churn. Deleting the best level of a FULL side only
-                // conserves density if each delete is matched by a refill of the
-                // vacated level (any other add at full density is a re-quantify
-                // and the side would drain — see probes in the commit notes). So
-                // the delete rate must not exceed the refill rate:
+                // keeps density near N if each delete is matched by a refill of
+                // the vacated level (any other add at full density is a
+                // re-quantify and the side would drain — see probes in the
+                // commit notes). So the delete rate must not exceed the refill
+                // rate:
                 //   ~45% of ops delete the CURRENT best level (forces the
                 //         inward best re-scan on the flat book);
                 //   ~55% refill the most recently vacated best (LIFO hole), which
                 //         restores it just below the current best, so the best
-                //         churns between a few adjacent prices while the side
-                //         stays at exactly N live levels. A refill with no
-                //         pending hole is a re-quantify of the best region.
+                //         churns between a few adjacent prices while density
+                //         returns toward N. A finite stream can end with a few
+                //         pending holes (deleted bests not yet refilled), so the
+                //         ending live count need not be exactly N. A refill with
+                //         no pending hole is a re-quantify of the best region.
                 const int64_t best = best_[si]; // -1 only if the side emptied
                 if (best >= 0 && rnd(0, 99) < 45) {
                     delete_level(si, best);

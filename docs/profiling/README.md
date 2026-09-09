@@ -39,21 +39,29 @@ Two honesty rules follow:
 
 ## Status & honesty box
 
-**Profiling status — Phase 3M: tooling READY, measurement/analysis DEFERRED;
-Phase 3L: tooling READY, native measurement DEFERRED (no Linux host).** Six real
-Phase 3M Time Profiler recordings ARE committed under
-`docs/results/phase3-macos-apple-silicon/` (see that README), but per-function
-call-tree symbolization still needs an Instruments GUI pass, so no symbolized
-call-tree result is presented here. Whether a given machine can record is
-**detected at recording time** — never asserted as a permanent claim in these
-docs:
+**Profiling status — Phase 3M: tooling COMPLETE, recordings COLLECTED,
+call-tree / attribution analysis DEFERRED; Phase 3L: tooling READY, native
+Linux PMU data DEFERRED (no Linux host).** Six real Phase 3M Time Profiler
+recordings ARE committed under `docs/results/phase3-macos-apple-silicon/` (see
+that README), but per-function call-tree symbolization still needs an
+Instruments GUI pass, so no symbolized call-tree result is presented here — the
+raw recordings are COLLECTED, the analysis is DEFERRED. Whether a given machine
+can record is **detected at recording time** — never asserted as a permanent
+claim in these docs:
 
 - `xcrun --find xctrace` — present (and a real capture possible) only when full
   Xcode is installed; absent when only the command-line tools are.
 - `xcrun xctrace list templates` — the exact template names that machine offers.
 - `scripts/collect-macos-profile-metadata.sh` — writes the recording machine's
   actual state (macOS/chip/Xcode/Instruments availability, clang) into that
-  recording's `host.txt`.
+  recording's `host.txt`. Its heading is a generic "macOS / Apple Silicon
+  benchmark metadata" because the same collector is used by Phase 3M recordings
+  and Phase 4 tail-bench cells. `host.txt` files captured before the heading was
+  made generic — the committed Phase 3M tree and the Phase 4 canonical cells of
+  2026-09-09 — begin with the older "Phase 3M (macOS / Apple Silicon) profiling
+  metadata" line. The heading is cosmetic; the recorded hardware/toolchain
+  values are authoritative and were left byte-identical to the captured
+  artifacts.
 
 The Phase 3L harness is authored to run on a Linux host and has not been executed
 against a real PMU. Any illustrative output you may see in other docs is a
@@ -355,10 +363,11 @@ The two tracks record under different `docs/results/` trees.
 
 ### Phase 3M (macOS) — `docs/results/phase3-macos-apple-silicon/`
 
-Populated — status: tooling READY, measurement/analysis DEFERRED. Six real
-recordings are committed (see that tree's README), but per-function call-tree
-symbolization is still PENDING an Instruments GUI pass. When a recording has
-been inspected and symbolized, commit per cell:
+Populated — status: tooling COMPLETE, six real recordings COLLECTED,
+call-tree / attribution analysis DEFERRED (see that tree's README): per-function
+call-tree symbolization still needs an Instruments GUI pass over those
+recordings. When a recording has been inspected and symbolized, commit per
+cell:
 
 ```
 docs/results/phase3-macos-apple-silicon/<cell>/        e.g. map_A_1000000/
@@ -438,13 +447,14 @@ a real tool reported.
   NOT claim core pinning (Apple Silicon P/E cores and the OS scheduler move
   threads freely — see `collect-macos-profile-metadata.sh` and
   `MACOS_INSTRUMENTS.md`). Neither tool changes system settings.
-- Phase 3L (Linux) status — **tooling READY, native measurement DEFERRED** (no
+- Phase 3L (Linux) status — **tooling READY, native Linux PMU data DEFERRED** (no
   Linux host; no Linux PMU numbers exist). Phase 3M (macOS) status — **tooling
-  READY, measurement/analysis DEFERRED**: six real Time Profiler recordings ARE
-  committed under `docs/results/phase3-macos-apple-silicon/` (recording needs
-  full Xcode on the machine; capability is detected at recording time), but
-  per-function call-tree symbolization still needs an Instruments GUI pass, so
-  no symbolized call-tree claim is made yet.
+  COMPLETE, six real Time Profiler recordings COLLECTED, call-tree / attribution
+  analysis DEFERRED**: the recordings ARE committed under
+  `docs/results/phase3-macos-apple-silicon/` (recording needs full Xcode on the
+  machine; capability is detected at recording time), but per-function call-tree
+  symbolization still needs an Instruments GUI pass, so no symbolized call-tree
+  claim is made yet.
 - Phase 4 status — **COMPLETE / FROZEN.** The tooling
   (`orderbook_tail_bench`, `scripts/tail-bench.sh`; see `PHASE4_TAIL_LATENCY.md`)
   and the canonical six-cell dataset are done: measured 2026-09-09 on the M3 Max

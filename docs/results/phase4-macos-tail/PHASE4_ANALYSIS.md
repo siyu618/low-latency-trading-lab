@@ -54,9 +54,11 @@ the cell's p50 batch duration; n = 19,531 full batches per cell):
 
 Reading notes before the questions:
 
-- The flat cells are a different universe from the map cells: flat p50s are
-  3.9–6.0 ns/update versus 73.7–467.4 for the map at 1M levels — two to three
-  orders of magnitude apart, mirroring the Phase 2 throughput gap.
+- The flat cells are far faster than the map cells wherever the two are
+  directly comparable. Across the directly comparable measured 1M-level cells
+  the gap is roughly one to two orders of magnitude — flat_A vs map_A p50 ~3.91
+  vs ~177.6 ns/update (~45×), and flat_C vs map_C p50 ~6.02 vs ~73.7 ns/update
+  (~12×) — mirroring the Phase 2 throughput gap.
 - For every cell the mean sits close to p50 (mean/p50 = 1.002–1.054), because
   the distribution is massed near the median and only a small share of batches
   are slow. Tail information is in the high percentiles and the ratios, not in
@@ -104,15 +106,17 @@ What growing the map from 1K to 1M levels does:
    out: only 6 (0.03%) exceed 3×p50.
 
 INTERPRETATION (why the pattern might look like this; not asserted as
-proven). At 1M levels a std::map operation walks a pointer chain across
-cache lines, so ordinary per-batch work is inherently less uniform than at 1K
-(where the whole tree fits near the core) — that pushes the p99 boundary outward
-proportionally more than the median and produces the wide band of "moderately
-slow" batches seen at 1M. The extreme tail at 1K (p99.9/max at 3.7×/6.4× a
-34-ns median) is consistent with rare external events — scheduler or timer
-interference landing on a very fast median — rather than with the book itself.
-LIMITATION: a single run per cell cannot separate external interference from
-book-internal effects; that separation is a Phase 3 job, and the single max
+proven). A std::map update is a node-based tree operation, so at 1M levels the
+nodes it touches are spread across a far larger working set than at 1K; the
+smaller working set at 1K is consistent with better locality. A locality
+difference is a plausible reason per-batch work is less uniform at 1M and why
+the p99 boundary stretches outward proportionally more than the median, but
+Phase 4 does not measure cache/TLB/branch behavior, so no such mechanism is
+asserted as the cause. The extreme tail at 1K (p99.9/max at 3.7×/6.4× a 34-ns
+median) reflects rare high-latency batches of unknown cause; scheduler/timer/
+system interference is one possible contributor, but so is genuine book work —
+Phase 4 does not identify which. LIMITATION: a single run per cell cannot
+separate these causes; that separation is a Phase 3 job, and the single max
 values in particular (one batch in ~19.5k) are the least stable numbers in this
 dataset.
 
@@ -222,8 +226,8 @@ max 11.7×p50). The flat book's rescan cost being proportional to how far it mus
 scan is a documented property of the implementation, but attributing the tail
 shape to specific scan-length sequences is not established from this dataset.
 LIMITATION: flat_C's single 70.2-ns batch — 11.7× its median — is one sample in
-19.5k and could include external interference; do not read the precise magnitude
-of that one batch as a book property.
+19.5k and is a high-latency batch of unknown cause; do not read the precise
+magnitude of that one batch as a book property.
 
 ---
 
@@ -253,14 +257,18 @@ distribution. Phase 4 shows what that choice could not express:
    central cost and tail; the mean shows only the former.
 4. **The mean understates how fast map p99 degrades with scale.** From 1K to 1M
    levels, map A's mean grows 5.35× but its p99 grows 7.31×. Budgeting by the
-   mean would under-provision the p99 by ~35% at the larger scale. (It also
-   *over*states tail risk at small scale, where the far tail is dominated by
-   rare external events on a fast median — Question A.)
+   mean would under-provision the p99 by ~35% at the larger scale — and at the
+   small scale the mean is even less representative of the tail, where a few
+   rare high-latency batches (of unknown cause) sit far above a ~34-ns median
+   (Question A).
 
-General point: best-of-3 mean reports the distribution's *floor*; Phase 4's
-p50/p90/p99/p99.9 show the floor is not the shape. Both are real and
-complementary — mean for steady-state throughput comparison, the percentiles for
-any claim about worst-case or jitter.
+General point: Phase 2's best-of-3 mean is an optimistic, low-noise
+steady-throughput estimate — the minimum mean among three long throughput blocks
+— which is the right tool for comparing steady throughput but does not
+characterize a tail distribution. Phase 4's p50/p90/p99/p99.9 supply that
+distribution information. Both are real and complementary: the mean for
+steady-state throughput comparison, the percentiles for any claim about
+worst-case or jitter.
 
 ---
 
@@ -307,6 +315,20 @@ claim.
   A batch containing one slow op and 511 fast ones reports only a small
   elevation, so per-op single-update tail latency is *not* measured here — the
   distribution is over batches, by design.
+- **Host timer quantization.** Calibration on this host shows ~42 ns timing
+  granularity for very short intervals (clock_pair p99). Fixed-batch timing
+  amortizes the clock reads, which keeps per-update timer contamination small,
+  but the fastest flat distributions still carry this quantization: a ~42 ns
+  quantum is ~2% of flat_A's ~2 µs median batch (512 × ~3.9 ns/update). Tiny
+  differences of a few hundredths of ns/update between flat cells should not be
+  over-interpreted.
+- **Absolute numbers include a small, fixed harness overhead.** The benchmark's
+  empty timing skeleton measures ~125 ns per 512-update batch on this host —
+  small but non-zero, ~6% of flat_A's ~2 µs median batch and ~4% of flat_C's. It
+  is deliberately identical across map and flat (kept for optimizer safety and
+  fair comparison) and is **not** subtracted; the flat absolute numbers in
+  particular include it. See `RESULTS_METADATA.md` for the calibration
+  breakdown.
 - **Occupancy drift is real but expected.** map/flat C ended at 1,999,983 levels
   and map E at 1,994,440 (of 2,000,000); each cell reports `final_synced=1` and
   `final_seq == final_seq_expected`. The drift is a property of the generated

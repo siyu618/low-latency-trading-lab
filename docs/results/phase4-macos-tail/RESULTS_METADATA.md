@@ -97,10 +97,23 @@ Calibration medians (median / p99 / max, ns):
 | clock_pair | 0.000 | 42.000 | 8,375.000 |
 | empty_batch_harness | 125.000 | 208.000 | 16,875.000 |
 
-The empty-harness median (125 ns over a 512-update batch ≈ 0.24 ns/update
-normalized) is negligible against every cell's p50 (≥ 3.9 ns/update), so no
-correction is applied. The two groups are not subtracted from any reported
-number.
+The empty-harness median (125 ns per 512-update batch) is a **small but
+non-zero benchmark-harness overhead** that is included in every absolute number
+here — most visibly for the fastest flat cells: 125 ns is ~6% of flat_A's ~2,000
+ns p50 batch and ~4% of flat_C's ~3,084 ns p50 batch (negligible against the map
+cells' far longer batches). It is NOT auto-subtracted; the two groups are not
+subtracted from any reported number. Its two parts scale differently with batch
+size: the **clock boundary part** (the two `steady_clock` reads) is amortized
+across a larger batch, but the **per-update harness part** (loop control,
+optimizer barrier, sink arithmetic) repeats once per update and is not
+eliminated by increasing `batch_size`. The same skeleton runs against map and
+flat, so this contribution is identical across implementations and is kept
+deliberately for optimizer safety and fair comparison; the flat absolute numbers
+therefore include this small harness contribution.
+
+Host timer quantization: the ~42 ns `clock_pair` p99 indicates ~42 ns timing
+granularity for very short intervals — ~2% of a ~2 µs flat-A median batch (see
+`PHASE4_ANALYSIS.md`, Limitations).
 
 ## Honesty rule
 

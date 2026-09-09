@@ -5,31 +5,34 @@ repository currently hosts a single experiment — Experiment 01, below — at t
 repo root; if more experiments land later they will be organized into their own
 top-level directories.
 
-> **Status — Experiment 01: Phase 1 & 2 FROZEN; Phase 3L and Phase 3M READY /
-> DEFERRED; Phase 4 COMPLETE / FROZEN:**
+> **Status — Experiment 01: Phase 1 COMPLETE / FROZEN; Phase 2 COMPLETE /
+> FROZEN; Phase 3M tooling COMPLETE, recordings COLLECTED, attribution analysis
+> DEFERRED; Phase 3L tooling READY, native Linux measurement DEFERRED;
+> Phase 4 COMPLETE / FROZEN:**
 > **Experiment 01 — L2 Order Book: `std::map` vs Flat Representation** is
 > implemented, its correctness tests are green, and the deterministic benchmark
 > has measured steady-state `apply()` throughput across both implementations,
-> five workloads, and four book sizes (Phase 2, FROZEN). Profiling — where the
-> time goes — is split into **Phase 3M** — macOS / Apple Instruments on the same
-> M3 Max that produced Phase 2 (tooling READY; six real recordings committed
-> under `docs/results/phase3-macos-apple-silicon/`, but per-function call-tree
-> symbolization still needs an Instruments GUI pass, so analysis is DEFERRED) —
-> and **Phase 3L** — Linux `perf` (tooling READY; native measurement DEFERRED,
-> no Linux host). Both use opt-in markers around the timed `apply()` loop: an
-> os_signpost interval on Apple (`LLOB_SIGNPOSTS=1`) and a perf-control gate on
-> Linux (`LLOB_PERF_CONTROL`). Phase 4 tail-latency analysis is **COMPLETE /
-> FROZEN**: the hardened tooling (`orderbook_tail_bench`,
-> `scripts/tail-bench.sh`) and the canonical six-cell distribution dataset are
-> measured, verified, and published under `docs/results/phase4-macos-tail/`. The
-> earlier buggy-tooling cells are archived — INVALID, not canonical — under
+> five workloads, and four book sizes (Phase 2, COMPLETE / FROZEN). Profiling —
+> where the time goes — is split into **Phase 3M** — macOS / Apple Instruments
+> on the same M3 Max that produced Phase 2 (tooling COMPLETE; six real
+> recordings COLLECTED under `docs/results/phase3-macos-apple-silicon/`;
+> per-function call-tree / attribution analysis DEFERRED — it still needs an
+> Instruments GUI pass over those recordings) — and **Phase 3L** — Linux `perf`
+> (tooling READY; native Linux PMU data DEFERRED, no Linux host). Both use
+> opt-in markers around the timed `apply()` loop: an os_signpost interval on
+> Apple (`LLOB_SIGNPOSTS=1`) and a perf-control gate on Linux
+> (`LLOB_PERF_CONTROL`). Phase 4 tail-latency analysis is **COMPLETE / FROZEN**:
+> the hardened tooling (`orderbook_tail_bench`, `scripts/tail-bench.sh`) and the
+> canonical six-cell distribution dataset are measured, verified, and published
+> under `docs/results/phase4-macos-tail/`. The earlier buggy-tooling cells are
+> archived — INVALID, not canonical — under
 > `docs/results/phase4-macos-tail-pre4.1-invalid/`.
 
 ## Experiments
 
 | # | Experiment | Status |
 |---|------------|--------|
-| 01 | L2 Order Book: `std::map` vs Flat Representation | Phase 1 & 2 FROZEN; Phase 3M/3L tooling READY (measurement deferred); Phase 4 COMPLETE / FROZEN |
+| 01 | L2 Order Book: `std::map` vs Flat Representation | Phase 1, 2, 4 COMPLETE / FROZEN; Phase 3M tooling COMPLETE + recordings COLLECTED (attribution analysis deferred); Phase 3L tooling READY (native Linux measurement deferred) |
 
 ## Layout
 
@@ -40,23 +43,28 @@ low-latency-trading-lab/
 │   ├── map_order_book.h     # std::map baseline
 │   └── flat_order_book.h    # dense tick-addressed book
 ├── tests/
-│   └── order_book_tests.cpp # every scenario run against BOTH books
+│   ├── order_book_tests.cpp # every scenario run against BOTH books
+│   └── phase4_stats_tests.cpp  # Phase 4 distribution/percentile regression tests
 ├── benchmark/
-│   └── order_book_bench.cpp # deterministic steady-state apply() benchmark
+│   ├── stream_gen.h            # single source of truth for the A/B/C/D/E op streams
+│   ├── order_book_bench.cpp    # Phase 2 steady-state apply() throughput benchmark
+│   ├── order_book_tail_bench.cpp  # Phase 4 fixed-batch tail-latency sampler
+│   └── tail_stats.h            # Phase 4 distribution metrics / percentile definitions
 ├── scripts/
-│   ├── bench.sh             # canonical per-process run + quick both-mode check
-│   ├── perf-profile.sh      # Linux perf profiling harness (Phase 3L, per-cell)
-│   ├── collect-macos-profile-metadata.sh  # Phase 3M host/chip/toolchain metadata
-│   └── phase3m-instruments.sh             # Phase 3M xctrace/Instruments recorder (needs full Xcode)
+│   ├── bench.sh                # Phase 2 canonical per-process run
+│   ├── tail-bench.sh           # Phase 4 canonical matrix runner (one invocation per cell)
+│   ├── verify-tail-summary.sh  # Phase 4 raw<->summary verification
+│   ├── perf-profile.sh         # Linux perf profiling harness (Phase 3L, per-cell)
+│   ├── phase3m-instruments.sh  # Phase 3M xctrace/Instruments recorder (needs full Xcode)
+│   └── collect-macos-profile-metadata.sh  # host/chip/toolchain metadata (Phase 3M and Phase 4)
 ├── cmake/
 │   └── assert_nonzero_exit.cmake  # ctest guard for the test exit-code self-test
 ├── docs/
-│   ├── results/             # committed datasets: phase2-m3max/ (FROZEN), phase3-macos-apple-silicon/
-│   │   │                    #   (six real Phase 3M recordings), phase4-macos-tail/ (canonical, FROZEN),
-│   │   │                    #   phase4-macos-tail-pre4.1-invalid/ (archived INVALID pre-4.1 artifact)
+│   ├── results/             # committed datasets (phase2-m3max/, phase3-macos-apple-silicon/,
+│   │   │                    #   phase4-macos-tail/ canonical + -pre4.1-invalid/ archived; see README.md)
 │   │   └── README.md        # layout + honesty rule
-│   └── profiling/           # Phase 3 guides (README.md, MACOS_INSTRUMENTS.md) + Phase 4 tail-latency
-│                            #   methodology (PHASE4_TAIL_LATENCY.md); split into Phase 3M / Phase 3L
+│   └── profiling/           # Phase 3 guides (README.md, MACOS_INSTRUMENTS.md) + Phase 4
+│                            #   tail-latency methodology (PHASE4_TAIL_LATENCY.md)
 ├── CMakeLists.txt
 └── README.md
 ```

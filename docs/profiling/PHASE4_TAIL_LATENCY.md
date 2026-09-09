@@ -130,10 +130,27 @@ what each measures:
 
 Both groups report `median` / `p99` / `max` ns. **Neither is auto-subtracted**
 from the measured book samples (subtracting an unverified constant would be a
-correction we cannot justify). Use `empty_batch_harness` to judge whether the
-batch is large enough: if it is material relative to a typical flat batch
-duration at `batch_size=512`, use a larger batch (e.g. 1024). The benchmark lets
-you choose the batch size rather than silently changing it.
+correction we cannot justify). `empty_batch_harness` is a **small but non-zero
+benchmark-harness overhead** that is part of every absolute number here — on the
+M3 Max its median of ~125 ns per 512-update batch is ~6% of a typical flat_A
+median batch (~2,000 ns) and ~4% of a flat_C median batch (~3,084 ns).
+
+The harness cost has two parts with different batch-scaling behaviour, so a
+larger batch does NOT amortize all of it:
+
+- **Clock boundary overhead** — the two `steady_clock` reads. This part is
+  amortized as `batch_size` grows.
+- **Per-update harness work** — loop control, the optimizer barrier, and the
+  sink arithmetic. This repeats once per update, so it grows with the update
+  count and is not eliminated by increasing `batch_size`.
+
+Raising `batch_size` therefore shrinks only the clock-boundary fraction of the
+harness. The measured benchmark keeps the barrier/harness skeleton identical
+across implementations for optimizer safety and fair comparison, which means the
+absolute Flat numbers include this small harness contribution. If a smaller
+relative clock-boundary fraction is wanted, pick a larger batch; the per-update
+part is fixed by design. The benchmark lets you choose the batch size rather
+than silently changing it.
 
 ### Distribution metrics & percentile definition
 
@@ -220,14 +237,22 @@ Documented limitations:
   context switch inside one batch shows up as one large sample.
 - A tail spike is therefore **not automatically attributed to order-book code**;
   Phase 3 profiling is where such an attribution would be tested.
+- **Host timer quantization.** The calibration `clock_pair` p99 (~42 ns on this
+  host) shows ~42 ns timing granularity for very short intervals. Fixed-batch
+  timing reduces per-update timer contamination substantially, but the fastest
+  Flat distributions still show this quantization — a ~42 ns quantum is ~2% of a
+  ~2 µs (512 × ~3.9 ns/update) flat-A median batch — so tiny differences of a
+  few hundredths of ns/update between fast Flat cells should not be
+  over-interpreted.
 
 ## Status
 
-- Phase 1 — FROZEN
-- Phase 2 — FROZEN
-- Phase 3L — READY / DEFERRED
-- Phase 3M — READY / DEFERRED (six real recordings committed; call-tree GUI
-  pass still pending — see `docs/results/phase3-macos-apple-silicon/`)
+- Phase 1 — COMPLETE / FROZEN
+- Phase 2 — COMPLETE / FROZEN
+- Phase 3L — tooling READY; native Linux PMU data DEFERRED (no Linux host)
+- Phase 3M — tooling COMPLETE; six real recordings COLLECTED; call-tree /
+  attribution analysis DEFERRED (needs an Instruments GUI pass over the
+  recordings — see `docs/results/phase3-macos-apple-silicon/`)
 - **Phase 4 — COMPLETE / FROZEN.** Tooling (as of the Phase 4.1 hardening pass:
   trailing-partial-batch exclusion fixed and covered by a regression test, the
   canonical runner issues ONE invocation per cell and verifies summary-from-raw,

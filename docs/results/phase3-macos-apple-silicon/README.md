@@ -1,8 +1,9 @@
 # Phase 3M — macOS / Apple Silicon profiling results
 
-**Status: populated — six real Time Profiler recordings, committed and
-cross-checked headlessly. Call-tree symbolization is still PENDING an
-Instruments GUI pass** (see the LIMITATION in each cell's `trace_notes.md`).
+**Status: Phase 3M tooling COMPLETE; six real Time Profiler recordings COLLECTED
+and committed (cross-checked headlessly). Call-tree / attribution analysis is
+DEFERRED — symbolization is still PENDING an Instruments GUI pass** (see the
+LIMITATION in each cell's `trace_notes.md`).
 
 This tree is the committed home for Phase 3M (Apple Instruments on the M3 Max)
 measurements. It holds six real recordings from the **same Apple M3 Max / macOS
