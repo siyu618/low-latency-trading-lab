@@ -1,0 +1,9 @@
+Starting recording with the Time Profiler template. Launching process: orderbook_bench. 
+Ctrl-C to stop the recording
+Target app exited, ending recording...
+Recording completed. Saving output file...
+Output file saved as: recording.trace
+
+# bench_stdout: the data row is inside results/phase3m_map_E_1000000_20260909-104547/recording.trace (this xctrace did not
+# forward target stdout as text). Capture it from the .trace, or run the
+# same cell once ungated for the ns/update anchor. No number is fabricated.

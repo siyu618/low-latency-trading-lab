@@ -1,0 +1,8 @@
+# Phase 3M recording command — 2026-09-09T02:46:58Z
+cell:       flat C 1000000
+updates:    20000000
+reps:       1 (enforced)
+template:   Time Profiler
+signposts:  (unset — no signpost interval)
+command:
+  xcrun xctrace record --template 'Time Profiler' --output 'results/phase3m_flat_C_1000000_20260909-104658/recording.trace'  --launch -- ./build-perf/orderbook_bench flat C 1000000 updates=20000000 reps=1

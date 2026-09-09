@@ -1,0 +1,3 @@
+# ns/update anchor — same-host latency baseline for the recording above
+command: ./build-perf/orderbook_bench flat A 1000000 updates=2000000 reps=1
+note: ungated; reps=1 matches the recording's single apply block (not Phase 2 reps=3 best-of).

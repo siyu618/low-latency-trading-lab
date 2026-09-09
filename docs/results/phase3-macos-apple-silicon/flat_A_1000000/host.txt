@@ -1,0 +1,30 @@
+# Phase 3M (macOS / Apple Silicon) profiling metadata — 2026-09-09T02:46:38Z
+
+## System
+macOS:                   macOS 14.2.1 (Build 23C71)
+uname:                   Darwin localhost 23.2.0 Darwin Kernel Version 23.2.0: Wed Nov 15 21:54:05 PST 2023; root:xnu-10002.61.3~2/RELEASE_ARM64_T6031 arm64
+model:                   Mac15,10
+chip:                    Apple M3 Max
+cores:                   14 logical
+efficiency:              10 P-cores / 4 E-cores (hw.perflevel*, may report 0)
+memory:                  36 GiB
+
+## Scheduling caveat (experimental limitation)
+note:                    Apple Silicon mixes performance (P) and efficiency (E) cores; macOS schedules freely.
+note:                    No strict CPU-core pinning is claimed unless a recording pinned and verified affinity.
+note:                    P/E mix and OS scheduling can move a process between cores across reps.
+
+## Apple toolchain
+xcode-select:            /Applications/Xcode.app/Contents/Developer
+xcodebuild:              Xcode 15.4 Build version 15F31d 
+xctrace:                 xctrace version 15.3 (15F31d)
+Instruments:             /Applications/Xcode.app/Contents/Applications/Instruments.app
+clang:                   Apple clang version 15.0.0 (clang-1500.3.9.4)
+
+## Benchmark build (Phase 2 canonical flags)
+flags:                   -O3 -DNDEBUG (forced on the benchmark target); BENCH_ARCH_FLAGS empty unless stated
+standard:                C++20
+commit:                  8383dc88c1999ef471e38fe9be806daa60a29b38
+tree:                    clean
+
+# end Phase 3M metadata
