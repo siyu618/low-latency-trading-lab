@@ -1,0 +1,14 @@
+# Phase 4 calibration (no book work; NOT auto-subtracted from samples).
+# group clock_pair_*: two steady_clock reads separated by a compiler
+# barrier — the pure timer floor of one clock-read pair.
+clock_pair_samples=1000000
+clock_pair_median_ns=0.000
+clock_pair_p99_ns=42.000
+clock_pair_max_ns=8375.000
+# group empty_batch_harness_*: clock-read, 512 empty iterations with a barrier + sink, clock-read — the whole batch
+# timing skeleton with NO book work (NOT just the clock cost).
+empty_batch_harness_samples=1000000
+empty_batch_harness_median_ns=125.000
+empty_batch_harness_p99_ns=208.000
+empty_batch_harness_max_ns=16875.000
+note=neither group is auto-subtracted from latency samples; if empty_batch_harness is material vs a typical batch duration, use a larger batch (docs).

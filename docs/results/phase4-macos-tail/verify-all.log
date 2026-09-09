@@ -1,0 +1,91 @@
+===== map_A_1000 =====
+  ok    total_samples            raw=19532 summary=19532
+  ok    distribution_samples     raw=19531 summary=19531
+  ok    partial row              raw=1x128 summary=present ops=128
+  ok    mean                     raw=34.963390    summary=34.963390
+  ok    min                      raw=29.214844    summary=29.214844
+  ok    p50                      raw=34.423828    summary=34.423828
+  ok    p90                      raw=36.296875    summary=36.296875
+  ok    p99                      raw=44.921875    summary=44.921875
+  ok    p99.9                    raw=126.708984   summary=126.708984
+  ok    max                      raw=219.564453   summary=219.564453
+  ok    p99/p50                  raw=1.304965     summary=1.304965
+  ok    p99.9/p50                raw=3.680851     summary=3.680851
+  ok    max/p50                  raw=6.378270     summary=6.378270
+verify-tail-summary: PASS — raw samples reproduce the summary's distribution.
+===== map_A_1000000 =====
+  ok    total_samples            raw=19532 summary=19532
+  ok    distribution_samples     raw=19531 summary=19531
+  ok    partial row              raw=1x128 summary=present ops=128
+  ok    mean                     raw=187.092847   summary=187.092847
+  ok    min                      raw=157.062500   summary=157.062500
+  ok    p50                      raw=177.572266   summary=177.572266
+  ok    p90                      raw=214.519531   summary=214.519531
+  ok    p99                      raw=328.207031   summary=328.207031
+  ok    p99.9                    raw=456.298828   summary=456.298828
+  ok    max                      raw=644.367188   summary=644.367188
+  ok    p99/p50                  raw=1.848301     summary=1.848301
+  ok    p99.9/p50                raw=2.569651     summary=2.569651
+  ok    max/p50                  raw=3.628760     summary=3.628760
+verify-tail-summary: PASS — raw samples reproduce the summary's distribution.
+===== map_C_1000000 =====
+  ok    total_samples            raw=19532 summary=19532
+  ok    distribution_samples     raw=19531 summary=19531
+  ok    partial row              raw=1x128 summary=present ops=128
+  ok    mean                     raw=74.309965    summary=74.309965
+  ok    min                      raw=63.800781    summary=63.800781
+  ok    p50                      raw=73.730469    summary=73.730469
+  ok    p90                      raw=78.042969    summary=78.042969
+  ok    p99                      raw=91.146484    summary=91.146484
+  ok    p99.9                    raw=106.527344   summary=106.527344
+  ok    max                      raw=255.371094   summary=255.371094
+  ok    p99/p50                  raw=1.236212     summary=1.236212
+  ok    p99.9/p50                raw=1.444821     summary=1.444821
+  ok    max/p50                  raw=3.463576     summary=3.463576
+verify-tail-summary: PASS — raw samples reproduce the summary's distribution.
+===== map_E_1000000 =====
+  ok    total_samples            raw=19532 summary=19532
+  ok    distribution_samples     raw=19531 summary=19531
+  ok    partial row              raw=1x128 summary=present ops=128
+  ok    mean                     raw=484.410416   summary=484.410416
+  ok    min                      raw=284.748047   summary=284.748047
+  ok    p50                      raw=467.367188   summary=467.367188
+  ok    p90                      raw=632.080078   summary=632.080078
+  ok    p99                      raw=897.542969   summary=897.542969
+  ok    p99.9                    raw=1330.566406  summary=1330.566406
+  ok    max                      raw=3016.113281  summary=3016.113281
+  ok    p99/p50                  raw=1.920424     summary=1.920424
+  ok    p99.9/p50                raw=2.846940     summary=2.846940
+  ok    max/p50                  raw=6.453413     summary=6.453413
+verify-tail-summary: PASS — raw samples reproduce the summary's distribution.
+===== flat_A_1000000 =====
+  ok    total_samples            raw=19532 summary=19532
+  ok    distribution_samples     raw=19531 summary=19531
+  ok    partial row              raw=1x128 summary=present ops=128
+  ok    mean                     raw=3.912159     summary=3.912159
+  ok    min                      raw=3.498047     summary=3.498047
+  ok    p50                      raw=3.906250     summary=3.906250
+  ok    p90                      raw=4.068359     summary=4.068359
+  ok    p99                      raw=4.314453     summary=4.314453
+  ok    p99.9                    raw=6.021484     summary=6.021484
+  ok    max                      raw=16.275391    summary=16.275391
+  ok    p99/p50                  raw=1.104500     summary=1.104500
+  ok    p99.9/p50                raw=1.541500     summary=1.541500
+  ok    max/p50                  raw=4.166500     summary=4.166500
+verify-tail-summary: PASS — raw samples reproduce the summary's distribution.
+===== flat_C_1000000 =====
+  ok    total_samples            raw=19532 summary=19532
+  ok    distribution_samples     raw=19531 summary=19531
+  ok    partial row              raw=1x128 summary=present ops=128
+  ok    mean                     raw=6.105982     summary=6.105982
+  ok    min                      raw=5.207031     summary=5.207031
+  ok    p50                      raw=6.023438     summary=6.023438
+  ok    p90                      raw=6.267578     summary=6.267578
+  ok    p99                      raw=7.730469     summary=7.730469
+  ok    p99.9                    raw=18.066406    summary=18.066406
+  ok    max                      raw=70.230469    summary=70.230469
+  ok    p99/p50                  raw=1.283398     summary=1.283398
+  ok    p99.9/p50                raw=2.999351     summary=2.999351
+  ok    max/p50                  raw=11.659533    summary=11.659533
+verify-tail-summary: PASS — raw samples reproduce the summary's distribution.
+overall_rc=0

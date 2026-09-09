@@ -22,14 +22,15 @@ measurement family. Transient raw runs land in repo-root `results/`
   Linux latency, never against the M3 Max CSV. Not yet present — Phase 3L
   native Linux measurement is DEFERRED (no Linux host); see
   `docs/profiling/README.md`.
-- `phase4-macos-tail/` — Phase 4 **tail-latency / jitter** artifacts from the
-  Apple M3 Max. **INVALID / NOT canonical** — produced by the pre-Phase-4.1
+- `phase4-macos-tail/` — the **canonical** Phase 4 **tail-latency / jitter**
+  dataset from the Apple M3 Max (measured 2026-09-09 with the hardened Phase 4.1
+  tooling: one invocation per cell, trailing partial batch excluded from every
+  distribution metric, each summary re-verified from its own raw CSV). See its
+  `RESULTS_METADATA.md`, `README.md`, and `PHASE4_ANALYSIS.md`.
+- `phase4-macos-tail-pre4.1-invalid/` — the pre-Phase-4.1 cells from the buggy
   tooling (two independent runs per cell; trailing partial batch leaked into the
-  summary). Retained only as a labeled historical artifact; **Phase 4 canonical
-  measurement is PENDING** — re-measure with the hardened runner
-  (`scripts/tail-bench.sh`), which issues ONE invocation per cell and verifies
-  summary-from-raw via `scripts/verify-tail-summary.sh`. See that tree's
-  `README.md` and `docs/profiling/PHASE4_TAIL_LATENCY.md`.
+  summary). **INVALID / NOT canonical**, retained only as a labeled historical
+  artifact — never cite it. See `docs/profiling/PHASE4_TAIL_LATENCY.md`.
 
 ## Honesty rule
 

@@ -445,8 +445,10 @@ a real tool reported.
   full Xcode on the machine; capability is detected at recording time), but
   per-function call-tree symbolization still needs an Instruments GUI pass, so
   no symbolized call-tree claim is made yet.
-- Phase 4 status — **tooling COMPLETE / FROZEN** (`orderbook_tail_bench`,
-  `scripts/tail-bench.sh`; see `PHASE4_TAIL_LATENCY.md`); **canonical
-  measurement PENDING** — no measured Phase 4 result is claimed anywhere (the
-  pre-4.1 cells under `docs/results/phase4-macos-tail/` are INVALID, not
-  canonical). Phase 5 (write-up) is not started.
+- Phase 4 status — **COMPLETE / FROZEN.** The tooling
+  (`orderbook_tail_bench`, `scripts/tail-bench.sh`; see `PHASE4_TAIL_LATENCY.md`)
+  and the canonical six-cell dataset are done: measured 2026-09-09 on the M3 Max
+  under `docs/results/phase4-macos-tail/`, every cell re-verified summary-from-raw
+  (`verify-all.log`). The pre-4.1 cells from the buggy tooling live under
+  `docs/results/phase4-macos-tail-pre4.1-invalid/` (INVALID, retained only as a
+  labeled historical artifact). Phase 5 (write-up) is not started.

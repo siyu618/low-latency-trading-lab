@@ -1,0 +1,6 @@
+# Phase 4 tail benchmark command (effective invocation)
+command: ./build-perf/orderbook_tail_bench --book map --workload E --levels 1000000 --updates 10000000 --batch-size 512 --stats-out results/phase4_20260909-125028/map_E_1000000/summary.txt --samples-out results/phase4_20260909-125028/map_E_1000000/raw_samples.csv
+time:    2026-09-09T04:50:59Z
+updates: 10000000
+batch:   512
+seed:    default (Phase 2) -> resolved seed=407715774446 (also in summary.txt)

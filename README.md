@@ -6,8 +6,7 @@ repo root; if more experiments land later they will be organized into their own
 top-level directories.
 
 > **Status — Experiment 01: Phase 1 & 2 FROZEN; Phase 3L and Phase 3M READY /
-> DEFERRED; Phase 4 tooling COMPLETE / FROZEN; Phase 4 canonical measurement
-> PENDING:**
+> DEFERRED; Phase 4 COMPLETE / FROZEN:**
 > **Experiment 01 — L2 Order Book: `std::map` vs Flat Representation** is
 > implemented, its correctness tests are green, and the deterministic benchmark
 > has measured steady-state `apply()` throughput across both implementations,
@@ -19,18 +18,18 @@ top-level directories.
 > and **Phase 3L** — Linux `perf` (tooling READY; native measurement DEFERRED,
 > no Linux host). Both use opt-in markers around the timed `apply()` loop: an
 > os_signpost interval on Apple (`LLOB_SIGNPOSTS=1`) and a perf-control gate on
-> Linux (`LLOB_PERF_CONTROL`). Phase 4 tail-latency distribution **tooling**
-> (`orderbook_tail_bench`, `scripts/tail-bench.sh`) is COMPLETE / FROZEN, but
-> **no measured Phase 4 result is claimed — canonical measurement is PENDING**.
-> The pre-Phase-4.1 cells under `docs/results/phase4-macos-tail/` were produced
-> by buggy tooling and are INVALID (retained only as a labeled historical
-> artifact).
+> Linux (`LLOB_PERF_CONTROL`). Phase 4 tail-latency analysis is **COMPLETE /
+> FROZEN**: the hardened tooling (`orderbook_tail_bench`,
+> `scripts/tail-bench.sh`) and the canonical six-cell distribution dataset are
+> measured, verified, and published under `docs/results/phase4-macos-tail/`. The
+> earlier buggy-tooling cells are archived — INVALID, not canonical — under
+> `docs/results/phase4-macos-tail-pre4.1-invalid/`.
 
 ## Experiments
 
 | # | Experiment | Status |
 |---|------------|--------|
-| 01 | L2 Order Book: `std::map` vs Flat Representation | correctness done; Phase 2 benchmark FROZEN; Phase 3 tooling READY (measurement deferred); Phase 4 tooling done — canonical latency measurement pending |
+| 01 | L2 Order Book: `std::map` vs Flat Representation | Phase 1 & 2 FROZEN; Phase 3M/3L tooling READY (measurement deferred); Phase 4 COMPLETE / FROZEN |
 
 ## Layout
 
@@ -53,7 +52,8 @@ low-latency-trading-lab/
 │   └── assert_nonzero_exit.cmake  # ctest guard for the test exit-code self-test
 ├── docs/
 │   ├── results/             # committed datasets: phase2-m3max/ (FROZEN), phase3-macos-apple-silicon/
-│   │   │                    #   (six real Phase 3M recordings), phase4-macos-tail/ (pre-4.1 INVALID artifact)
+│   │   │                    #   (six real Phase 3M recordings), phase4-macos-tail/ (canonical, FROZEN),
+│   │   │                    #   phase4-macos-tail-pre4.1-invalid/ (archived INVALID pre-4.1 artifact)
 │   │   └── README.md        # layout + honesty rule
 │   └── profiling/           # Phase 3 guides (README.md, MACOS_INSTRUMENTS.md) + Phase 4 tail-latency
 │                            #   methodology (PHASE4_TAIL_LATENCY.md); split into Phase 3M / Phase 3L
@@ -300,6 +300,4 @@ book's stores dead or reorder across `apply()` calls).
 
 Phase 3M per-function call-tree symbolization (an Instruments GUI pass over the
 six committed recordings); Phase 3L (Linux `perf` measurement) when a Linux host
-is available; **Phase 4 canonical measurement** — re-measure the six-cell matrix
-with the hardened runner, verify each summary-from-raw, then report; Phase 5
-(engineering write-up).
+is available; Phase 5 (engineering write-up).

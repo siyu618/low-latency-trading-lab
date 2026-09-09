@@ -191,9 +191,11 @@ above (fresh Release build, summary + raw CSV + `command.txt`/`host.txt`
 provenance per cell into a dated `results/phase4_<ts>/`), or one cell:
 `scripts/tail-bench.sh map C 1000000`. Each cell invokes the benchmark **exactly
 once** with both `--stats-out` and `--samples-out`, then **verifies** the raw
-CSV recomputes the summary (see the [Status](#status) note on the Phase 4.1
-hardening pass — a committed pre-fix dataset under `docs/results/phase4-macos-tail/`
-is INVALID and is **not** canonical).
+CSV recomputes the summary. The canonical six-cell dataset measured this way on
+2026-09-09 is committed under `docs/results/phase4-macos-tail/` (FROZEN); the
+pre-fix cells from the Phase 4.1 hardening pass are archived under
+`docs/results/phase4-macos-tail-pre4.1-invalid/` and are **not** canonical (see
+[Status](#status)).
 
 ## Report categories (every claim is labeled)
 
@@ -226,18 +228,17 @@ Documented limitations:
 - Phase 3L — READY / DEFERRED
 - Phase 3M — READY / DEFERRED (six real recordings committed; call-tree GUI
   pass still pending — see `docs/results/phase3-macos-apple-silicon/`)
-- **Phase 4 tooling — COMPLETE / FROZEN** (as of the Phase 4.1 hardening pass:
-  trailing-partial-batch exclusion is fixed and covered by a regression test,
-  the canonical runner issues ONE invocation per cell and verifies summary-from-
-  raw, calibration terminology is split into `clock_pair_*` / `empty_batch_harness_*`,
-  and post-measurement validation refuses an invalid run)
-- **Phase 4 canonical measurement — PENDING.** No measured Phase 4 result is
-  claimed. The six cells previously committed under
-  `docs/results/phase4-macos-tail/` were produced by the **pre-4.1 tooling** and
-  are **INVALID / NOT canonical**: each cell's `summary.txt` and `raw_samples.csv`
-  came from two *independent* benchmark runs (they describe two different
-  distributions — `scripts/verify-tail-summary.sh` now proves they do not
-  recompute each other), and the summary distribution included the trailing
-  128-update partial batch. That tree is retained only as a labeled historical
-  artifact; the canonical dataset must be re-measured with the hardened tooling
-  before any Phase 4 number is presented.
+- **Phase 4 — COMPLETE / FROZEN.** Tooling (as of the Phase 4.1 hardening pass:
+  trailing-partial-batch exclusion fixed and covered by a regression test, the
+  canonical runner issues ONE invocation per cell and verifies summary-from-raw,
+  calibration terminology split into `clock_pair_*` / `empty_batch_harness_*`,
+  and post-measurement validation refuses an invalid run) **and** measurement:
+  the canonical six-cell dataset was measured 2026-09-09 on the Apple M3 Max and
+  committed under `docs/results/phase4-macos-tail/` with provenance
+  (`command.txt` / `host.txt` per cell, `RESULTS_METADATA.md`, `README.md`,
+  `PHASE4_ANALYSIS.md`, `verify-all.log`). Every cell re-verifies summary-from-raw
+  (13 metrics, 0 failures). The six cells previously committed under
+  `docs/results/phase4-macos-tail/` from the **pre-4.1 tooling** are INVALID /
+  NOT canonical and are archived under
+  `docs/results/phase4-macos-tail-pre4.1-invalid/` (retained only as a labeled
+  historical artifact).
