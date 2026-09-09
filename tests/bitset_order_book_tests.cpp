@@ -3,9 +3,11 @@
 // BitsetFlatOrderBook must be observably identical to FlatOrderBook (same
 // externally visible semantics) while discovering the next best price through
 // an occupancy bitmap hierarchy instead of a linear scan. Every scenario below
-// drives THREE books — MapOrderBook (the oracle), FlatOrderBook, and
+// drives FOUR books — MapOrderBook (the oracle), FlatOrderBook,
+// TransitionAwareFlatOrderBook (the control class that isolates the
+// transition-aware hot-path control flow from the bitmap; see its header), and
 // BitsetFlatOrderBook — over the identical sequence of updates and requires all
-// three to agree on every observable: apply result, synced state, expected/last
+// four to agree on every observable: apply result, synced state, expected/last
 // sequence, best bid/ask PRICE AND QUANTITY, and the full level set.
 //
 // Alongside the differential checks, the targeted scenarios pin down the
@@ -27,6 +29,7 @@
 #include "bitset_flat_order_book.h"
 #include "flat_order_book.h"
 #include "map_order_book.h"
+#include "transition_aware_flat_order_book.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -43,6 +46,7 @@ using llob::L2Update;
 using llob::MapOrderBook;
 using llob::Side;
 using llob::SideSnapshot;
+using llob::TransitionAwareFlatOrderBook;
 
 namespace {
 
@@ -98,32 +102,37 @@ BookSnapshot make_snapshot(uint64_t seq,
 }
 
 // ---------------------------------------------------------------------------
-// Shared three-book fixture.
+// Shared four-book fixture.
 // ---------------------------------------------------------------------------
 struct Books {
-    MapOrderBook        map;
-    FlatOrderBook       flat;
-    BitsetFlatOrderBook bits;
+    MapOrderBook               map;
+    FlatOrderBook              flat;
+    TransitionAwareFlatOrderBook tuned; // control: no bitmap, transition-aware hot path
+    BitsetFlatOrderBook        bits;
 
     explicit Books(int64_t min_t = 1, int64_t max_t = 200000)
         : map(MapOrderBook(min_t, max_t)),
           flat(FlatOrderBook(min_t, max_t)),
+          tuned(TransitionAwareFlatOrderBook(min_t, max_t)),
           bits(BitsetFlatOrderBook(min_t, max_t)) {}
 
     void load(const BookSnapshot& s) {
         map.load_snapshot(s);
         flat.load_snapshot(s);
+        tuned.load_snapshot(s);
         bits.load_snapshot(s);
     }
 
     void load_expect_ok(const BookSnapshot& s, const char* tag = "load_expect_ok") {
         const bool ok_m = map.load_snapshot(s);
         const bool ok_f = flat.load_snapshot(s);
+        const bool ok_t = tuned.load_snapshot(s);
         const bool ok_b = bits.load_snapshot(s);
-        if (!(ok_m && ok_f && ok_b)) {
-            std::printf("   [%s] snapshot rejected: map=%d flat=%d bits=%d "
-                        "(expected all ok)\n",
-                        tag, ok_m ? 1 : 0, ok_f ? 1 : 0, ok_b ? 1 : 0);
+        if (!(ok_m && ok_f && ok_t && ok_b)) {
+            std::printf("   [%s] snapshot rejected: map=%d flat=%d tuned=%d "
+                        "bits=%d (expected all ok)\n",
+                        tag, ok_m ? 1 : 0, ok_f ? 1 : 0, ok_t ? 1 : 0,
+                        ok_b ? 1 : 0);
             ++g_failures;
             return;
         }
@@ -136,58 +145,69 @@ struct Books {
         load(make_snapshot(seq, std::move(bids), std::move(asks)));
     }
 
-    // Apply to all three and require each to report `expect`.
+    // Apply to all four and require each to report `expect`.
     void apply(const L2Update& u, ApplyResult expect) {
         const ApplyResult rm = map.apply(u);
         const ApplyResult rf = flat.apply(u);
+        const ApplyResult rt = tuned.apply(u);
         const ApplyResult rb = bits.apply(u);
-        if (rm != expect || rf != expect || rb != expect) {
+        if (rm != expect || rf != expect || rt != expect || rb != expect) {
             std::printf(
                 "   apply seq=%llu p=%lld q=%lld side=%d -> map=%d flat=%d "
-                "bits=%d (expect %d)\n",
+                "tuned=%d bits=%d (expect %d)\n",
                 static_cast<unsigned long long>(u.seq),
                 static_cast<long long>(u.price),
                 static_cast<long long>(u.qty),
                 static_cast<int>(u.side), static_cast<int>(rm),
-                static_cast<int>(rf), static_cast<int>(rb),
+                static_cast<int>(rf), static_cast<int>(rt), static_cast<int>(rb),
                 static_cast<int>(expect));
             ++g_failures;
             return; // don't accumulate further noise
         }
     }
 
-    // Require ALL observable state to match across the three books, including
+    // Require ALL observable state to match across the four books, including
     // best-quantity parity (not just best price) and full level-set parity.
     void check_equal(const char* tag) {
         const bool ok =
             map.best_bid() == flat.best_bid() &&
+            map.best_bid() == tuned.best_bid() &&
             map.best_bid() == bits.best_bid() &&
             map.best_ask() == flat.best_ask() &&
+            map.best_ask() == tuned.best_ask() &&
             map.best_ask() == bits.best_ask() &&
             map.best_bid_qty() == flat.best_bid_qty() &&
+            map.best_bid_qty() == tuned.best_bid_qty() &&
             map.best_bid_qty() == bits.best_bid_qty() &&
             map.best_ask_qty() == flat.best_ask_qty() &&
+            map.best_ask_qty() == tuned.best_ask_qty() &&
             map.best_ask_qty() == bits.best_ask_qty() &&
             map.synced() == flat.synced() &&
+            map.synced() == tuned.synced() &&
             map.synced() == bits.synced() &&
             map.next_expected_seq() == flat.next_expected_seq() &&
+            map.next_expected_seq() == tuned.next_expected_seq() &&
             map.next_expected_seq() == bits.next_expected_seq() &&
             map.last_applied_seq() == flat.last_applied_seq() &&
+            map.last_applied_seq() == tuned.last_applied_seq() &&
             map.last_applied_seq() == bits.last_applied_seq() &&
             map.level_count() == flat.level_count() &&
+            map.level_count() == tuned.level_count() &&
             map.level_count() == bits.level_count();
 
         if (!ok) {
             std::printf(
                 "   [%s] state mismatch: map(bid=%lld ask=%lld syn=%d exp=%llu "
-                "lvl=%zu) flat(bid=%lld ask=%lld) bits(bid=%lld ask=%lld syn=%d "
-                "exp=%llu lvl=%zu)\n",
+                "lvl=%zu) flat(bid=%lld ask=%lld) tuned(bid=%lld ask=%lld) "
+                "bits(bid=%lld ask=%lld syn=%d exp=%llu lvl=%zu)\n",
                 tag, static_cast<long long>(map.best_bid()),
                 static_cast<long long>(map.best_ask()), map.synced() ? 1 : 0,
                 static_cast<unsigned long long>(map.next_expected_seq()),
                 map.level_count(),
                 static_cast<long long>(flat.best_bid()),
                 static_cast<long long>(flat.best_ask()),
+                static_cast<long long>(tuned.best_bid()),
+                static_cast<long long>(tuned.best_ask()),
                 static_cast<long long>(bits.best_bid()),
                 static_cast<long long>(bits.best_ask()), bits.synced() ? 1 : 0,
                 static_cast<unsigned long long>(bits.next_expected_seq()),
@@ -197,18 +217,21 @@ struct Books {
         }
 
         // Full level-set parity: every (price, qty) the map holds must be
-        // reported identically by the flat book and the bitset book. Combined
-        // with the level_count() equality above, this catches both missing and
-        // phantom levels in either flat implementation.
+        // reported identically by the flat book, the transition-aware control,
+        // and the bitset book. Combined with the level_count() equality above,
+        // this catches both missing and phantom levels in any flat
+        // implementation.
         for (const auto& [p, q] : map.bids()) {
             if (q == 0) continue;
             if (flat.level_qty(p, Side::Bid) != q ||
+                tuned.level_qty(p, Side::Bid) != q ||
                 bits.level_qty(p, Side::Bid) != q) {
                 std::printf("   [%s] bid level mismatch at %lld: map=%lld "
-                            "flat=%lld bits=%lld\n",
+                            "flat=%lld tuned=%lld bits=%lld\n",
                             tag, static_cast<long long>(p),
                             static_cast<long long>(q),
                             static_cast<long long>(flat.level_qty(p, Side::Bid)),
+                            static_cast<long long>(tuned.level_qty(p, Side::Bid)),
                             static_cast<long long>(bits.level_qty(p, Side::Bid)));
                 ++g_failures;
                 return;
@@ -217,12 +240,14 @@ struct Books {
         for (const auto& [p, q] : map.asks()) {
             if (q == 0) continue;
             if (flat.level_qty(p, Side::Ask) != q ||
+                tuned.level_qty(p, Side::Ask) != q ||
                 bits.level_qty(p, Side::Ask) != q) {
                 std::printf("   [%s] ask level mismatch at %lld: map=%lld "
-                            "flat=%lld bits=%lld\n",
+                            "flat=%lld tuned=%lld bits=%lld\n",
                             tag, static_cast<long long>(p),
                             static_cast<long long>(q),
                             static_cast<long long>(flat.level_qty(p, Side::Ask)),
+                            static_cast<long long>(tuned.level_qty(p, Side::Ask)),
                             static_cast<long long>(bits.level_qty(p, Side::Ask)));
                 ++g_failures;
                 return;
@@ -499,6 +524,7 @@ void test_sequence_semantics() {
     L2Update bad{11, 100, -4, Side::Bid};
     CHECK(b2.map.apply(bad) == ApplyResult::InvalidUpdate);
     CHECK(b2.flat.apply(bad) == ApplyResult::InvalidUpdate);
+    CHECK(b2.tuned.apply(bad) == ApplyResult::InvalidUpdate);
     CHECK(b2.bits.apply(bad) == ApplyResult::InvalidUpdate);
     CHECK(!b2.bits.synced());
     CHECK(b2.bits.last_applied_seq() == 10);
@@ -543,6 +569,7 @@ void test_differential_fuzz() {
             BookSnapshot snap = seed_snapshot(seq);
             CHECK(b.map.load_snapshot(snap));
             CHECK(b.flat.load_snapshot(snap));
+            CHECK(b.tuned.load_snapshot(snap));
             CHECK(b.bits.load_snapshot(snap));
             if (iter % 2000 == 0) b.check_equal("fuzz resync");
             continue;
@@ -572,7 +599,110 @@ void test_differential_fuzz() {
 }
 
 // ---------------------------------------------------------------------------
-// 11. Exit-code self-test (mirrors order_book_tests): a failed CHECK must
+// 11. Control-variable suite: TransitionAwareFlatOrderBook must equal
+//      FlatOrderBook on sequences dominated by the exact path it restructures —
+//      the present->present re-quantify of a NON-best level, where FlatOrderBook
+//      runs cached-best bookkeeping (update_best_if_needed) and the control runs
+//      a pure quantity store with no bookkeeping. All four books must still
+//      agree on every observable, including the cached best, because a present
+//      level that is not the best cannot BECOME the best by re-quantification
+//      (the best is a property of the occupied price set, which a present->
+//      present write does not change).
+// ---------------------------------------------------------------------------
+void test_requantify_control() {
+    Books b;
+    // bids 100 (best), 90, 80; asks 5 (best), 6, 7.
+    b.load(0, {{100, 10}, {90, 9}, {80, 8}}, {{5, 5}, {6, 6}, {7, 7}});
+
+    uint64_t seq = 0;
+
+    // Hammer a present NON-best level on each side (the restructured path).
+    for (int i = 0; i < 40; ++i) {
+        b.apply(L2Update{++seq, 90, 100 + i, Side::Bid}, ApplyResult::Applied);
+        b.apply(L2Update{++seq, 6, 60 + i, Side::Ask}, ApplyResult::Applied);
+    }
+    b.check_equal("requantify non-best both sides");
+    CHECK(b.bits.best_bid() == 100); // cache must not move
+    CHECK(b.bits.best_ask() == 5);
+    CHECK(b.bits.level_qty(90, Side::Bid) == 139);
+    CHECK(b.bits.level_qty(6, Side::Ask) == 99);
+    CHECK(b.flat.best_bid() == 100);
+    CHECK(b.tuned.best_bid() == 100);
+
+    // Re-quantify the level that IS the best (cache must be kept on both).
+    b.apply(L2Update{++seq, 100, 500, Side::Bid}, ApplyResult::Applied);
+    b.apply(L2Update{++seq, 5, 900, Side::Ask}, ApplyResult::Applied);
+    b.check_equal("requantify best bid+ask");
+    CHECK(b.bits.best_bid() == 100);
+    CHECK(b.bits.best_bid_qty() == 500);
+    CHECK(b.bits.best_ask() == 5);
+    CHECK(b.bits.best_ask_qty() == 900);
+
+    // 0 -> positive ABOVE the current best must promote the cache.
+    b.apply(L2Update{++seq, 105, 3, Side::Bid}, ApplyResult::Applied);
+    b.check_equal("new bid above best promotes");
+    CHECK(b.bits.best_bid() == 105);
+
+    // 0 -> positive BELOW the current best must not move the cache.
+    b.apply(L2Update{++seq, 95, 3, Side::Bid}, ApplyResult::Applied);
+    b.check_equal("new bid below best no promote");
+    CHECK(b.bits.best_bid() == 105);
+
+    // Best deletes cascade down through the levels; at each stop re-quantify a
+    // non-best present level (now closer to the top) and verify nothing moves.
+    b.apply(L2Update{++seq, 105, 0, Side::Bid}, ApplyResult::Applied);
+    b.check_equal("delete best -> 100");
+    CHECK(b.bits.best_bid() == 100);
+    b.apply(L2Update{++seq, 95, 42, Side::Bid}, ApplyResult::Applied); // present non-best
+    b.check_equal("requantify 95 after best moved down");
+    CHECK(b.bits.best_bid() == 100);
+    b.apply(L2Update{++seq, 100, 0, Side::Bid}, ApplyResult::Applied);
+    b.check_equal("delete best -> 95");
+    CHECK(b.bits.best_bid() == 95);
+    b.apply(L2Update{++seq, 90, 0, Side::Bid}, ApplyResult::Applied); // delete non-best 90
+    b.check_equal("delete non-best 90");
+    CHECK(b.bits.best_bid() == 95);
+    b.apply(L2Update{++seq, 95, 0, Side::Bid}, ApplyResult::Applied);
+    b.check_equal("delete best -> 80");
+    CHECK(b.bits.best_bid() == 80);
+    b.apply(L2Update{++seq, 80, 0, Side::Bid}, ApplyResult::Applied);
+    b.check_equal("bid side empties");
+    CHECK(b.bits.best_bid() == 0);
+
+    // Rebuild the emptied bid side and drain it again via 0 -> positive on an
+    // empty side (the "no cached best" branch of the control's promote).
+    b.apply(L2Update{++seq, 70, 7, Side::Bid}, ApplyResult::Applied);
+    b.check_equal("first level on empty bid side");
+    CHECK(b.bits.best_bid() == 70);
+    b.apply(L2Update{++seq, 75, 7, Side::Bid}, ApplyResult::Applied);
+    b.check_equal("second level promotes best");
+    CHECK(b.bits.best_bid() == 75);
+    b.apply(L2Update{++seq, 75, 0, Side::Bid}, ApplyResult::Applied);
+    b.apply(L2Update{++seq, 70, 0, Side::Bid}, ApplyResult::Applied);
+    b.check_equal("bid side re-empties");
+    CHECK(b.bits.best_bid() == 0);
+
+    // Same cascade on the ask side (control + bitmap + flat all must agree).
+    b.apply(L2Update{++seq, 3, 3, Side::Ask}, ApplyResult::Applied); // new best ask
+    b.check_equal("new ask below best promotes");
+    CHECK(b.bits.best_ask() == 3);
+    b.apply(L2Update{++seq, 3, 0, Side::Ask}, ApplyResult::Applied);
+    b.check_equal("ask best removed -> 5");
+    CHECK(b.bits.best_ask() == 5);
+    b.apply(L2Update{++seq, 7, 0, Side::Ask}, ApplyResult::Applied); // delete non-best 7
+    b.check_equal("delete non-best ask 7");
+    CHECK(b.bits.best_ask() == 5);
+    b.apply(L2Update{++seq, 5, 0, Side::Ask}, ApplyResult::Applied);
+    b.apply(L2Update{++seq, 6, 0, Side::Ask}, ApplyResult::Applied);
+    b.check_equal("ask side empties");
+    CHECK(b.bits.best_ask() == 0);
+    CHECK(b.bits.empty());
+    CHECK(b.flat.empty());
+    CHECK(b.tuned.empty());
+}
+
+// ---------------------------------------------------------------------------
+// 12. Exit-code self-test (mirrors order_book_tests): a failed CHECK must
 //     produce a non-zero exit status.
 // ---------------------------------------------------------------------------
 void self_test_exit_code() {
@@ -600,6 +730,7 @@ int main() {
     test_snapshot_and_incremental_replay();
     test_sequence_semantics();
     test_differential_fuzz();
+    test_requantify_control();
 
     summary("all suites");
     return g_failures_total == 0 ? 0 : 1;

@@ -42,17 +42,20 @@ low-latency-trading-lab/
 │   ├── types.h              # Side, L2Update, BookSnapshot, apply contract
 │   ├── map_order_book.h     # std::map baseline
 │   ├── flat_order_book.h    # dense tick-addressed book
-│   └── bitset_flat_order_book.h  # Optimization Study: hierarchical-occupancy
-│                                 #   bitmap twin of flat_order_book (drop-in)
+│   ├── bitset_flat_order_book.h  # Optimization Study: hierarchical-occupancy
+│   │                             #   bitmap twin of flat_order_book (drop-in)
+│   └── transition_aware_flat_order_book.h  # Optimization Study CONTROL: frozen
+│                                           #   flat book + transition-aware
+│                                           #   positive path, NO bitmap
 ├── tests/
 │   ├── order_book_tests.cpp # every scenario run against BOTH books
-│   ├── bitset_order_book_tests.cpp  # Optimization Study: three-way differential
-│   │                                 #   (map/flat/bitset) correctness suite
+│   ├── bitset_order_book_tests.cpp  # Optimization Study: four-way differential
+│   │                                 #   (map/flat/tuned/bitset) correctness suite
 │   └── phase4_stats_tests.cpp  # Phase 4 distribution/percentile regression tests
 ├── benchmark/
 │   ├── stream_gen.h            # single source of truth for the A/B/C/D/E op streams
 │   ├── order_book_bench.cpp    # Phase 2 steady-state apply() throughput benchmark
-│   ├── order_book_bitmap_bench.cpp  # Optimization Study: flat-vs-bitmap steady
+│   ├── order_book_bitmap_bench.cpp  # Optimization Study: flat/tuned/bits steady
 │   │                                 #   throughput + --check/--gaps/--memory/--inproc
 │   ├── order_book_gap_bench.cpp     # Optimization Study: next-best-gap ladder sweep
 │   ├── order_book_tail_bench.cpp  # Phase 4 fixed-batch tail-latency sampler
@@ -318,21 +321,30 @@ book's stores dead or reorder across `apply()` calls).
   shared/heterogeneous machine would add variance. Snapshot load and stream
   generation are excluded by construction.
 
-## Experiment 01 Optimization Study (internal, complete)
+## Experiment 01 Optimization Study (internal, complete, control-isolated)
 
 A post-Phase-4 internal study evaluated a hierarchical-occupancy-bitmap twin of
 the flat book (`include/bitset_flat_order_book.h`) — same semantics, no
-inheritance, bitmap maintained only on occupancy transitions. **Status:
-complete.** It is a regime-dependent *alternative*, not a replacement, and no
-frozen implementation or result was changed. Measured on the same M3 Max:
-correctness (three-way differential vs `MapOrderBook` and `FlatOrderBook`,
+inheritance, bitmap maintained only on occupancy transitions. Because that
+candidate also carries a **transition-aware positive path**, it was later
+control-isolated with a no-bitmap control (`include/transition_aware_flat_order_book.h`)
+so the two changes are attributed separately. **Status: complete.** It is a
+regime-dependent *alternative*, not a replacement, and no frozen implementation
+or result was changed. Measured on the same M3 Max: correctness (four-way
+differential vs `MapOrderBook`, `FlatOrderBook`, the control, and the candidate;
 sanitizer- and strict-warning-clean), memory overhead of the occupancy hierarchy
 ≈ 1.59 % of the quantity arrays at 1M levels, and a best-delete crossover gap of
-**4–8 price ticks** — a regime the frozen A–E workloads never reach (only C
-deletes the best in volume, always at distance ≤ 1). The bitmap is faster on
-requantify-heavy streams (A/D), slower on delete-heavy ones (B), and in the
-noise on C/E. See `docs/ORDERBOOK_BITMAP_OPTIMIZATION.md` for the full
-analysis and `docs/results/orderbook-bitmap-optimization/` for the raw data.
+**4–8 price ticks, reproducibly crossing at g = 8 across 16 independent
+rounds** — a regime the frozen A–E workloads never reach (only C deletes the
+best in volume, always at distance ≤ 1). The isolation result: the frozen A/D
+"bitmap faster" rows were **transition-aware control flow, not the bitmap** —
+the control alone is robustly −10 % (A) and −15/−18 % (D), +25/+28 % (B), while
+the bitmap's marginal effect over the control is no robust win on any frozen
+workload (neutral-to-harmful on B/C/D/E, ambiguous on A). The control flow is
+worth adopting independently for requantify-heavy streams; the bitmap is
+reserved for sparse best-delete-gap regimes. See
+`docs/ORDERBOOK_BITMAP_OPTIMIZATION.md` for the full analysis and
+`docs/results/orderbook-bitmap-optimization/` for the raw data.
 
 ## Next phases
 

@@ -1,0 +1,37 @@
+Multi-round best-delete gap-crossover hardening (control-isolation of the
+Experiment 01 optimization study), variable-domain ladder.
+Captured 2026-09-09, Apple M3 Max, macOS 14.2.1, Apple clang 15.0.0, Release
+-O3 -DNDEBUG; git HEAD 67d3aa1 (+ working-tree study files).
+
+WHAT this measures and why it is hardened:
+  The frozen gap-sweep (docs/.../gap-sweep/) reported one forward ladder. This
+  run repeats the identical deterministic ladder sweep (--impl=both, blocks=128,
+  K=4096) as 10 INDEPENDENT rounds — 5 sweeping gaps FORWARD (1..1024) and 5
+  REVERSE (1024..1) — so the crossover claim rests on repeated, direction-
+  balanced agreement, not a single pass. Per gap we report the median-over-rounds
+  p50 (128 block samples per round) for flat and bits, the delta, and in how many
+  of the rounds the delta sign says "bits faster" (bits_wins_rounds). A crossover
+  gap is only claimed where the sign is consistent across rounds.
+
+  var-domain/ = the default ladder: gap g is swept on a book whose domain is
+  1+(K+1)*g, so the re-scan distance g and the active memory span grow together
+  (the confound noted in the study; see the sibling fixed-domain-gap-validation/
+  run which pins the domain and confirms the crossover does not move).
+
+EXACT INVOCATION (identical for every round, direction and order vary):
+  ./build/orderbook_gap_bench --impl=both --blocks=128 --deletes=4096 --gaps=1,2,4,8,16,32,64,128,256,512,1024
+  (reverse rounds pass --gaps=1024,...,1)
+  Each timed row deletes the current best K times across 128 fresh blocks; both
+  impls replay byte-identical books and delete streams interleaved in one process.
+  Round files: var-domain/fwd-{1..5}.log, var-domain/rev-{1..5}.log.
+  Driver: run.sh. Merge: analysis.py -> analysis-var-domain.txt.
+
+RESULT (analysis-var-domain.txt): the median-over-rounds p50 crossover gap is
+  g = 8 (bits 10/10 rounds faster at g=8 and above; only 1/10 rounds faster at
+  g=4). Per-round crossover distribution over 10 rounds: min 4, median 8, max 8.
+  So on this host the flat linear best re-scan is cheaper through g=4 and the
+  bitmap's hierarchical descent is cheaper from g=8 on; the claim "crossover in
+  the 4-8 tick range, reproducibly crossing at g=8" is supported by all 10
+  rounds. Flat cost grows ~0.29 ns per rescanned slot above a fixed cost
+  (flat p50: 5.1 ns @ g=8 -> 298.7 ns @ g=1024); the bitmap stays ~4.4-10.2 ns
+  across the whole ladder.

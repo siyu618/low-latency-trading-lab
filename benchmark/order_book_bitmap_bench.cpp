@@ -15,10 +15,24 @@
 //   Q5 (on the existing workloads, are best-delete gaps large enough for the
 //       bitmap to help?) -> workload C (and the --gaps analysis below).
 //
-// Canonical runs are ONE implementation per process (`--impl flat` and
-// `--impl bits` separately), exactly as Phase 2 ran map and flat in separate
-// processes. The benchmark itself never decides "who is faster": it reports
-// ns/update and leaves the comparison to docs/ORDERBOOK_BITMAP_OPTIMIZATION.md.
+// CONTROL ISOLATION: BitsetFlatOrderBook's positive->positive path is also
+// control-flow-different from the frozen FlatOrderBook (Flat eagerly checks the
+// cached-best state on EVERY positive write; the bitmap book only maintains the
+// cache on occupancy TRANSITIONS). To keep "control flow" and "occupancy
+// bitmap" separable, a third implementation — TransitionAwareFlatOrderBook, a
+// copy of FlatOrderBook with only the transition-aware positive path, NO
+// bitmap — can be selected as `tuned`. Then:
+//     flat  vs tuned  isolates the control-flow change alone;
+//     tuned vs bits   isolates the bitmap alone (hot-path structure held equal);
+//     flat  vs bits   is the end-to-end candidate delta and must NOT be read as
+//                     "the bitmap". impl=both keeps the legacy flat+bits pair;
+//                     impl=all selects flat+tuned+bits.
+//
+// Canonical runs are ONE implementation per process (`--impl flat`,
+// `--impl tuned`, `--impl bits` separately), exactly as Phase 2 ran map and
+// flat in separate processes. The benchmark itself never decides "who is
+// faster": it reports ns/update and leaves the comparison to
+// docs/ORDERBOOK_BITMAP_OPTIMIZATION.md.
 //
 // The bitmap book is constructed over the SAME domain as FlatOrderBook
 // ([1, 2N]); its occupancy hierarchy (L0/L1/L2) covers the same per-side slot
@@ -27,8 +41,9 @@
 // Modes:
 //   * default: steady-state best-of-reps throughput for the selected impl(s),
 //     workload(s), scale(s). Output is the Phase 2 CSV shape.
-//   * --check: replay the same stream through FlatOrderBook and
-//     BitsetFlatOrderBook and require byte-identical observable state; no timing.
+//   * --check: replay the same stream through FlatOrderBook,
+//     TransitionAwareFlatOrderBook, and BitsetFlatOrderBook and require
+//     byte-identical observable state; no timing.
 //   * --gaps: do NOT time; replay the selected workload/scale stream through an
 //     off-clock level mirror and report the DISTRIBUTION of best-delete rescan
 //     distances (how many empty price levels FlatOrderBook's inward scan would
@@ -54,7 +69,9 @@
 #include "bitset_flat_order_book.h"
 #include "flat_order_book.h"
 #include "stream_gen.h"
+#include "transition_aware_flat_order_book.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cinttypes>
 #include <cstdint>
@@ -69,6 +86,7 @@ using llob::BookSnapshot;
 using llob::FlatOrderBook;
 using llob::L2Update;
 using llob::Side;
+using llob::TransitionAwareFlatOrderBook;
 
 using llob_bench::StreamGen;
 using llob_bench::Workload;
@@ -247,69 +265,90 @@ void report_memory(int64_t n) {
     std::printf("# memory N=%.0f domain=[1,%.0f] per-side slot span=%.0f\n",
                 static_cast<double>(n), static_cast<double>(span),
                 static_cast<double>(span));
+    // Explicit size_t -> double casts (per the strict-warning discipline): the
+    // byte counts are size_t, so every conversion into the %g computations is
+    // spelled out rather than left to implicit usual-arithmetic conversions.
     std::printf("# memory quantity_arrays_bytes=%zu  (%g MiB; %g MiB/side)\n",
-                probe.quantity_bytes(), probe.quantity_bytes() / MiB,
-                probe.quantity_bytes() / 2.0 / MiB);
+                probe.quantity_bytes(),
+                static_cast<double>(probe.quantity_bytes()) / MiB,
+                static_cast<double>(probe.quantity_bytes()) / 2.0 / MiB);
     std::printf("# memory occupancy_L0_words_per_side=%zu L1=%zu L2=%zu\n",
                 words[0], words[1], words[2]);
     std::printf("# memory occupancy_bytes=%zu  (%g MiB; per side L0=%g KiB "
                 "L1=%g KiB L2=%g B)\n",
-                probe.occupancy_bytes(), probe.occupancy_bytes() / MiB,
-                (words[0] * 8.0) / 1024.0, (words[1] * 8.0) / 1024.0,
-                words[2] * 8.0);
+                probe.occupancy_bytes(),
+                static_cast<double>(probe.occupancy_bytes()) / MiB,
+                (static_cast<double>(words[0]) * 8.0) / 1024.0,
+                (static_cast<double>(words[1]) * 8.0) / 1024.0,
+                static_cast<double>(words[2]) * 8.0);
     std::printf("# memory occupancy_is_fraction_of_quantity=%.4f%%\n",
                 100.0 * static_cast<double>(probe.occupancy_bytes()) /
                     static_cast<double>(probe.quantity_bytes()));
 }
 
 // ---------------------------------------------------------------------------
-// --check: FlatOrderBook vs BitsetFlatOrderBook differential validation over
-// every (scale, workload) stream. Divergence FAILS loudly (non-zero exit).
+// --check: FlatOrderBook vs TransitionAwareFlatOrderBook vs BitsetFlatOrderBook
+// differential validation over every (scale, workload) stream. Divergence FAILS
+// loudly (non-zero exit).
 // ---------------------------------------------------------------------------
 int check_streams(uint64_t updates) {
     int failures = 0;
-    std::printf("--check: differential FlatOrderBook vs BitsetFlatOrderBook "
-                "(identical stream, identical domain)\n");
+    std::printf("--check: differential FlatOrderBook vs TransitionAwareFlatOrderBook "
+                "vs BitsetFlatOrderBook (identical stream, identical domain)\n");
     for (int64_t n : kScaleLevels) {
         const auto snap = StreamGen::fill_snapshot(n);
         for (int w = 0; w < kWorkloadCount; ++w) {
             const Workload wl = static_cast<Workload>(w);
             const auto ops = StreamGen::steady_ops(wl, n, updates);
 
-            FlatOrderBook        fbook(1, 2 * n);
-            BitsetFlatOrderBook  bbook(1, 2 * n);
+            FlatOrderBook               fbook(1, 2 * n);
+            TransitionAwareFlatOrderBook tbook(1, 2 * n);
+            BitsetFlatOrderBook          bbook(1, 2 * n);
             const bool loaded_f = fbook.load_snapshot(snap);
+            const bool loaded_t = tbook.load_snapshot(snap);
             const bool loaded_b = bbook.load_snapshot(snap);
-            if (!(loaded_f && loaded_b)) {
+            if (!(loaded_f && loaded_t && loaded_b)) {
                 ++failures;
                 std::printf("  [FAIL] N=%-9" PRId64 " wl=%s snapshot rejected "
-                            "(flat=%d bits=%d)\n",
+                            "(flat=%d tuned=%d bits=%d)\n",
                             n, workload_tag(wl), loaded_f ? 1 : 0,
-                            loaded_b ? 1 : 0);
+                            loaded_t ? 1 : 0, loaded_b ? 1 : 0);
                 continue;
             }
 
             uint64_t applied = 0, other = 0;
             for (const L2Update& u : ops) {
                 const ApplyResult rf = fbook.apply(u);
+                const ApplyResult rt = tbook.apply(u);
                 const ApplyResult rb = bbook.apply(u);
-                const bool same = rf == rb &&
+                const bool same = rf == rt && rf == rb &&
+                                  fbook.synced() == tbook.synced() &&
                                   fbook.synced() == bbook.synced() &&
+                                  fbook.last_applied_seq() == tbook.last_applied_seq() &&
                                   fbook.last_applied_seq() == bbook.last_applied_seq() &&
+                                  fbook.best_bid() == tbook.best_bid() &&
                                   fbook.best_bid() == bbook.best_bid() &&
+                                  fbook.best_ask() == tbook.best_ask() &&
                                   fbook.best_ask() == bbook.best_ask() &&
+                                  fbook.best_bid_qty() == tbook.best_bid_qty() &&
                                   fbook.best_bid_qty() == bbook.best_bid_qty() &&
+                                  fbook.best_ask_qty() == tbook.best_ask_qty() &&
                                   fbook.best_ask_qty() == bbook.best_ask_qty();
                 if (!same) {
                     if (failures < 10) {
                         std::printf("  [DIVERGE] N=%-9" PRId64 " wl=%s seq=%" PRIu64
                                     " flat(rs=%d sync=%d bb=%" PRId64 "/%" PRId64
-                                    " ba=%" PRId64 "/%" PRId64 ") bits(rs=%d sync=%d "
-                                    "bb=%" PRId64 "/%" PRId64 " ba=%" PRId64 "/%" PRId64 ")\n",
+                                    " ba=%" PRId64 "/%" PRId64 ") tuned(rs=%d bb=%"
+                                    PRId64 "/%" PRId64 " ba=%" PRId64 "/%" PRId64
+                                    ") bits(rs=%d sync=%d bb=%" PRId64 "/%" PRId64
+                                    " ba=%" PRId64 "/%" PRId64 ")\n",
                                     n, workload_tag(wl), u.seq,
                                     static_cast<int>(rf), fbook.synced() ? 1 : 0,
                                     fbook.best_bid(), fbook.best_bid_qty(),
                                     fbook.best_ask(), fbook.best_ask_qty(),
+                                    static_cast<int>(rt), tbook.best_bid(),
+                                    tbook.best_bid_qty(), tbook.best_ask(),
+                                    tbook.best_ask_qty(),
                                     static_cast<int>(rb), bbook.synced() ? 1 : 0,
                                     bbook.best_bid(), bbook.best_bid_qty(),
                                     bbook.best_ask(), bbook.best_ask_qty());
@@ -327,15 +366,15 @@ int check_streams(uint64_t updates) {
         }
     }
     std::printf(failures == 0
-                    ? "--check PASSED: Flat and Bits agree on every stream\n"
-                    : "--check FAILED: %d stream(s) diverged between Flat and Bits\n",
+                    ? "--check PASSED: Flat, Tuned, and Bits agree on every stream\n"
+                    : "--check FAILED: %d stream(s) diverged\n",
                 failures);
     return failures == 0 ? 0 : 1;
 }
 
 void print_header(uint64_t updates, int reps) {
     std::printf("# orderbook_bitmap_bench - optimization-study steady throughput "
-                "(flat vs hierarchical-occupancy bitmap)\n");
+                "(flat / transition-aware control / hierarchical-occupancy bitmap)\n");
     std::printf("# domain [1, 2N]; N live levels/side; fill untimed; "
                 "best of %d reps; %" PRIu64 " steady ops per block\n",
                 reps, updates);
@@ -372,12 +411,15 @@ void run_impl(const char* impl_name, const char* wl_sel, const char* scale_sel,
 // ---- Interleaved in-process mode -------------------------------------------
 // Phase 2 runs one impl per process; that is authoritative for an impl's OWN
 // absolute throughput (best-of-reps, comparable to the frozen numbers). But a
-// flat-vs-bits DELTA measured across two separate processes on this host is
+// cross-impl DELTA measured across two separate processes on this host is
 // drowned by process-to-process turbo/frequency drift (a 0.1 s process samples
-// one DVFS state). For the DELTA only, this mode times FlatOrderBook and
-// BitsetFlatOrderBook block-by-block INSIDE one process, alternating who goes
-// first each block, on identical books and op streams, so each pair shares the
-// same clock. Each block is still a fresh snapshot cold start.
+// one DVFS state). For the DELTA only, this mode times the selected
+// implementations block-by-block INSIDE one process, rotating who goes first
+// each block, on identical books and op streams, so every pair shares the same
+// clock. Each block is still a fresh snapshot cold start. impl=both selects
+// flat+bits (legacy two-way); impl=all selects flat+tuned+bits so the
+// control-flow (flat vs tuned) and bitmap (tuned vs bits) deltas share one
+// clock state with the end-to-end flat-vs-bits delta.
 
 // One timed block on a fresh book; returns total ns for the whole block.
 template <typename Book>
@@ -410,11 +452,35 @@ double median_sorted(std::vector<double>& v) {
     return v[mid];
 }
 
+// A named timing primitive for one implementation (a pointer to one
+// instantiation of time_block_ns). Lets run_interleaved drive any subset of the
+// flat/tuned/bits implementations with identical framing.
+struct TimedImpl {
+    const char* name;
+    double (*time_block)(const BookSnapshot& snap, const std::vector<L2Update>& ops,
+                         int64_t tick_max, uint64_t& sink);
+};
+
+std::vector<TimedImpl> select_impls(bool want_flat, bool want_tuned,
+                                    bool want_bits) {
+    std::vector<TimedImpl> v;
+    if (want_flat)
+        v.push_back(TimedImpl{"flat", &time_block_ns<FlatOrderBook>});
+    if (want_tuned)
+        v.push_back(TimedImpl{"tuned", &time_block_ns<TransitionAwareFlatOrderBook>});
+    if (want_bits)
+        v.push_back(TimedImpl{"bits", &time_block_ns<BitsetFlatOrderBook>});
+    return v;
+}
+
 void run_interleaved(const char* wl_sel, const char* scale_sel,
-                     uint64_t updates, int blocks) {
-    std::printf("# orderbook_bitmap_bench --inproc: flat vs bits interleaved "
-                "in ONE process (%d blocks each, fresh snapshot per block, "
-                "alternating order), %" PRIu64 " ops/block\n", blocks, updates);
+                     uint64_t updates, int blocks,
+                     const std::vector<TimedImpl>& impls) {
+    const int ni = static_cast<int>(impls.size());
+    std::printf("# orderbook_bitmap_bench --inproc: %d implementation%s "
+                "interleaved in ONE process (%d blocks each, fresh snapshot per "
+                "block, rotating start order), %" PRIu64 " ops/block\n",
+                ni, ni == 1 ? "" : "s", blocks, updates);
     std::printf("# impl,wl,scale_n,updates,ns_per_update_median,ns_per_update_mean\n");
     for (int64_t n : kScaleLevels) {
         const bool want_scale = std::strcmp(scale_sel, "all") == 0 ||
@@ -428,36 +494,32 @@ void run_interleaved(const char* wl_sel, const char* scale_sel,
             if (!want_wl) continue;
 
             const auto ops = StreamGen::steady_ops(wl, n, updates);
-            std::vector<double> fs, bs;
-            fs.reserve(static_cast<size_t>(blocks));
-            bs.reserve(static_cast<size_t>(blocks));
+            std::vector<std::vector<double>> per(static_cast<size_t>(ni));
+            for (auto& pv : per) pv.reserve(static_cast<size_t>(blocks));
             uint64_t sink = 0;
             for (int b = 0; b < blocks; ++b) {
-                const bool flat_first = (b % 2 == 0);
-                if (flat_first) {
-                    fs.push_back(time_block_ns<FlatOrderBook>(snap, ops, 2 * n, sink) /
-                                 static_cast<double>(updates));
-                    bs.push_back(time_block_ns<BitsetFlatOrderBook>(snap, ops, 2 * n, sink) /
-                                 static_cast<double>(updates));
-                } else {
-                    bs.push_back(time_block_ns<BitsetFlatOrderBook>(snap, ops, 2 * n, sink) /
-                                 static_cast<double>(updates));
-                    fs.push_back(time_block_ns<FlatOrderBook>(snap, ops, 2 * n, sink) /
-                                 static_cast<double>(updates));
+                // Rotate which impl times first so no impl always follows the
+                // others' freshly-touched memory (for ni == 2 this reproduces
+                // the legacy flat/bits alternation exactly).
+                for (int k = 0; k < ni; ++k) {
+                    const size_t ii = static_cast<size_t>((b + k) % ni);
+                    per[ii].push_back(impls[ii].time_block(snap, ops, 2 * n,
+                                                           sink) /
+                                      static_cast<double>(updates));
                 }
             }
-            auto fin = fs, bin = bs; // sorted copies for the median
-            std::sort(fin.begin(), fin.end());
-            std::sort(bin.begin(), bin.end());
-            double fsum = 0, bsum = 0;
-            for (double x : fs) fsum += x;
-            for (double x : bs) bsum += x;
-            std::printf("flat,%s,%.0f,%" PRIu64 ",%.3f,%.3f\n",
-                        workload_tag(wl), static_cast<double>(n), updates,
-                        median_sorted(fin), fsum / fs.size());
-            std::printf("bits,%s,%.0f,%" PRIu64 ",%.3f,%.3f\n",
-                        workload_tag(wl), static_cast<double>(n), updates,
-                        median_sorted(bin), bsum / bs.size());
+            for (int i = 0; i < ni; ++i) {
+                const size_t ii = static_cast<size_t>(i);
+                std::vector<double> sorted = per[ii]; // copy for the median
+                std::sort(sorted.begin(), sorted.end());
+                double sum = 0.0;
+                for (double x : per[ii]) sum += x;
+                std::printf("%s,%s,%.0f,%" PRIu64 ",%.3f,%.3f\n",
+                            impls[ii].name, workload_tag(wl),
+                            static_cast<double>(n), updates,
+                            median_sorted(sorted),
+                            sum / static_cast<double>(per[ii].size()));
+            }
             // sink folds every apply result and end-state read; printing it
             // (not testing it) keeps those timed writes/reads observable.
             std::printf("# sink=0x%016" PRIx64 "\n", sink);
@@ -470,19 +532,23 @@ void usage(const char* argv0) {
     std::printf(
         "usage: %s [impl] [workload] [scale] [updates=N] [reps=N] "
         "[--check] [--gaps] [--memory] [--inproc=N]\n"
-        "  impl      flat | bits | both        (default both)\n"
+        "  impl      flat | tuned | bits | both | all   (default both)\n"
+        "            both = flat + bits (legacy pair); all = flat + tuned + bits\n"
+        "            (tuned = TransitionAwareFlatOrderBook, the no-bitmap control\n"
+        "            that isolates the transition-aware hot-path control flow)\n"
         "  workload  A B C D E | all           (default all)\n"
         "  scale     1000 | 10000 | 100000 | 1000000 | all  (default all)\n"
         "  updates=N   steady ops per timed block           (default %" PRIu64 ")\n"
         "  reps=N      timed blocks per cell; best is kept  (default %d)\n"
-        "  --check   replay streams through Flat and Bits, require agreement; no timing\n"
+        "  --check   replay streams through Flat, Tuned, Bits; require agreement;\n"
+        "            no timing\n"
         "  --gaps    report the best-delete rescan-distance distribution for the\n"
         "            selected workload/scale (single wl and scale); no timing\n"
         "  --memory  report quantity-array vs occupancy-hierarchy bytes at the\n"
         "            selected scale(s); no timing\n"
-        "  --inproc=N  interleave N flat/bits blocks per cell inside ONE process\n"
-        "            (requires impl=both) for a drift-free flat-vs-bits DELTA;\n"
-        "            median & mean ns/update over the N interleaved blocks\n",
+        "  --inproc=N  interleave N blocks per cell of each selected impl inside\n"
+        "            ONE process (requires impl=both or impl=all) for a drift-free\n"
+        "            cross-impl DELTA; median & mean ns/update over the blocks\n",
         argv0, kDefaultUpdates, kDefaultReps);
 }
 
@@ -531,12 +597,17 @@ int main(int argc, char** argv) {
         if (pos < 3) ++pos;
     }
 
-    const bool want_flat = std::strcmp(impl_sel, "flat") == 0 ||
-                           std::strcmp(impl_sel, "both") == 0;
-    const bool want_bits = std::strcmp(impl_sel, "bits") == 0 ||
-                           std::strcmp(impl_sel, "both") == 0;
-    if (!want_flat && !want_bits) {
-        std::fprintf(stderr, "unknown impl '%s' (want flat|bits|both)\n", impl_sel);
+    const bool want_flat  = std::strcmp(impl_sel, "flat") == 0 ||
+                            std::strcmp(impl_sel, "both") == 0 ||
+                            std::strcmp(impl_sel, "all") == 0;
+    const bool want_tuned = std::strcmp(impl_sel, "tuned") == 0 ||
+                            std::strcmp(impl_sel, "all") == 0;
+    const bool want_bits  = std::strcmp(impl_sel, "bits") == 0 ||
+                            std::strcmp(impl_sel, "both") == 0 ||
+                            std::strcmp(impl_sel, "all") == 0;
+    if (!want_flat && !want_tuned && !want_bits) {
+        std::fprintf(stderr, "unknown impl '%s' (want flat|tuned|bits|both|all)\n",
+                     impl_sel);
         usage(argv[0]);
         return 2;
     }
@@ -567,17 +638,22 @@ int main(int argc, char** argv) {
     }
 
     if (inproc > 0) {
-        if (!want_flat || !want_bits || std::strcmp(impl_sel, "both") != 0) {
-            std::fprintf(stderr, "--inproc requires impl=both (interleaves the "
-                                 "two implementations in one process)\n");
+        const bool pair_ok = std::strcmp(impl_sel, "both") == 0 ||
+                             std::strcmp(impl_sel, "all") == 0;
+        if (!pair_ok) {
+            std::fprintf(stderr, "--inproc requires impl=both (flat+bits) or "
+                                 "impl=all (flat+tuned+bits) so every cross-impl "
+                                 "DELTA shares one process and one clock\n");
             return 2;
         }
-        run_interleaved(wl_sel, scale_sel, updates, inproc);
+        run_interleaved(wl_sel, scale_sel, updates, inproc,
+                        select_impls(want_flat, want_tuned, want_bits));
         return 0;
     }
 
     print_header(updates, reps);
     if (want_flat) run_impl<FlatOrderBook>("flat", wl_sel, scale_sel, updates, reps);
+    if (want_tuned) run_impl<TransitionAwareFlatOrderBook>("tuned", wl_sel, scale_sel, updates, reps);
     if (want_bits) run_impl<BitsetFlatOrderBook>("bits", wl_sel, scale_sel, updates, reps);
     return 0;
 }

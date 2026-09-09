@@ -1,0 +1,31 @@
+Fixed-domain gap-crossover validation (Experiment 01 optimization study).
+Captured 2026-09-09, Apple M3 Max, macOS 14.2.1, Apple clang 15.0.0, Release
+-O3 -DNDEBUG; git HEAD 67d3aa1 (+ working-tree study files).
+
+WHY a fixed-domain control (study item: the default ladder's domain grows with
+the gap):
+  In the default ladder (control-isolation/gap-crossover/) each gap g is timed
+  on a book whose domain is 1+(K+1)*g. That couples the next-best re-scan
+  distance (g — the variable under study) to the active memory span the book
+  occupies (which grows with g). A skeptic could read flat's rising cost as a
+  memory-span effect rather than a pure re-scan-distance effect. This run
+  decouples them: benchmark/order_book_gap_bench --fixed-domain times EVERY gap
+  on the single largest domain (1+(K+1)*g_max, g_max = 1024), so the only thing
+  that changes across rows is how far apart the ladder levels sit.
+
+EXACT INVOCATION (identical for every round, direction varies):
+  ./build/orderbook_gap_bench --impl=both --blocks=128 --deletes=4096 \
+      --gaps=1,2,4,8,16,32,64,128,256,512,1024 --fixed-domain
+  Round files: rounds/fwd-{1..3}.log, rounds/rev-{1..3}.log (3 forward + 3
+  reverse independent rounds).
+
+RESULT (analysis-fixed-domain.txt): the fixed-domain crossover is IDENTICAL to
+  the variable-domain one — median-over-rounds p50 crossover gap g = 8 (bits
+  6/6 rounds faster at g=8 and above, 0/6 rounds at g=4; per-round crossover
+  distribution min/median/max = 8). Row-for-row the fixed-domain numbers track
+  the variable-domain numbers closely (e.g. g=1024 flat p50 303.2 fixed vs 298.7
+  variable; g=4 flat 4.34 vs 4.23). At this scale and K the active-memory-span
+  confound does not move the result: flat's per-gap cost is a property of the
+  re-scan distance g, not of the domain size. The "crossover in the 4-8 tick
+  range, reproducibly crossing at g=8" claim is therefore not an artifact of
+  domain growth.

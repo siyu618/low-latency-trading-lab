@@ -1,0 +1,35 @@
+# ---- workload A (updates=2000000, inproc3 blocks=24) ----
+# orderbook_bitmap_bench --inproc: 3 implementations interleaved in ONE process (24 blocks each, fresh snapshot per block, rotating start order), 2000000 ops/block
+# impl,wl,scale_n,updates,ns_per_update_median,ns_per_update_mean
+flat,A,1000000,2000000,4.699,4.835
+tuned,A,1000000,2000000,4.215,4.517
+bits,A,1000000,2000000,3.895,4.370
+# sink=0x0000000000000000
+# ---- workload B (updates=500000, inproc3 blocks=32) ----
+# orderbook_bitmap_bench --inproc: 3 implementations interleaved in ONE process (32 blocks each, fresh snapshot per block, rotating start order), 500000 ops/block
+# impl,wl,scale_n,updates,ns_per_update_median,ns_per_update_mean
+flat,B,1000000,500000,5.346,5.500
+tuned,B,1000000,500000,6.710,7.309
+bits,B,1000000,500000,6.715,7.141
+# sink=0x0000000000000000
+# ---- workload C (updates=2000000, inproc3 blocks=24) ----
+# orderbook_bitmap_bench --inproc: 3 implementations interleaved in ONE process (24 blocks each, fresh snapshot per block, rotating start order), 2000000 ops/block
+# impl,wl,scale_n,updates,ns_per_update_median,ns_per_update_mean
+flat,C,1000000,2000000,7.116,7.142
+tuned,C,1000000,2000000,7.129,7.207
+bits,C,1000000,2000000,8.864,8.901
+# sink=0x0000000000000000
+# ---- workload D (updates=2000000, inproc3 blocks=24) ----
+# orderbook_bitmap_bench --inproc: 3 implementations interleaved in ONE process (24 blocks each, fresh snapshot per block, rotating start order), 2000000 ops/block
+# impl,wl,scale_n,updates,ns_per_update_median,ns_per_update_mean
+flat,D,1000000,2000000,5.130,5.329
+tuned,D,1000000,2000000,4.367,4.489
+bits,D,1000000,2000000,4.734,5.048
+# sink=0x0000000000000000
+# ---- workload E (updates=2000000, inproc3 blocks=24) ----
+# orderbook_bitmap_bench --inproc: 3 implementations interleaved in ONE process (24 blocks each, fresh snapshot per block, rotating start order), 2000000 ops/block
+# impl,wl,scale_n,updates,ns_per_update_median,ns_per_update_mean
+flat,E,1000000,2000000,8.178,8.418
+tuned,E,1000000,2000000,7.949,8.283
+bits,E,1000000,2000000,9.600,10.011
+# sink=0x0000000000000000

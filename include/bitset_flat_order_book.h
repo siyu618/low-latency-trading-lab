@@ -46,9 +46,14 @@ namespace llob {
 //
 // The bitmap is a PURE OCCUPANCY index — quantities are never encoded in it.
 // A level's quantity lives only in qty_[]. The bitmap answers exactly one
-// question, in O(1)..O(3) word steps: "what is the highest (bid) / lowest
-// (ask) occupied slot below/above a given slot?" It never linearly inspects
-// every empty slot after leaving the current word.
+// question: "what is the highest (bid) / lowest (ask) occupied slot
+// below/above a given slot?" It never linearly inspects the empty PRICE SLOTS
+// after leaving the current L0 word (that is the per-slot scan being avoided).
+// The descent is a bounded few word steps in the common case (same L0 word, or
+// one L1/L2 step). Worst case it scans a small number of SUMMARY words: the
+// L2-level fallback in prev_occ2()/next_occ2() linearly walks adjacent occ2
+// words, and occ2 is tiny by construction — ceil(L1words/64) words per side,
+// e.g. 8 words at a 2M-slot-per-side domain (see those functions).
 //
 // MAINTENANCE DISCIPLINE (the whole point): the bitmap is updated ONLY on an
 // occupancy transition:
@@ -352,9 +357,11 @@ private:
         const unsigned p = static_cast<unsigned>((b - 1) & 63);
         const uint64_t x = occ2_[s][static_cast<size_t>(w)] & low_mask(p);
         if (x) return (w << 6) + msb_index(x);
-        // Previous non-empty occ2 word. The top level has few words (<= a
-        // handful for every realistic domain: L2 words == ceil(L1words/64));
-        // this bounded fallback is NOT the per-slot linear scan being avoided.
+        // Previous non-empty occ2 word. occ2 has ceil(L1words/64) words per
+        // side (e.g. 8 at a 2M-slot-per-side domain), so this fallback is a
+        // LINEAR scan over a handful of SUMMARY words — not the per-slot linear
+        // scan over empty price levels that the hierarchy exists to avoid. It
+        // is bounded and tiny; there is deliberately no fourth (L3) level.
         for (int64_t ww = w - 1; ww >= 0; --ww) {
             const uint64_t y = occ2_[s][static_cast<size_t>(ww)];
             if (y) return (ww << 6) + msb_index(y);

@@ -37,8 +37,13 @@ measurement family. Transient raw runs land in repo-root `results/`
   occupancy bitmap) vs the frozen `FlatOrderBook` — steady throughput on the
   A–E workloads at 1M, a controlled best-delete gap ladder sweep, per-workload
   best-delete re-scan-distance analysis, and occupancy-vs-quantity memory
-  accounting, all on the same Apple M3 Max. None of it is a Phase 2/4 canonical
-  dataset; it is read against them. See its `README.md` and
+  accounting, all on the same Apple M3 Max. It was credibility-hardened with a
+  **no-bitmap control** (`TransitionAwareFlatOrderBook`): the three-impl
+  isolation steady data live under `control-isolation/`, and the gap-crossover
+  claim was hardened across 16 independent rounds (variable- and
+  `--fixed-domain`) under `control-isolation/gap-crossover/` and
+  `fixed-domain-gap-validation/`. None of it is a Phase 2/4 canonical dataset;
+  it is read against them. See its `README.md` and
   `docs/ORDERBOOK_BITMAP_OPTIMIZATION.md`.
 
 ## Honesty rule

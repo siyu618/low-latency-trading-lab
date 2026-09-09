@@ -1,0 +1,92 @@
+Control-isolation steady-state comparison, workload scale N = 1,000,000.
+Captured 2026-09-09, same host/build as the frozen steady-throughput-1M dataset
+(Apple M3 Max, macOS 14.2.1, Apple clang 15.0.0, Release -O3 -DNDEBUG; git HEAD
+67d3aa1 + the working-tree state of this study's files).
+
+WHAT this measures (the isolation framing — see docs/ORDERBOOK_BITMAP_OPTIMIZATION.md):
+  THREE implementations replayed over the SAME deterministic A-E streams
+  (same seed, same generator, same fresh-snapshot cold start per block):
+    FlatOrderBook                 = frozen baseline (Phase 2 book)
+    TransitionAwareFlatOrderBook  = frozen qty layout + ONLY the transition-aware
+                                    positive path; NO bitmap anywhere (the control)
+    BitsetFlatOrderBook           = candidate: same qty layout + transition-aware
+                                    positive path + 3-level occupancy bitmap
+  Hence:
+    flat  -> tuned = transition-aware CONTROL FLOW alone
+    tuned -> bits  = occupancy BITMAP alone (bitmap incremental over the control)
+    flat  -> bits  = end-to-end candidate delta (control flow + bitmap);
+                     MUST NOT be read as "the bitmap"
+  Correctness: four-way differential (tests/bitset_order_book_tests.cpp) and
+  bench --check verify flat/tuned/bits are behaviorally identical on every
+  observable over these streams; only the internal hot-path control flow and the
+  occupancy index differ.
+
+FILES
+  run.sh        : per-process canonical method (one impl per process), 5 rounds
+                  per (impl, wl), impl start order rotated across rounds
+                  (r1 flat,tuned,bits / r2 tuned,bits,flat / ...); per-process
+                  best-of-3 reps; medians.csv = MEDIAN over the 5 rounds.
+  raw/{impl}_{wl}.log : the 5 per-round best_ns_per_update values per cell.
+  run_inproc3.sh: drift-free in-process method (impl=all interleaves the THREE
+                  impls in ONE process, fresh snapshot + rotating start per
+                  block); inproc3.csv = median/mean over 24 blocks (A/C/D/E) or
+                  32 blocks (B).
+
+EFFECTIVE TIMED-BLOCK UPDATE COUNT at scale 1M (same convention as the frozen
+dataset): A = 2000000, B = 500000, C = 2000000, D = 2000000, E = 2000000.
+B runs fewer updates to bound wall time only — B's stream generation is
+pathologically slow at near-full density (off-clock, implementation-neutral).
+The timed compare is always identical streams at identical updates across the
+three impls.
+
+MEASUREMENT-STABILITY CAVEAT (read before quoting any single number):
+  On this host the per-process ns for the BITMAP book is not stable round to
+  round in one session: bits_A best_ns_per_update across the 5 rounds of
+  identical input spanned 3.864-6.182 ns (+/- 40%), while flat_A stayed within
+  4.164-4.435 ns. flat/tuned single-process numbers are tight; bits is not.
+  Consequences:
+    * Cross-process medians for bits carry large uncertainty; treat bits_A
+      (4.604 median) as "between ~3.9 and ~6.2", NOT as a point estimate.
+    * The in-process interleaved read (inproc3.csv) is the authoritative delta:
+      all three impls share one clock state and one process image, so alignment
+      and frequency drift cancel. Robustness rule (also used in the frozen
+      study): a finding is called robust only when BOTH methods agree on sign.
+    * The frozen steady-throughput-1M flat-vs-bits rows were captured in an
+      earlier window/process-image and the BITMAP absolute values do not
+      reproduce across sessions (e.g. bits_C two-way inproc 6.832 then vs 8.864
+      three-way inproc now). Cross-session absolute comparison for bits is not
+      meaningful; only within-session, same-process deltas are. flat absolute
+      values DO reproduce (~2-6%), so the flat-vs-flat and flat-vs-tuned rows
+      are stable across sessions.
+
+Numbers (medians.csv; ns/apply(), lower is better):
+  wl  updates  flat    tuned   bits    flat->tuned  tuned->bits  flat->bits
+  A   2000000  4.376   3.911   4.604      -10.6%        +17.7%       +5.2%
+  B    500000  4.470   5.750   7.252      +28.6%        +26.1%      +62.2%
+  C   2000000  6.060   6.169   6.591       +1.8%         +6.8%       +8.8%
+  D   2000000  4.474   3.672   3.772      -17.9%         +2.7%      -15.7%
+  E   2000000  5.712   5.686   6.129       -0.5%         +7.8%       +7.3%
+
+inproc3.csv (drift-free, same process; ns/apply() median over blocks):
+  A   flat 4.699 / tuned 4.215 / bits 3.895  ->  -10.3% / -7.6% / -17.1%
+  B   flat 5.346 / tuned 6.710 / bits 6.715  ->  +25.5% /  +0.1% / +25.6%
+  C   flat 7.116 / tuned 7.129 / bits 8.864  ->   +0.2% / +24.3% / +24.6%
+  D   flat 5.130 / tuned 4.367 / bits 4.734  ->  -14.9% /  +8.4% /  -7.7%
+  E   flat 8.178 / tuned 7.949 / bits 9.600  ->   -2.8% / +20.8% / +17.4%
+
+ROBUST FINDINGS (both methods agree on sign):
+  * transition-aware CONTROL FLOW (flat->tuned): helps requantify-heavy A
+    (-10%) and D (-15/-18%), hurts add/delete-heavy B (+25/+28%), ~neutral C,
+    ~neutral-to-mildly-positive E. Robust — sign and rough magnitude agree in
+    both methods. Mechanism: flat never reads a slot on a positive write (pure
+    store + cached-best bookkeeping); tuned always loads the slot to classify
+    add-vs-requantify, skipping the redundant best bookkeeping only when the
+    write is a requantify. That skip is the whole A/D win; the classification
+    load is the whole B loss.
+  * occupancy BITMAP incremental (tuned->bits): on B/C/D/E both methods report
+    >= 0 (bitmap does not help); on A the methods DISAGREE (-7.6% inproc vs
+    +17.7% cross) so A is ambiguous / not robust. No frozen workload shows a
+    robust bitmap win over the transition-aware control. The frozen study's
+    end-to-end A/D "bitmap faster" rows are therefore attributable to the
+    control flow, NOT the bitmap (the candidate book happens to also be
+    transition-aware). See the analysis document for the full statement.

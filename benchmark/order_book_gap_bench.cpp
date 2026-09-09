@@ -36,12 +36,24 @@
 //
 // Usage:
 //   orderbook_gap_bench [--impl=flat|bits|both] [--gaps=1,2,4,...,1024]
-//                       [--blocks=N] [--deletes=K]
+//                       [--blocks=N] [--deletes=K] [--fixed-domain]
 //   defaults: both (interleaved), the full 11-step gap ladder, 128 blocks,
 //   4096 deletes. K must be large enough that each timed block (K best-deletes)
 //   is comfortably above timer jitter; the ladder memory cost is (K+1)*g slots
 //   per side, so K=4096 keeps the largest-gap domain at ~4.2M slots (~67 MB of
 //   qty arrays).
+//
+// CONTROL NOTE / --fixed-domain. The default ladder grows the book DOMAIN with
+// g (domain = 1 + (K+1)*g), so a larger g confounds two things: the next-best
+// distance FlatOrderBook actually re-scans (g slots) and the active memory span
+// of the whole book. To hold the active-memory span constant while g still
+// varies the re-scan distance, pass --fixed-domain: EVERY gap in the --gaps list
+// is then timed on a book whose domain is the size the LARGEST gap in the list
+// requires (1 + (K+1)*max(gaps)). Levels still sit at 1+i*g, so each timed
+// best-delete still re-scans exactly g slots — the two variables are decoupled.
+// The existing (variable-domain) sweep is kept as-is for continuity; the
+// fixed-domain sweep is a validation that the crossover conclusion survives the
+// confound removal.
 
 #include "bitset_flat_order_book.h"
 #include "flat_order_book.h"
@@ -174,8 +186,7 @@ void emit_impl(std::FILE* out, const char* name, int64_t g,
 // difference measured across two separate processes would be drowned by
 // process-to-process turbo/frequency drift on this host.
 void run_gap(int64_t g, int64_t K, int blocks, bool want_flat, bool want_bits,
-             std::FILE* out) {
-    const int64_t domain_max = 1 + (K + 1) * g;
+             int64_t domain_max, std::FILE* out) {
     const BookSnapshot snap = make_ladder_snapshot(g, K);
     const std::vector<L2Update> ops = make_delete_stream(
         g, K, snap.seq + 1);
@@ -215,6 +226,7 @@ int main(int argc, char** argv) {
     const char* impl_sel = "both";
     int64_t     K        = kDefaultDeletes;
     int         blocks   = kDefaultBlocks;
+    bool        fixed_domain = false;
     std::vector<int64_t> gaps(kGaps, kGaps + 11);
 
     for (int i = 1; i < argc; ++i) {
@@ -235,12 +247,17 @@ int main(int argc, char** argv) {
             K = std::strtoll(a + 10, nullptr, 10);
         } else if (std::strncmp(a, "--blocks=", 9) == 0) {
             blocks = static_cast<int>(std::strtoul(a + 9, nullptr, 10));
+        } else if (std::strcmp(a, "--fixed-domain") == 0) {
+            fixed_domain = true;
         } else if (std::strcmp(a, "-h") == 0 || std::strcmp(a, "--help") == 0) {
             std::printf(
                 "usage: %s [--impl=flat|bits|both] [--gaps=1,2,4,...] "
-                "[--deletes=K] [--blocks=N]\n"
+                "[--deletes=K] [--blocks=N] [--fixed-domain]\n"
                 "  deterministic ladder gap sweep; run ONE impl per process for "
-                "canonical numbers\n",
+                "canonical numbers\n"
+                "  --fixed-domain: hold the book DOMAIN at the size the largest "
+                "--gaps entry requires for every gap (decouples re-scan distance "
+                "from active memory span; see the file comment)\n",
                 argv[0]);
             return 0;
         } else {
@@ -275,9 +292,29 @@ int main(int argc, char** argv) {
                 "best-deletes; %d blocks per impl/gap; selected impls "
                 "interleaved per block (same process, same clock)\n",
                 static_cast<long long>(K), blocks);
+
+    // Per-gap book domain. Default (variable-domain ladder): each gap uses
+    // 1 + (K+1)*g so the domain grows with g. --fixed-domain decouples g from
+    // the domain: every gap is timed on the domain the largest requested gap
+    // needs, so the active memory span is constant while the re-scan distance
+    // still varies (see the CONTROL NOTE in the file comment).
+    int64_t max_gap = 0;
+    for (int64_t g : gaps) {
+        if (g > max_gap) max_gap = g;
+    }
+    if (fixed_domain) {
+        std::printf("# fixed-domain: every gap timed on domain [1, %lld] "
+                    "(= the size gap %lld requires); active memory span constant "
+                    "across gaps\n",
+                    static_cast<long long>(1 + (K + 1) * max_gap),
+                    static_cast<long long>(max_gap));
+    }
     std::printf("# impl,gap_ticks,ns_per_delete_best,ns_per_delete_mean,p50,p99,max,blocks\n");
 
-    for (int64_t g : gaps)
-        run_gap(g, K, blocks, want_flat, want_bits, stdout);
+    for (int64_t g : gaps) {
+        const int64_t domain_max =
+            fixed_domain ? 1 + (K + 1) * max_gap : 1 + (K + 1) * g;
+        run_gap(g, K, blocks, want_flat, want_bits, domain_max, stdout);
+    }
     return 0;
 }
