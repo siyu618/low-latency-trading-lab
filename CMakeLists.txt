@@ -71,6 +71,32 @@ set_tests_properties(orderbook_tests_exitcode PROPERTIES
                      PASS_REGULAR_EXPRESSION "orderbook_tests_exitcode: got expected non-zero exit")
 
 # ---------------------------------------------------------------------------
+# Experiment 02 — SPSC Ring Buffer / Concurrency (Phase 1: correctness).
+# spsc_ring_buffer_tests drives SpscRingBuffer single-threaded, under a real
+# one-producer/one-consumer stress, and differentially against
+# MutexBoundedQueue (the reference). Header-only, so it links llob_core purely
+# for the shared include directory. Not performance work — Phase 2 measures.
+# ---------------------------------------------------------------------------
+add_executable(spsc_ring_buffer_tests tests/spsc_ring_buffer_tests.cpp)
+target_link_libraries(spsc_ring_buffer_tests PRIVATE llob_core)
+target_compile_options(spsc_ring_buffer_tests PRIVATE -Wall -Wextra)
+# The concurrent stress must terminate; a large timeout guards against a hang
+# (e.g. under a slow sanitizer build) without turning this into a live test.
+add_test(NAME spsc_ring_buffer_tests COMMAND spsc_ring_buffer_tests)
+set_tests_properties(spsc_ring_buffer_tests PROPERTIES TIMEOUT 300)
+
+# Same exit-code regression guard as the Experiment 01 test runners: the
+# self-test mode fails one CHECK and must exit non-zero.
+add_test(NAME spsc_ring_buffer_tests_exitcode
+         COMMAND ${CMAKE_COMMAND}
+                 -DLLDB_SELFTEST_FAIL=1
+                 -DNAME=spsc_ring_buffer_tests_exitcode
+                 -DBINARY=$<TARGET_FILE:spsc_ring_buffer_tests>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/assert_nonzero_exit.cmake)
+set_tests_properties(spsc_ring_buffer_tests_exitcode PROPERTIES
+                     PASS_REGULAR_EXPRESSION "spsc_ring_buffer_tests_exitcode: got expected non-zero exit")
+
+# ---------------------------------------------------------------------------
 # Benchmark (Experiment 01, Phase 2). Deterministic steady-state apply()
 # throughput. The benchmark is only meaningful as a release build: enable it
 # explicitly (default ON), and it is forced to -O3 -DNDEBUG regardless of the

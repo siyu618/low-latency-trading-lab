@@ -1,9 +1,13 @@
 # low-latency-trading-lab
 
 A lab for experiments in low-latency C++ trading infrastructure. This
-repository currently hosts a single experiment — Experiment 01, below — at the
-repo root; if more experiments land later they will be organized into their own
-top-level directories.
+repository currently hosts two experiments at the repo root: **Experiment 01**
+— L2 order book (`std::map` vs flat representation) — and **Experiment 02** —
+SPSC ring buffer / concurrency. Experiment 02's files sit alongside
+Experiment 01's in the shared `include/`, `tests/`, and `docs/` trees, clearly
+separated by file name and by namespace (`llob` = order book, `lltl` = queue);
+if more experiments land later they will be organized into their own top-level
+directories.
 
 > **Status — Experiment 01: Phase 1 COMPLETE / FROZEN; Phase 2 COMPLETE /
 > FROZEN; Phase 3M tooling COMPLETE, recordings COLLECTED, attribution analysis
@@ -27,12 +31,24 @@ top-level directories.
 > under `docs/results/phase4-macos-tail/`. The earlier buggy-tooling cells are
 > archived — INVALID, not canonical — under
 > `docs/results/phase4-macos-tail-pre4.1-invalid/`.
+>
+> **Experiment 02 — SPSC Ring Buffer / Concurrency: Phase 1 (Correctness /
+> Memory Model) COMPLETE.** A bounded single-producer / single-consumer ring
+> buffer (`include/spsc_ring_buffer.h`) and a mutex reference queue
+> (`include/mutex_bounded_queue.h`) are implemented, correctness is green
+> (single-thread semantics, a one-producer / one-consumer deterministic stress,
+> and a differential run against the mutex queue), strict-warning clean, and
+> sanitizer-clean. The memory-model argument (happens-before, ordering choices,
+> counter wrap) is documented in `docs/SPSC_MEMORY_MODEL.md`. Phase 2
+> (throughput), Phase 3 (false sharing + cursor caching), and Phase 4 (tail
+> latency) are NOT STARTED.
 
 ## Experiments
 
 | # | Experiment | Status |
 |---|------------|--------|
 | 01 | L2 Order Book: `std::map` vs Flat Representation | Phase 1, 2, 4 COMPLETE / FROZEN; Phase 3M tooling COMPLETE + recordings COLLECTED (attribution analysis deferred); Phase 3L tooling READY (native Linux measurement deferred) |
+| 02 | SPSC Ring Buffer / Concurrency | Phase 1 (Correctness / Memory Model) COMPLETE; Phase 2, 3, 4 NOT STARTED |
 
 ## Layout
 
@@ -44,14 +60,18 @@ low-latency-trading-lab/
 │   ├── flat_order_book.h    # dense tick-addressed book
 │   ├── bitset_flat_order_book.h  # Optimization Study: hierarchical-occupancy
 │   │                             #   bitmap twin of flat_order_book (drop-in)
-│   └── transition_aware_flat_order_book.h  # Optimization Study CONTROL: frozen
-│                                           #   flat book + transition-aware
-│                                           #   positive path, NO bitmap
+│   ├── transition_aware_flat_order_book.h  # Optimization Study CONTROL: frozen
+│   │                                       #   flat book + transition-aware
+│   │                                       #   positive path, NO bitmap
+│   ├── mutex_bounded_queue.h  # Exp 02 reference: mutex-guarded bounded FIFO
+│   └── spsc_ring_buffer.h     # Exp 02 candidate: lock-free SPSC ring buffer
 ├── tests/
 │   ├── order_book_tests.cpp # every scenario run against BOTH books
 │   ├── bitset_order_book_tests.cpp  # Optimization Study: four-way differential
 │   │                                 #   (map/flat/tuned/bitset) correctness suite
-│   └── phase4_stats_tests.cpp  # Phase 4 distribution/percentile regression tests
+│   ├── phase4_stats_tests.cpp  # Phase 4 distribution/percentile regression tests
+│   └── spsc_ring_buffer_tests.cpp  # Exp 02: semantics + SPSC stress +
+│                                   #   differential vs the mutex queue
 ├── benchmark/
 │   ├── stream_gen.h            # single source of truth for the A/B/C/D/E op streams
 │   ├── order_book_bench.cpp    # Phase 2 steady-state apply() throughput benchmark
@@ -75,6 +95,7 @@ low-latency-trading-lab/
 │   │   │                    #   orderbook-bitmap-optimization/ study; see README.md)
 │   │   └── README.md        # layout + honesty rule
 │   ├── ORDERBOOK_BITMAP_OPTIMIZATION.md  # Optimization Study analysis (item 12)
+│   ├── SPSC_MEMORY_MODEL.md  # Exp 02: happens-before + memory-order argument
 │   └── profiling/           # Phase 3 guides (README.md, MACOS_INSTRUMENTS.md) + Phase 4
 │                            #   tail-latency methodology (PHASE4_TAIL_LATENCY.md)
 ├── CMakeLists.txt
@@ -346,8 +367,65 @@ reserved for sparse best-delete-gap regimes. See
 `docs/ORDERBOOK_BITMAP_OPTIMIZATION.md` for the full analysis and
 `docs/results/orderbook-bitmap-optimization/` for the raw data.
 
+## Experiment 02 — SPSC Ring Buffer
+
+**Status: Phase 1 — Correctness / Memory Model: implemented** (this task).
+A bounded, single-producer / single-consumer message queue with no mutex and no
+CAS, modeling `Feed / Decoder → SPSC → OrderBook / Strategy`. Two header-only
+types in `lltl`:
+
+- `include/mutex_bounded_queue.h` — `MutexBoundedQueue<T, Capacity>`: the
+  correctness **reference** baseline (one `std::mutex`, fixed storage). Thread
+  safe for any number of producers/consumers by construction; deliberately not
+  optimized; not a candidate.
+- `include/spsc_ring_buffer.h` — `SpscRingBuffer<T, Capacity>`: the candidate.
+  Power-of-two capacity enforced by `static_assert`; monotonic 64-bit
+  producer/consumer counters index slots by `counter & (Capacity - 1)`; full
+  capacity usable (`full: head - tail == Capacity`, `empty: head == tail`).
+
+Both expose the same non-blocking conceptual API:
+`bool try_push(const T&)`, `bool try_push(T&&)`, `bool try_pop(T&)`,
+`bool empty()`, `static constexpr std::size_t capacity()`. No allocation, no
+blocking, no spinning, no sleeping inside either queue; successful hot paths
+never throw for nothrow-movable message types. `T` must be default-constructible
+and assignable (Phase-1 simplification).
+
+Threading: exactly one producer may call `try_push`, exactly one consumer
+`try_pop` (documented contract, not enforced by locks). The producer is the only
+writer of `head_`, the consumer the only writer of `tail_`, which is why no CAS
+is needed. Ordering is the minimum the protocol requires: **relaxed** loads of
+one's own cursor, **acquire** on the remote cursor at the reuse/availability
+gate, **release** when publishing a payload or releasing a slot. The full
+happens-before argument (producer publication and slot reuse edges), the
+counter-wrap reasoning, and the WHY-NOT sections (`volatile`, CAS, `seq_cst`)
+live in `docs/SPSC_MEMORY_MODEL.md`.
+
+Correctness (`tests/spsc_ring_buffer_tests.cpp`, registered in CTest): new queue
+empty; pop-empty false; push/pop one; FIFO order; fill exactly `Capacity`;
+push-when-full false; pop-after-full; repeated physical wrap-around; interleaved
+fill/drain vs a `std::deque` model; payload sequence preservation; structured
+messages copied/moved correctly (overloads exercised by a copy/move-counting
+type); a 2^20-message one-producer/one-consumer stress where the consumer
+verifies every value arrives exactly once in exact order; and a differential run
+feeding identical logical ops to `MutexBoundedQueue` and `SpscRingBuffer`,
+checked against each other and the model at every step. Same
+exit-code-self-test guard as the Experiment 01 runners.
+
+Phase 1 is correctness only — no false-sharing padding and no remote-cursor
+cache are present (both are deliberately deferred to Phase 3 as controlled
+optimizations), and no throughput numbers are reported.
+
+Planned next phases (NOT STARTED):
+
+- **Phase 2** — Throughput baseline (steady-state SPSC vs mutex transfer).
+- **Phase 3** — False sharing (`head_`/`tail_` packed vs separated/padded) and
+  remote-cursor caching, as controlled experiments.
+- **Phase 4** — Tail latency / jitter under load.
+
 ## Next phases
 
-Phase 3M per-function call-tree symbolization (an Instruments GUI pass over the
-six committed recordings); Phase 3L (Linux `perf` measurement) when a Linux host
-is available; Phase 5 (engineering write-up).
+Experiment 01: Phase 3M per-function call-tree symbolization (an Instruments GUI
+pass over the six committed recordings); Phase 3L (Linux `perf` measurement)
+when a Linux host is available; Phase 5 (engineering write-up).
+Experiment 02: Phase 2 (throughput baseline), Phase 3 (false sharing + cursor
+caching), Phase 4 (tail latency) — see the Experiment 02 section above.
