@@ -3,6 +3,9 @@
 # payload assignment, cache-coherence traffic, harness retry/backpressure and OS scheduling.
 # It is NOT a per-try_push latency, NOT a per-try_pop latency, and NOT a one-way handoff time.
 # ONE implementation per process: the other implementation was NOT timed here.
+# This summary describes THIS PROCESS ONLY. It is not a canonical
+# result on its own; the canonical dataset pools repetitions across
+# multiple balanced processes. See docs/SPSC_THROUGHPUT.md.
 # exact invocation (argv as received):
 #   argv[0]=build-spsc-perf/spsc_throughput_bench
 #   argv[1]=--impl=mutex
@@ -19,20 +22,20 @@ capacity=4096
 message_count=10000000
 measured_reps=5
 warmup_reps=1
-median_ns_per_message=25.458729
-min_ns_per_message=23.875600
-max_ns_per_message=27.566279
-spread_pct=15.458
-median_messages_per_second=39279258.291
-producer_full_retries_total=23628159
-consumer_empty_retries_total=4226049
+median_ns_per_message=23.208533
+min_ns_per_message=22.457525
+max_ns_per_message=23.592217
+spread_pct=5.053
+median_messages_per_second=43087599.839
+producer_full_retries_total=3955182
+consumer_empty_retries_total=10253027
 checksum=15742678983221721015
 expected_checksum=15742678983221721015
 correctness=PASS
 # per-repetition detail — every measured repetition, none discarded:
 rep,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum
-0,254587292,25.458729,39279258.291,4705280,830464,15742678983221721015
-1,275662792,27.566279,36276205.169,5917485,1024268,15742678983221721015
-2,262145958,26.214596,38146687.732,5739407,776548,15742678983221721015
-3,238756000,23.875600,41883764.178,3262494,689783,15742678983221721015
-4,248033208,24.803321,40317182.044,4003493,904986,15742678983221721015
+0,232948791,23.294879,42927889.675,886976,2169975,15742678983221721015
+1,232085334,23.208533,43087599.839,880660,2202486,15742678983221721015
+2,235922166,23.592217,42386860.758,950951,2189125,15742678983221721015
+3,226558375,22.655838,44138734.664,671988,1877528,15742678983221721015
+4,224575250,22.457525,44528504.365,564607,1813913,15742678983221721015

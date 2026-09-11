@@ -1,0 +1,14 @@
+# Experiment 02 Phase 2 — dataset invariants (all must hold)
+# checked: 2026-09-11T08:05:08Z
+expected_processes=72
+recorded_processes=72
+expected_raw_files=72
+raw_files=72
+measured_reps_per_process=5
+sessions_per_cell=4
+implementation_first_per_cell=2 each
+balanced_implementation_order=PASS
+every_row_correctness=PASS
+checksum_stable_within_cell=PASS
+summary_matches_raw=PASS
+all_invariants=PASS

@@ -3,6 +3,9 @@
 # payload assignment, cache-coherence traffic, harness retry/backpressure and OS scheduling.
 # It is NOT a per-try_push latency, NOT a per-try_pop latency, and NOT a one-way handoff time.
 # ONE implementation per process: the other implementation was NOT timed here.
+# This summary describes THIS PROCESS ONLY. It is not a canonical
+# result on its own; the canonical dataset pools repetitions across
+# multiple balanced processes. See docs/SPSC_THROUGHPUT.md.
 # exact invocation (argv as received):
 #   argv[0]=build-spsc-perf/spsc_throughput_bench
 #   argv[1]=--impl=spsc
@@ -19,20 +22,20 @@ capacity=4096
 message_count=10000000
 measured_reps=5
 warmup_reps=1
-median_ns_per_message=13.424421
-min_ns_per_message=13.056392
-max_ns_per_message=14.840633
-spread_pct=13.666
-median_messages_per_second=74491108.961
-producer_full_retries_total=3032404
-consumer_empty_retries_total=415744
+median_ns_per_message=15.614413
+min_ns_per_message=13.646154
+max_ns_per_message=17.185887
+spread_pct=25.939
+median_messages_per_second=64043395.805
+producer_full_retries_total=3361361
+consumer_empty_retries_total=4019112
 checksum=8986780111068692703
 expected_checksum=8986780111068692703
 correctness=PASS
 # per-repetition detail — every measured repetition, none discarded:
 rep,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum
-0,148406333,14.840633,67382569.179,630784,4096,8986780111068692703
-1,132564541,13.256454,75434953.605,674377,7168,8986780111068692703
-2,130563917,13.056392,76590839.412,487595,22528,8986780111068692703
-3,146243625,14.624363,68379049.001,681500,261120,8986780111068692703
-4,134244209,13.424421,74491108.961,558148,120832,8986780111068692703
+0,139885333,13.988533,71487122.957,409640,455926,8986780111068692703
+1,136461542,13.646154,73280719.633,1054319,0,8986780111068692703
+2,171858875,17.185887,58187277.206,605563,1365300,8986780111068692703
+3,156144125,15.614413,64043395.805,481547,420338,8986780111068692703
+4,157676583,15.767658,63420958.330,810292,1777548,8986780111068692703

@@ -1,26 +1,37 @@
-# Experiment 02 Phase 2 — per-session medians
+# Experiment 02 Phase 2 — per-process/session medians
 
-Each session is a separate process. Session-to-session differences show how
-much of a cell's spread is process-placement (not repetition) variance.
-All values are ns per message, END-TO-END.
+Each session is one process; each process ran exactly one implementation
+and created a **fresh producer/consumer thread pair for every repetition**.
+A session is therefore NOT a fixed thread placement: it is a grouping of
+repetitions inside one process/address-space lifetime. These are
+**per-process medians**, not fixed-placement medians.
 
-| impl | bytes | capacity | session 1 | session 2 | session 3 | pooled |
-|---|---|---|---|------|------|------|
-| mutex | 8 | 1024 | 54.466946 | 48.066662 | 57.029133 | 54.179187 |
-| mutex | 8 | 4096 | 23.844925 | 24.080171 | 24.458446 | 24.080171 |
-| mutex | 8 | 65536 | 21.066692 | 21.238917 | 21.597912 | 21.238917 |
-| mutex | 32 | 1024 | 42.353967 | 37.913267 | 37.583154 | 40.339529 |
-| mutex | 32 | 4096 | 25.458729 | 25.294542 | 24.645058 | 25.294542 |
-| mutex | 32 | 65536 | 22.039029 | 22.811325 | 23.449779 | 22.733117 |
-| mutex | 64 | 1024 | 42.211267 | 45.193958 | 45.755504 | 45.193958 |
-| mutex | 64 | 4096 | 28.803692 | 31.517412 | 27.511121 | 30.385200 |
-| mutex | 64 | 65536 | 23.832242 | 26.316192 | 25.366746 | 25.366746 |
-| spsc | 8 | 1024 | 31.223517 | 34.682263 | 39.782608 | 34.682263 |
-| spsc | 8 | 4096 | 12.962683 | 24.939433 | 18.052813 | 18.052813 |
-| spsc | 8 | 65536 | 28.277383 | 34.163325 | 40.106942 | 34.623804 |
-| spsc | 32 | 1024 | 34.994458 | 38.236242 | 40.282425 | 38.109292 |
-| spsc | 32 | 4096 | 28.811075 | 33.793846 | 29.927212 | 30.861983 |
-| spsc | 32 | 65536 | 45.702817 | 49.238804 | 50.458679 | 48.372858 |
-| spsc | 64 | 1024 | 38.897108 | 40.929200 | 40.472596 | 40.324587 |
-| spsc | 64 | 4096 | 13.624500 | 16.836208 | 13.424421 | 14.130263 |
-| spsc | 64 | 65536 | 14.487817 | 16.854404 | 14.641958 | 14.926150 |
+Differences between sessions may reflect scheduler placement, thread
+migration, P/E-core selection, DVFS and thermal state, allocator/address
+placement, or background system activity. Phase 2 does not identify which
+factor caused any particular fast or slow run.
+
+All values are ns per message, END-TO-END. Session order in each row is
+session 1..4; see `command.txt` for which implementation ran first
+in each session.
+
+| impl | bytes | capacity | session 1 | session 2 | session 3 | session 4 | pooled |
+|---|---|---|---|------|------|------|------|
+| mutex | 8 | 1024 | 52.901396 | 46.045887 | 51.033996 | 47.681471 | 49.147048 |
+| spsc | 8 | 1024 | 53.334288 | 32.658508 | 37.474746 | 25.706225 | 36.089410 |
+| mutex | 8 | 4096 | 24.220312 | 22.315604 | 22.601950 | 23.212133 | 23.203554 |
+| spsc | 8 | 4096 | 18.803863 | 17.568854 | 22.308971 | 25.430604 | 20.835223 |
+| mutex | 8 | 65536 | 18.752450 | 18.651013 | 19.695667 | 19.308267 | 19.216639 |
+| spsc | 8 | 65536 | 46.765629 | 41.987929 | 32.182779 | 32.603200 | 41.636314 |
+| mutex | 32 | 1024 | 34.714233 | 36.510083 | 33.905412 | 32.729642 | 34.270564 |
+| spsc | 32 | 1024 | 36.512813 | 30.409246 | 36.833888 | 28.284137 | 32.248656 |
+| mutex | 32 | 4096 | 23.208533 | 22.536371 | 23.008662 | 23.035908 | 22.962935 |
+| spsc | 32 | 4096 | 38.657083 | 30.794013 | 31.839842 | 29.590233 | 31.707723 |
+| mutex | 32 | 65536 | 21.154521 | 21.184287 | 21.245821 | 21.123167 | 21.169404 |
+| spsc | 32 | 65536 | 45.690729 | 46.311138 | 50.303925 | 47.873488 | 47.766427 |
+| mutex | 64 | 1024 | 45.965779 | 46.005479 | 42.710242 | 42.235937 | 45.924261 |
+| spsc | 64 | 1024 | 39.305588 | 37.063596 | 41.044083 | 37.996883 | 38.913777 |
+| mutex | 64 | 4096 | 28.987629 | 27.474596 | 27.897471 | 27.982283 | 27.939877 |
+| spsc | 64 | 4096 | 13.210817 | 15.741288 | 15.614413 | 14.718087 | 14.353310 |
+| mutex | 64 | 65536 | 23.443221 | 22.191250 | 23.365517 | 23.910758 | 23.210036 |
+| spsc | 64 | 65536 | 14.567746 | 14.992900 | 14.068888 | 17.016492 | 14.780323 |

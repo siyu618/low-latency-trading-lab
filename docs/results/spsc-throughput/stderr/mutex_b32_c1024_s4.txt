@@ -1,0 +1,6 @@
+[warmup 1/1] impl=mutex bytes=32 cap=1024 elapsed=335400875ns correct=yes (excluded from reported data)
+[rep 1/5] impl=mutex bytes=32 cap=1024 elapsed=331629458ns ns_per_message=33.162946 full_retries=8433783 empty_retries=4510958 correct=yes
+[rep 2/5] impl=mutex bytes=32 cap=1024 elapsed=323995250ns ns_per_message=32.399525 full_retries=7060072 empty_retries=4724106 correct=yes
+[rep 3/5] impl=mutex bytes=32 cap=1024 elapsed=343125792ns ns_per_message=34.312579 full_retries=6646177 empty_retries=4904744 correct=yes
+[rep 4/5] impl=mutex bytes=32 cap=1024 elapsed=320299375ns ns_per_message=32.029938 full_retries=7200493 empty_retries=3804280 correct=yes
+[rep 5/5] impl=mutex bytes=32 cap=1024 elapsed=327296416ns ns_per_message=32.729642 full_retries=7330703 empty_retries=4251327 correct=yes

@@ -48,12 +48,22 @@ measurement family. Transient raw runs land in repo-root `results/`
 - `spsc-throughput/` — the **canonical Experiment 02 Phase 2 throughput
   baseline**: two-thread end-to-end message-transfer throughput of the frozen
   Phase-1 `SpscRingBuffer` against `MutexBoundedQueue`, 18 cells (2 impls × 3
-  message sizes × 3 capacities), 10M messages per repetition, 15 pooled
-  repetitions per cell over 3 independent processes, all `correctness=PASS`,
-  measured 2026-09-11 on the Apple M3 Max. `ns/msg` is END-TO-END elapsed /
-  messages delivered — never a per-call or one-way handoff latency. See its
-  `RESULTS_METADATA.md` and `docs/SPSC_THROUGHPUT.md`. **No number in it is
-  attributed to false sharing** (Phase 3).
+  message sizes × 3 capacities), 10M messages per repetition, 5 measured
+  repetitions per process, 4 sessions per cell in a **balanced AB/BA** order
+  (2 mutex-first + 2 SPSC-first), 72 processes, 360 measured repetitions, all
+  `correctness=PASS`, measured 2026-09-11 on the Apple M3 Max. `ns/msg` is
+  END-TO-END elapsed / messages delivered — never a per-call or one-way handoff
+  latency. Implementation direction is taken from the **paired per-session**
+  medians (`PAIRED_COMPARISON.md`, `paired_summary.csv`); the pooled matrix is
+  secondary. See its `RESULTS_METADATA.md` and `docs/SPSC_THROUGHPUT.md`. **No
+  number in it is attributed to false sharing** (Phase 3).
+- `spsc-throughput-superseded-fixed-order/` — the second Phase-2 pass,
+  **SUPERSEDED, not canonical**. Real and self-validating (all 54 processes
+  `PASS`), but every session ran all nine mutex cells before all nine SPSC
+  cells, so implementation was perfectly confounded with position in time; it
+  also predates the corrected consecutive-miss yield policy. Do not cite it for
+  any mutex-vs-SPSC comparison. Retained as labelled real data and as the
+  evidence for the balanced AB/BA design. See its `SUPERSEDED.md`.
 - `spsc-throughput-superseded-single-session/` — the first Phase-2 pass (one
   process per cell), **SUPERSEDED, not canonical**. Real and self-validating,
   but it samples only one thread/queue placement per cell, and the SPSC cells

@@ -1,14 +1,14 @@
 # Experiment 02 Phase 2 — host and toolchain metadata
 
 Measured with `spsc_throughput_bench` built from repo HEAD
-`16ede6fe5839b72546682c9117898408c4174f12`.
+`b7e1c5862b14d4818c7adbd0a59cfa7ead5150aa`.
 
 **Scheduling limitation:** this is Apple Silicon/macOS. No hard CPU
 pinning or affinity is implemented or claimed; scheduler placement,
 P-core/E-core placement, migration, frequency and system load can all
 influence these concurrent measurements. See docs/SPSC_THROUGHPUT.md.
 
-# macOS / Apple Silicon benchmark metadata — 2026-09-11T07:09:52Z
+# macOS / Apple Silicon benchmark metadata — 2026-09-11T08:05:09Z
 
 ## System
 macOS:                   macOS 14.2.1 (Build 23C71)
@@ -34,7 +34,7 @@ clang:                   Apple clang version 15.0.0 (clang-1500.3.9.4)
 ## Benchmark build (Phase 2 canonical flags)
 flags:                   -O3 -DNDEBUG (forced on the benchmark target); BENCH_ARCH_FLAGS empty unless stated
 standard:                C++20
-commit:                  16ede6fe5839b72546682c9117898408c4174f12
+commit:                  b7e1c5862b14d4818c7adbd0a59cfa7ead5150aa
 tree:                    DIRTY (uncommitted changes present at recording time)
 
 # end Phase 3M metadata

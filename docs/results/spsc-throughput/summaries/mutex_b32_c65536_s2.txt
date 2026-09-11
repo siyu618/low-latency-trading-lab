@@ -3,6 +3,9 @@
 # payload assignment, cache-coherence traffic, harness retry/backpressure and OS scheduling.
 # It is NOT a per-try_push latency, NOT a per-try_pop latency, and NOT a one-way handoff time.
 # ONE implementation per process: the other implementation was NOT timed here.
+# This summary describes THIS PROCESS ONLY. It is not a canonical
+# result on its own; the canonical dataset pools repetitions across
+# multiple balanced processes. See docs/SPSC_THROUGHPUT.md.
 # exact invocation (argv as received):
 #   argv[0]=build-spsc-perf/spsc_throughput_bench
 #   argv[1]=--impl=mutex
@@ -19,20 +22,20 @@ capacity=65536
 message_count=10000000
 measured_reps=5
 warmup_reps=1
-median_ns_per_message=22.811325
-min_ns_per_message=22.341487
-max_ns_per_message=22.890400
-spread_pct=2.457
-median_messages_per_second=43837874.389
-producer_full_retries_total=18416507
-consumer_empty_retries_total=166164
+median_ns_per_message=21.184287
+min_ns_per_message=20.751654
+max_ns_per_message=22.071858
+spread_pct=6.362
+median_messages_per_second=47204797.424
+producer_full_retries_total=28729
+consumer_empty_retries_total=8995909
 checksum=15742678983221721015
 expected_checksum=15742678983221721015
 correctness=PASS
 # per-repetition detail — every measured repetition, none discarded:
 rep,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum
-0,223414875,22.341487,44759777.074,3012531,33349,15742678983221721015
-1,228113250,22.811325,43837874.389,3889096,22528,15742678983221721015
-2,225852417,22.585242,44276701.276,3323904,19861,15742678983221721015
-3,228857042,22.885704,43695400.031,4215808,63802,15742678983221721015
-4,228904000,22.890400,43686436.235,3975168,26624,15742678983221721015
+0,211869583,21.186958,47198846.849,0,2041913,15742678983221721015
+1,207516541,20.751654,48188929.672,0,1826268,15742678983221721015
+2,211842875,21.184287,47204797.424,8875,1609620,15742678983221721015
+3,220718583,22.071858,45306561.251,0,1749982,15742678983221721015
+4,208743750,20.874375,47905625.917,19854,1768126,15742678983221721015

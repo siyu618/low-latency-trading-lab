@@ -1,0 +1,18 @@
+# Experiment 02 Phase 2 — paired-session comparison
+# DERIVED from the per-process summaries in summaries/, one row per cell.
+# ratio_sN = SPSC session-N median / mutex session-N median (<1 => SPSC
+# completed a message faster in that session).
+# The two processes of a pair ran ADJACENTLY with order balanced AB/BA.
+# DESCRIPTIVE paired analysis — NOT a significance test.
+# message_count=10000000 reps_per_process=5 sessions=4
+# UTC: 2026-09-11T08:05:08Z
+message_bytes,capacity,first_impl_s1,ratio_s1,first_impl_s2,ratio_s2,first_impl_s3,ratio_s3,first_impl_s4,ratio_s4,median_paired_ratio,min_paired_ratio,max_paired_ratio,sessions_spsc_faster,sessions_mutex_faster
+8,1024,mutex,1.008183,spsc,0.709260,spsc,0.734309,mutex,0.539124,0.721785,0.539124,1.008183,3,1
+8,4096,mutex,0.776367,spsc,0.787290,spsc,0.987037,mutex,1.095574,0.887163,0.776367,1.095574,3,1
+8,65536,mutex,2.493841,spsc,2.251241,spsc,1.634003,mutex,1.688562,1.969901,1.634003,2.493841,0,4
+32,1024,mutex,1.051811,spsc,0.832900,spsc,1.086372,mutex,0.864175,0.957993,0.832900,1.086372,2,2
+32,4096,mutex,1.665641,spsc,1.366414,spsc,1.383820,mutex,1.284526,1.375117,1.284526,1.665641,0,4
+32,65536,mutex,2.159856,spsc,2.186108,spsc,2.367709,mutex,2.266397,2.226253,2.159856,2.367709,0,4
+64,1024,mutex,0.855105,spsc,0.805634,spsc,0.960989,mutex,0.899634,0.877370,0.805634,0.960989,4,0
+64,4096,mutex,0.455740,spsc,0.572940,spsc,0.559707,mutex,0.525979,0.542843,0.455740,0.572940,4,0
+64,65536,mutex,0.621405,spsc,0.675622,spsc,0.602122,mutex,0.711667,0.648513,0.602122,0.711667,4,0

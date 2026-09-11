@@ -3,6 +3,9 @@
 # payload assignment, cache-coherence traffic, harness retry/backpressure and OS scheduling.
 # It is NOT a per-try_push latency, NOT a per-try_pop latency, and NOT a one-way handoff time.
 # ONE implementation per process: the other implementation was NOT timed here.
+# This summary describes THIS PROCESS ONLY. It is not a canonical
+# result on its own; the canonical dataset pools repetitions across
+# multiple balanced processes. See docs/SPSC_THROUGHPUT.md.
 # exact invocation (argv as received):
 #   argv[0]=build-spsc-perf/spsc_throughput_bench
 #   argv[1]=--impl=spsc
@@ -19,20 +22,20 @@ capacity=65536
 message_count=10000000
 measured_reps=5
 warmup_reps=1
-median_ns_per_message=28.277383
-min_ns_per_message=22.569054
-max_ns_per_message=34.623804
-spread_pct=53.413
-median_messages_per_second=35363951.091
-producer_full_retries_total=4142089
-consumer_empty_retries_total=238572396
+median_ns_per_message=46.765629
+min_ns_per_message=41.800913
+max_ns_per_message=51.380275
+spread_pct=22.917
+median_messages_per_second=21383225.610
+producer_full_retries_total=24273897
+consumer_empty_retries_total=326487357
 checksum=18446744073709551615
 expected_checksum=18446744073709551615
 correctness=PASS
 # per-repetition detail — every measured repetition, none discarded:
 rep,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum
-0,304181000,30.418100,32875163.143,1272571,53455238,18446744073709551615
-1,346238041,34.623804,28881863.966,1727725,61046784,18446744073709551615
-2,225690542,22.569054,44308458.438,114,36557286,18446744073709551615
-3,262991834,26.299183,38023994.312,491225,39404544,18446744073709551615
-4,282773833,28.277383,35363951.091,650454,48108544,18446744073709551615
+0,513802750,51.380275,19462721.832,10496593,63276114,18446744073709551615
+1,467656292,46.765629,21383225.610,3962539,72496899,18446744073709551615
+2,469668417,46.966842,21291616.890,4567576,61639524,18446744073709551615
+3,422277000,42.227700,23681138.210,2889127,58962583,18446744073709551615
+4,418009125,41.800913,23922922.735,2358062,70112237,18446744073709551615

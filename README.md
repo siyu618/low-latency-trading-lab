@@ -44,13 +44,16 @@ directories.
 > `docs/SPSC_MEMORY_MODEL.md` §10 for the exact commands). The memory-model
 > argument (happens-before, ordering choices, counter wrap) is documented in
 > `docs/SPSC_MEMORY_MODEL.md`. Phase 2 measured the **frozen, unpadded** Phase-1
-> SPSC against `MutexBoundedQueue` — 18 cells, 10M messages per repetition, 15
-> pooled repetitions per cell over 3 independent processes, 2.7 billion message
-> transfers, all `correctness=PASS` — in `docs/results/spsc-throughput/`, with
-> methodology and analysis in `docs/SPSC_THROUGHPUT.md`. The result is **not a
-> clean win for either queue**: only 4 of 9 cells separate at all, 2 each way.
-> Phase 3 (false sharing + cursor caching) and Phase 4 (tail latency) are NOT
-> STARTED, and **no Phase-2 number is attributed to false sharing**.
+> SPSC against `MutexBoundedQueue` — 18 cells, 10M messages per repetition, 5
+> measured repetitions per process, 4 sessions per cell in a **balanced AB/BA**
+> order (2 mutex-first + 2 SPSC-first), 72 processes, 360 measured repetitions,
+> 3.6 billion message transfers, all `correctness=PASS` — in
+> `docs/results/spsc-throughput/`, with methodology and analysis in
+> `docs/SPSC_THROUGHPUT.md`. The result is **not a clean win for either queue**:
+> 6 of 9 cells hold one direction across all four balanced sessions (3 each way)
+> and 3 cells are inconclusive. Phase 3 (false sharing + cursor caching) and
+> Phase 4 (tail latency) are NOT STARTED, and **no Phase-2 number is attributed
+> to false sharing**.
 
 ## Experiments
 
@@ -96,7 +99,8 @@ low-latency-trading-lab/
 ├── scripts/
 │   ├── bench.sh                # Phase 2 canonical per-process run
 │   ├── tail-bench.sh           # Phase 4 canonical matrix runner (one invocation per cell)
-│   ├── spsc-throughput.sh      # Exp 02 Phase 2 canonical matrix runner (18 cells x 3 sessions)
+│   ├── spsc-throughput.sh      # Exp 02 Phase 2 canonical matrix runner
+│   │                           #   (18 cells x 4 balanced AB/BA sessions, one impl per process)
 │   ├── verify-tail-summary.sh  # Phase 4 raw<->summary verification
 │   ├── perf-profile.sh         # Linux perf profiling harness (Phase 3L, per-cell)
 │   ├── phase3m-instruments.sh  # Phase 3M xctrace/Instruments recorder (needs full Xcode)
@@ -108,7 +112,8 @@ low-latency-trading-lab/
 │   │   │                    #   phase4-macos-tail/ canonical + -pre4.1-invalid/ archived,
 │   │   │                    #   orderbook-bitmap-optimization/ study, and
 │   │   │                    #   spsc-throughput/ canonical Exp 02 Phase 2 + its
-│   │   │                    #   superseded single-session pass; see README.md)
+│   │   │                    #   two superseded passes (fixed-order,
+│   │   │                    #   single-session); see README.md)
 │   │   └── README.md        # layout + honesty rule
 │   ├── ORDERBOOK_BITMAP_OPTIMIZATION.md  # Optimization Study analysis (item 12)
 │   ├── SPSC_MEMORY_MODEL.md  # Exp 02: happens-before + memory-order argument
@@ -483,31 +488,53 @@ non-zero and is not published.
 
 `scripts/spsc-throughput.sh` runs the canonical 18-cell matrix (2 impls × 3
 sizes × 3 capacities) with **one implementation per process**: 5 measured
-repetitions per process after an untimed warm-up, and **3 independent processes
-(sessions) per cell whose repetitions are pooled** — because a single process
-samples exactly one OS thread placement and one queue placement, and this host
-was observed to differ by ~2× between launches of byte-identical binaries.
-Nothing is filtered and the best repetition is never selected.
+repetitions per process after a warm-up repetition that is excluded from every
+published figure. The design is a **balanced AB/BA** one — the two
+implementations of the same `message_bytes + capacity` run as *adjacent*
+processes, and across 4 sessions every cell gets 2 mutex-first and 2 SPSC-first
+comparisons, with forward/reverse traversal balancing position in the cell sweep
+along the time axis. Each repetition launches a *fresh* producer/consumer thread
+pair, so a session is a grouping of repetitions inside one process lifetime and
+**not** a fixed thread placement; macOS may migrate threads, and the runner makes
+no placement claim. The balance is verified, not assumed: the runner parses the
+execution order back out of `command.txt` and fails the dataset unless every cell
+got exactly two of each order and every row is `correctness=PASS`. Nothing is
+filtered and the best repetition is never selected.
 
-**Measured (Apple M3 Max, 2026-09-11; 15 pooled repetitions per cell, 2.7 billion
-message transfers, all `correctness=PASS`).** The frozen unpadded SPSC does
-**not** dominate the mutex baseline, and the mutex baseline does not dominate
-it. Pooled medians span 0.465× (SPSC 2.15× faster) to 2.128× (mutex 2.13×
-faster), and only **4 of 9 cells separate at all** under a non-overlapping
-`[min, max]` test — 2 for SPSC (64 bytes at capacities 4096 and 65536) and 2 for
-mutex (32 bytes at capacities 4096 and 65536). The remaining 5 cells, including
-the largest apparent SPSC wins, overlap. Capacity 1024 makes the mutex baseline
-1.77–2.55× slower; SPSC shows no monotone capacity behaviour. The two fail in opposite
-directions: mutex is producer-side full-queue dominated, SPSC is consumer-side
-starvation dominated (up to 8.0 empty retries per delivered message). **Nothing
-here is attributed to false sharing** — Phase 2 has no packed/separated control
-and no cache-line verification.
+**Measured (Apple M3 Max, 2026-09-11; 72 processes, 360 measured repetitions,
+3.6 billion message transfers, all `correctness=PASS`).** Implementation
+direction is taken from the **paired per-session** comparison (SPSC session
+median ÷ mutex session median), which compares neighbouring processes rather than
+pooling correlated repetitions; the pooled matrix is retained as a secondary
+descriptive view.
+
+| direction | cells | median paired ratio |
+|---|---|---|
+| SPSC faster in 4/4 sessions | 64 B at capacity 1024, 4096, 65536 | 0.877, 0.543, 0.649 |
+| mutex faster in 4/4 sessions | 8 B / 65536, 32 B / 4096, 32 B / 65536 | 1.970, 1.375, 2.226 |
+| inconclusive — direction flipped between sessions | 8 B / 1024 (3–1), 8 B / 4096 (3–1), 32 B / 1024 (2–2) | 0.722, 0.887, 0.958 |
+
+So **6 of 9 cells hold one direction across all four balanced sessions (3 each
+way) and 3 are inconclusive** — the frozen unpadded SPSC does **not** dominate
+the mutex baseline, and the mutex baseline does not dominate it. Sign consistency
+across 4 paired observations is descriptive, not a significance test, and
+overlapping observed ranges are reported as *not separable*, never as equivalent.
+The two implementations fail in opposite directions: mutex is producer-side
+full-queue dominated in 7 of 9 cells, SPSC consumer-side starvation dominated in
+8 of 9. Session-to-session movement is larger for SPSC than for mutex in all 9
+cells (up to 2.07× between two sessions of the same binary); Phase 2 does not
+identify the cause. **Nothing here is attributed to false sharing** — Phase 2 has
+no packed/separated control and no cache-line verification.
 
 Full methodology, the matrix, the derivation and the limitations (macOS
-scheduling, placement bimodality, retry overhead, unoptimized baseline) are in
-`docs/SPSC_THROUGHPUT.md`; the canonical data, with host/toolchain metadata and
-the exact commands, is in `docs/results/spsc-throughput/`. The first
-single-session pass is retained, clearly labeled SUPERSEDED, in
+scheduling, run-to-run variation, the consumer's message-size-dependent
+validation fold, retry overhead, unoptimized baseline) are in
+`docs/SPSC_THROUGHPUT.md`; the canonical data, with host/toolchain metadata, the
+exact commands in execution order, and the invariant check results, is in
+`docs/results/spsc-throughput/`. Two earlier passes are retained, clearly labeled
+SUPERSEDED and not to be cited: the fixed-order pass (implementation confounded
+with run order) in `docs/results/spsc-throughput-superseded-fixed-order/`, and
+the single-session pass in
 `docs/results/spsc-throughput-superseded-single-session/`.
 
 Phases NOT STARTED:

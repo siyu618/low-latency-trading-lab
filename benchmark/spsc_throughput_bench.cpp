@@ -15,8 +15,9 @@
 //   consumer thread. `ns_per_message` is the END-TO-END elapsed wall time for
 //   the complete transfer of N messages divided by the N messages actually
 //   delivered. It therefore includes queue synchronization, payload assignment,
-//   cache-coherence traffic on the two cursors, the benchmark's retry /
-//   backpressure behaviour, and OS scheduling of the two threads.
+//   cache-coherence effects, the benchmark's retry / backpressure behaviour,
+//   and OS scheduling of the two threads. For MutexBoundedQueue it also includes
+//   std::mutex acquisition, which can block under contention.
 //
 //   It is NOT a per-try_push latency, NOT a per-try_pop latency, and NOT a
 //   one-way handoff time. Those would each require a different harness (and
@@ -28,7 +29,25 @@
 //   NEVER timed inside the same interval or the same process, because a single
 //   process timing both would share one address space, one thread pool's worth
 //   of scheduler state, one set of warmed caches, and one frequency history.
-//   scripts/spsc-throughput.sh runs the canonical matrix that way.
+//   scripts/spsc-throughput.sh runs the canonical matrix that way, and runs the
+//   two implementations of a given bytes/capacity pair as ADJACENT processes
+//   with the order balanced AB/BA across sessions.
+//
+// WHAT A REPETITION AND A SESSION ARE — AND ARE NOT
+//   Every repetition constructs a FRESH producer thread, a FRESH consumer
+//   thread, a fresh queue and fresh start/ready flags. A repetition therefore
+//   does NOT inherit any thread placement from the repetition before it, and a
+//   process does NOT hold one fixed assignment of threads to cores for its
+//   lifetime. macOS may additionally migrate a running thread between cores,
+//   including between P-cores and E-cores.
+//
+//   A "session" here is only a grouping of repetitions inside one
+//   process/address-space lifetime. Between-repetition and between-process
+//   variation may reflect scheduler placement, thread migration, P/E-core
+//   selection, DVFS and thermal state, allocator/address placement, and
+//   background system activity. This tool measures the resulting distribution;
+//   it does NOT identify which of those factors produced any particular fast or
+//   slow run, and no output of this program should be read as doing so.
 //
 // THE FROZEN BASELINE
 //   The SPSC side is the Phase-1 implementation EXACTLY as frozen: unpadded,
@@ -46,12 +65,25 @@
 //   number (see "message construction" below).
 //
 // RETRY / BACKPRESSURE POLICY
-//   The queues themselves stay non-blocking, non-spinning APIs (Phase 1 is
-//   frozen). The HARNESS retries: a failed try_push is a producer_full_retry, a
-//   failed try_pop is a consumer_empty_retry. Both sides use the SAME policy —
-//   busy retry, with an occasional std::this_thread::yield() after a run of
-//   misses (never sleep). These counters are reported as observable metrics:
-//   they quantify backpressure. They are NOT correctness failures.
+//   Neither queue waits for the QUEUE STATE to change: no try_push or try_pop
+//   spins, sleeps or blocks waiting for room or for an item, and neither ever
+//   calls yield() internally. They differ in one respect that matters here:
+//   SpscRingBuffer's try_* do not lock at all, whereas MutexBoundedQueue's
+//   try_* must acquire its std::mutex, and that acquisition can block under
+//   contention. Lock acquisition time is therefore inside the measured mutex
+//   operation; it is not harness overhead, and it is not excluded.
+//
+//   The HARNESS supplies all backpressure and uses the SAME policy on both
+//   sides: a failed try_push is a producer_full_retry, a failed try_pop is a
+//   consumer_empty_retry, and the caller retries immediately in a busy loop,
+//   calling std::this_thread::yield() only after kYieldAfterMisses CONSECUTIVE
+//   failures. It never sleeps — sleeping would measure the scheduler rather than
+//   the queue. "Consecutive" is exact: every successful operation resets the
+//   counter, so scattered failures across a long run never accumulate into a
+//   spurious yield.
+//
+//   These counters are reported as observable metrics: they quantify
+//   backpressure. They are NOT correctness failures.
 //
 // MESSAGE CONSTRUCTION
 //   Fixed-size, trivially copyable, nothrow, allocation-free value types of 8,
@@ -123,8 +155,10 @@ constexpr int           kDefaultReps     = 5;
 constexpr int           kDefaultWarmup   = 1;
 
 // Busy-retry discipline, same shape as the Phase-1 test waiter: retry in a tight
-// loop, and only after this many consecutive misses hand the core over with
-// std::this_thread::yield(). Never sleep — sleeping would measure the scheduler.
+// loop, and only after this many CONSECUTIVE misses hand the core over with
+// std::this_thread::yield(). The counter is reset by every successful queue
+// operation, so this is a streak length, not a running total. Never sleep —
+// sleeping would measure the scheduler.
 constexpr std::uint64_t kYieldAfterMisses = 1024;
 
 enum class Impl { Mutex, Spsc };
@@ -296,7 +330,10 @@ void usage(const char* argv0) {
         "specialization\n"
         "  --messages       messages to transfer per repetition (default %" PRIu64 ")\n"
         "  --reps           MEASURED repetitions per cell (default %d, all kept)\n"
-        "  --warmup         untimed, unreported warm-up repetitions (default %d)\n"
+        "  --warmup         warm-up repetitions per process, EXCLUDED from all "
+        "reported and\n"
+        "                   derived data (default %d; still internally timed and "
+        "validated)\n"
         "  --raw-out        write raw per-repetition CSV here (source of truth)\n"
         "  --summary-out    write the derived summary here (default stdout)\n"
         "\n"
@@ -520,6 +557,12 @@ int run_cell(const Config& c) {
             while (!start.load(std::memory_order_acquire)) {
                 std::this_thread::yield(); // ready-wait: NOT part of the measurement
             }
+            // `misses` counts CONSECUTIVE failed attempts only. It is reset by
+            // every success, so a yield happens exactly when this thread has
+            // failed kYieldAfterMisses times in a row without making progress —
+            // and never because failures scattered across a long run added up.
+            // Getting this wrong changes how often the harness hands the core
+            // over, which changes what is being measured.
             std::uint64_t misses = 0;
             for (std::uint64_t s = 0; s < n; ++s) {
                 const Msg m = Msg::make(s);
@@ -530,6 +573,7 @@ int run_cell(const Config& c) {
                         std::this_thread::yield();
                     }
                 }
+                misses = 0; // success: the consecutive-miss run is over
             }
         });
 
@@ -539,6 +583,9 @@ int run_cell(const Config& c) {
                 std::this_thread::yield(); // ready-wait: NOT part of the measurement
             }
             std::uint64_t expected = 0;
+            // Same consecutive-miss rule as the producer: reset on every
+            // successful pop, so the yield threshold means 1024 failures in a
+            // row rather than 1024 failures accumulated over the whole run.
             std::uint64_t misses   = 0;
             Msg           m{};
             while (expected < n) {
@@ -550,6 +597,7 @@ int run_cell(const Config& c) {
                     }
                     continue;
                 }
+                misses = 0; // success: the consecutive-miss run is over
                 // Sequence check: the delivered seq must be exactly the next
                 // expected one. That single comparison is simultaneously the
                 // no-gap, no-duplicate and no-reordering check.
@@ -598,9 +646,14 @@ int run_cell(const Config& c) {
         r.ok                     = ok;
 
         if (warmup) {
+            // The warm-up runs the same timed-transfer machinery as a measured
+            // repetition and its elapsed value is recorded here for validation
+            // and progress reporting, but it is EXCLUDED from every published
+            // and derived performance figure.
             std::fprintf(stderr,
                          "[warmup %d/%d] impl=%s bytes=%zu cap=%zu "
-                         "elapsed=%" PRIu64 "ns correct=%s (untimed, excluded)\n",
+                         "elapsed=%" PRIu64 "ns correct=%s (excluded from reported "
+                         "data)\n",
                          rep + 1, c.warmup, impl_name(c.impl), c.message_bytes,
                          Capacity, elapsed_ns, ok ? "yes" : "NO");
         } else {
@@ -667,8 +720,8 @@ int run_cell(const Config& c) {
                      "per process.\n"
                      "# ns_per_message = END-TO-END elapsed_ns / messages delivered "
                      "(NOT a per-call latency, NOT one-way handoff).\n"
-                     "# All %d measured repetitions are present; %d untimed warm-up "
-                     "repetition(s) are excluded.\n"
+                     "# All %d measured repetitions are present; %d warm-up "
+                     "repetition(s) are excluded from every published figure.\n"
                      "rep,impl,message_bytes,capacity,message_count,elapsed_ns,"
                      "ns_per_message,messages_per_second,producer_full_retries,"
                      "consumer_empty_retries,checksum,correctness\n",
@@ -711,6 +764,9 @@ int run_cell(const Config& c) {
                  "NOT a one-way handoff time.\n"
                  "# ONE implementation per process: the other implementation was NOT "
                  "timed here.\n"
+                 "# This summary describes THIS PROCESS ONLY. It is not a canonical\n"
+                 "# result on its own; the canonical dataset pools repetitions across\n"
+                 "# multiple balanced processes. See docs/SPSC_THROUGHPUT.md.\n"
                  "# exact invocation (argv as received):\n");
     for (int i = 0; i < c.argc_saved; ++i) {
         std::fprintf(out, "#   argv[%d]=%s\n", i, c.argv_saved[i]);

@@ -1,6 +1,6 @@
-[warmup 1/1] impl=spsc bytes=8 cap=1024 elapsed=357971625ns correct=yes (untimed, excluded)
-[rep 1/5] impl=spsc bytes=8 cap=1024 elapsed=317367708ns ns_per_message=31.736771 full_retries=3541452 empty_retries=49019477 correct=yes
-[rep 2/5] impl=spsc bytes=8 cap=1024 elapsed=191862417ns ns_per_message=19.186242 full_retries=4985887 empty_retries=5774336 correct=yes
-[rep 3/5] impl=spsc bytes=8 cap=1024 elapsed=312235166ns ns_per_message=31.223517 full_retries=3242468 empty_retries=47798579 correct=yes
-[rep 4/5] impl=spsc bytes=8 cap=1024 elapsed=320986708ns ns_per_message=32.098671 full_retries=4885815 empty_retries=44544874 correct=yes
-[rep 5/5] impl=spsc bytes=8 cap=1024 elapsed=309003250ns ns_per_message=30.900325 full_retries=1660937 empty_retries=54241937 correct=yes
+[warmup 1/1] impl=spsc bytes=8 cap=1024 elapsed=199121333ns correct=yes (excluded from reported data)
+[rep 1/5] impl=spsc bytes=8 cap=1024 elapsed=359725500ns ns_per_message=35.972550 full_retries=1703867 empty_retries=58576476 correct=yes
+[rep 2/5] impl=spsc bytes=8 cap=1024 elapsed=192395250ns ns_per_message=19.239525 full_retries=59610 empty_retries=25429824 correct=yes
+[rep 3/5] impl=spsc bytes=8 cap=1024 elapsed=347063971125ns ns_per_message=34706.397113 full_retries=5533585 empty_retries=55119743 correct=yes
+[rep 4/5] impl=spsc bytes=8 cap=1024 elapsed=533342875ns ns_per_message=53.334288 full_retries=17335976 empty_retries=52187433 correct=yes
+[rep 5/5] impl=spsc bytes=8 cap=1024 elapsed=618212542ns ns_per_message=61.821254 full_retries=11319316 empty_retries=70378970 correct=yes

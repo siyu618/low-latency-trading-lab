@@ -3,6 +3,9 @@
 # payload assignment, cache-coherence traffic, harness retry/backpressure and OS scheduling.
 # It is NOT a per-try_push latency, NOT a per-try_pop latency, and NOT a one-way handoff time.
 # ONE implementation per process: the other implementation was NOT timed here.
+# This summary describes THIS PROCESS ONLY. It is not a canonical
+# result on its own; the canonical dataset pools repetitions across
+# multiple balanced processes. See docs/SPSC_THROUGHPUT.md.
 # exact invocation (argv as received):
 #   argv[0]=build-spsc-perf/spsc_throughput_bench
 #   argv[1]=--impl=mutex
@@ -19,20 +22,20 @@ capacity=65536
 message_count=10000000
 measured_reps=5
 warmup_reps=1
-median_ns_per_message=21.597912
-min_ns_per_message=20.344767
-max_ns_per_message=24.482404
-spread_pct=20.338
-median_messages_per_second=46300770.966
-producer_full_retries_total=4315243
-consumer_empty_retries_total=5904091
+median_ns_per_message=19.695667
+min_ns_per_message=19.297654
+max_ns_per_message=20.580783
+spread_pct=6.649
+median_messages_per_second=50772589.743
+producer_full_retries_total=7380108
+consumer_empty_retries_total=2303003
 checksum=18446744073709551615
 expected_checksum=18446744073709551615
 correctness=PASS
 # per-repetition detail — every measured repetition, none discarded:
 rep,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum
-0,215979125,21.597912,46300770.966,1235968,941728,18446744073709551615
-1,203447667,20.344767,49152689.473,820241,1300137,18446744073709551615
-2,211450333,21.145033,47292429.660,370688,1400033,18446744073709551615
-3,244824042,24.482404,40845661.718,775258,1084794,18446744073709551615
-4,235938375,23.593837,42383948.775,1113088,1177399,18446744073709551615
+0,204037166,20.403717,49010678.770,2183803,346743,18446744073709551615
+1,192976541,19.297654,51819770.155,989521,460720,18446744073709551615
+2,194464459,19.446446,51423278.328,1162114,228281,18446744073709551615
+3,196956666,19.695667,50772589.743,1025534,684204,18446744073709551615
+4,205807834,20.580783,48589015.324,2019136,583055,18446744073709551615

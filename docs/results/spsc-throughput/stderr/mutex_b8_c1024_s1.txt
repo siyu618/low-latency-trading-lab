@@ -1,6 +1,6 @@
-[warmup 1/1] impl=mutex bytes=8 cap=1024 elapsed=450903125ns correct=yes (untimed, excluded)
-[rep 1/5] impl=mutex bytes=8 cap=1024 elapsed=506093833ns ns_per_message=50.609383 full_retries=27273560 empty_retries=4643779 correct=yes
-[rep 2/5] impl=mutex bytes=8 cap=1024 elapsed=549956834ns ns_per_message=54.995683 full_retries=36309046 empty_retries=3471432 correct=yes
-[rep 3/5] impl=mutex bytes=8 cap=1024 elapsed=544669458ns ns_per_message=54.466946 full_retries=36609516 empty_retries=3078217 correct=yes
-[rep 4/5] impl=mutex bytes=8 cap=1024 elapsed=539586875ns ns_per_message=53.958688 full_retries=34084974 empty_retries=3790267 correct=yes
-[rep 5/5] impl=mutex bytes=8 cap=1024 elapsed=571226792ns ns_per_message=57.122679 full_retries=35593199 empty_retries=4428534 correct=yes
+[warmup 1/1] impl=mutex bytes=8 cap=1024 elapsed=419581666ns correct=yes (excluded from reported data)
+[rep 1/5] impl=mutex bytes=8 cap=1024 elapsed=529013958ns ns_per_message=52.901396 full_retries=36135604 empty_retries=2995716 correct=yes
+[rep 2/5] impl=mutex bytes=8 cap=1024 elapsed=519092042ns ns_per_message=51.909204 full_retries=35663350 empty_retries=2885429 correct=yes
+[rep 3/5] impl=mutex bytes=8 cap=1024 elapsed=525799083ns ns_per_message=52.579908 full_retries=32319541 empty_retries=4464275 correct=yes
+[rep 4/5] impl=mutex bytes=8 cap=1024 elapsed=570935541ns ns_per_message=57.093554 full_retries=38858113 empty_retries=3238342 correct=yes
+[rep 5/5] impl=mutex bytes=8 cap=1024 elapsed=556341875ns ns_per_message=55.634188 full_retries=40498265 empty_retries=2528538 correct=yes

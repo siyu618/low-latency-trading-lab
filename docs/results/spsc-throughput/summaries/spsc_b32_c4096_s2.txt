@@ -3,6 +3,9 @@
 # payload assignment, cache-coherence traffic, harness retry/backpressure and OS scheduling.
 # It is NOT a per-try_push latency, NOT a per-try_pop latency, and NOT a one-way handoff time.
 # ONE implementation per process: the other implementation was NOT timed here.
+# This summary describes THIS PROCESS ONLY. It is not a canonical
+# result on its own; the canonical dataset pools repetitions across
+# multiple balanced processes. See docs/SPSC_THROUGHPUT.md.
 # exact invocation (argv as received):
 #   argv[0]=build-spsc-perf/spsc_throughput_bench
 #   argv[1]=--impl=spsc
@@ -19,20 +22,20 @@ capacity=4096
 message_count=10000000
 measured_reps=5
 warmup_reps=1
-median_ns_per_message=33.793846
-min_ns_per_message=30.861983
-max_ns_per_message=34.758525
-spread_pct=12.626
-median_messages_per_second=29591186.689
-producer_full_retries_total=0
-consumer_empty_retries_total=224795626
+median_ns_per_message=30.794013
+min_ns_per_message=29.972608
+max_ns_per_message=34.213983
+spread_pct=14.151
+median_messages_per_second=32473845.362
+producer_full_retries_total=82655
+consumer_empty_retries_total=258151642
 checksum=15742678983221721015
 expected_checksum=15742678983221721015
 correctness=PASS
 # per-repetition detail — every measured repetition, none discarded:
 rep,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum
-0,308619833,30.861983,32402324.578,0,45396992,15742678983221721015
-1,341978708,34.197871,29241586.584,0,43976105,15742678983221721015
-2,347585250,34.758525,28769920.473,0,42671200,15742678983221721015
-3,322529708,32.252971,31004895.834,0,47184876,15742678983221721015
-4,337938458,33.793846,29591186.689,0,45566453,15742678983221721015
+0,315756042,31.575604,31670019.477,82655,52080272,15742678983221721015
+1,301665708,30.166571,33149276.616,0,54621976,15742678983221721015
+2,307940125,30.794013,32473845.362,0,47359723,15742678983221721015
+3,299726084,29.972608,33363796.259,0,53965338,15742678983221721015
+4,342139833,34.213983,29227815.751,0,50124333,15742678983221721015

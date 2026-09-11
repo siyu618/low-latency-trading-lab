@@ -3,6 +3,9 @@
 # payload assignment, cache-coherence traffic, harness retry/backpressure and OS scheduling.
 # It is NOT a per-try_push latency, NOT a per-try_pop latency, and NOT a one-way handoff time.
 # ONE implementation per process: the other implementation was NOT timed here.
+# This summary describes THIS PROCESS ONLY. It is not a canonical
+# result on its own; the canonical dataset pools repetitions across
+# multiple balanced processes. See docs/SPSC_THROUGHPUT.md.
 # exact invocation (argv as received):
 #   argv[0]=build-spsc-perf/spsc_throughput_bench
 #   argv[1]=--impl=mutex
@@ -19,20 +22,20 @@ capacity=1024
 message_count=10000000
 measured_reps=5
 warmup_reps=1
-median_ns_per_message=45.755504
-min_ns_per_message=44.220696
-max_ns_per_message=46.635229
-spread_pct=5.460
-median_messages_per_second=21855294.126
-producer_full_retries_total=39861610
-consumer_empty_retries_total=13946753
+median_ns_per_message=42.710242
+min_ns_per_message=38.630533
+max_ns_per_message=48.859979
+spread_pct=26.480
+median_messages_per_second=23413587.995
+producer_full_retries_total=47722437
+consumer_empty_retries_total=18802780
 checksum=8986780111068692703
 expected_checksum=8986780111068692703
 correctness=PASS
 # per-repetition detail — every measured repetition, none discarded:
 rep,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum
-0,442206958,44.220696,22613845.891,7613954,2648865,8986780111068692703
-1,454844125,45.484412,21985553.842,8039774,2784537,8986780111068692703
-2,466352292,46.635229,21443016.731,8496462,2828989,8986780111068692703
-3,457555041,45.755504,21855294.126,9082228,2721693,8986780111068692703
-4,460206125,46.020612,21729393.541,6629192,2962669,8986780111068692703
+0,484005750,48.400575,20660911.570,10981081,3656529,8986780111068692703
+1,400885542,40.088554,24944775.883,9485859,3866036,8986780111068692703
+2,427102416,42.710242,23413587.995,8901964,3599900,8986780111068692703
+3,386305334,38.630533,25886259.184,9296290,3893039,8986780111068692703
+4,488599792,48.859979,20466648.091,9057243,3787276,8986780111068692703

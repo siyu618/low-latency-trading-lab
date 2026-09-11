@@ -3,6 +3,9 @@
 # payload assignment, cache-coherence traffic, harness retry/backpressure and OS scheduling.
 # It is NOT a per-try_push latency, NOT a per-try_pop latency, and NOT a one-way handoff time.
 # ONE implementation per process: the other implementation was NOT timed here.
+# This summary describes THIS PROCESS ONLY. It is not a canonical
+# result on its own; the canonical dataset pools repetitions across
+# multiple balanced processes. See docs/SPSC_THROUGHPUT.md.
 # exact invocation (argv as received):
 #   argv[0]=build-spsc-perf/spsc_throughput_bench
 #   argv[1]=--impl=mutex
@@ -19,20 +22,20 @@ capacity=65536
 message_count=10000000
 measured_reps=5
 warmup_reps=1
-median_ns_per_message=21.238917
-min_ns_per_message=19.865325
-max_ns_per_message=22.266554
-spread_pct=12.088
-median_messages_per_second=47083380.891
-producer_full_retries_total=6015464
-consumer_empty_retries_total=4369078
+median_ns_per_message=18.651013
+min_ns_per_message=18.344717
+max_ns_per_message=18.987904
+spread_pct=3.506
+median_messages_per_second=53616392.140
+producer_full_retries_total=2356801
+consumer_empty_retries_total=3902702
 checksum=18446744073709551615
 expected_checksum=18446744073709551615
 correctness=PASS
 # per-repetition detail — every measured repetition, none discarded:
 rep,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum
-0,203836875,20.383688,49058836.876,1106408,851220,18446744073709551615
-1,198653250,19.865325,50338970.040,952320,601147,18446744073709551615
-2,212389166,21.238917,47083380.891,1497088,961668,18446744073709551615
-3,213180792,21.318079,46908541.366,731136,992256,18446744073709551615
-4,222665541,22.266554,44910406.680,1728512,962787,18446744073709551615
+0,189879041,18.987904,52665106.940,371183,1030689,18446744073709551615
+1,187250542,18.725054,53404384.805,578825,561123,18446744073709551615
+2,186510125,18.651013,53616392.140,501959,593001,18446744073709551615
+3,183447166,18.344717,54511607.991,323384,837218,18446744073709551615
+4,183800708,18.380071,54406754.516,581450,880671,18446744073709551615

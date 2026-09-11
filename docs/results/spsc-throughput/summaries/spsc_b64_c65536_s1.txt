@@ -3,6 +3,9 @@
 # payload assignment, cache-coherence traffic, harness retry/backpressure and OS scheduling.
 # It is NOT a per-try_push latency, NOT a per-try_pop latency, and NOT a one-way handoff time.
 # ONE implementation per process: the other implementation was NOT timed here.
+# This summary describes THIS PROCESS ONLY. It is not a canonical
+# result on its own; the canonical dataset pools repetitions across
+# multiple balanced processes. See docs/SPSC_THROUGHPUT.md.
 # exact invocation (argv as received):
 #   argv[0]=build-spsc-perf/spsc_throughput_bench
 #   argv[1]=--impl=spsc
@@ -19,20 +22,20 @@ capacity=65536
 message_count=10000000
 measured_reps=5
 warmup_reps=1
-median_ns_per_message=14.487817
-min_ns_per_message=14.413558
-max_ns_per_message=15.017613
-spread_pct=4.191
-median_messages_per_second=69023513.177
-producer_full_retries_total=2559497
-consumer_empty_retries_total=312586
+median_ns_per_message=14.567746
+min_ns_per_message=12.991192
+max_ns_per_message=17.223050
+spread_pct=32.575
+median_messages_per_second=68644800.213
+producer_full_retries_total=1909015
+consumer_empty_retries_total=1392376
 checksum=8986780111068692703
 expected_checksum=8986780111068692703
 correctness=PASS
 # per-repetition detail — every measured repetition, none discarded:
 rep,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum
-0,150176125,15.017613,66588480.692,567926,10240,8986780111068692703
-1,149261500,14.926150,66996512.832,771074,89088,8986780111068692703
-2,144135583,14.413558,69379120.630,144137,211968,8986780111068692703
-3,144448000,14.444800,69229065.131,430155,1290,8986780111068692703
-4,144878166,14.487817,69023513.177,646205,0,8986780111068692703
+0,133899000,13.389900,74683156.708,389243,603447,8986780111068692703
+1,129911917,12.991192,76975232.380,299603,240814,8986780111068692703
+2,145677458,14.567746,68644800.213,375173,0,8986780111068692703
+3,172230500,17.223050,58061725.420,593516,0,8986780111068692703
+4,151037750,15.103775,66208613.410,251480,548115,8986780111068692703

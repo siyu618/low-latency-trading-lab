@@ -3,6 +3,9 @@
 # payload assignment, cache-coherence traffic, harness retry/backpressure and OS scheduling.
 # It is NOT a per-try_push latency, NOT a per-try_pop latency, and NOT a one-way handoff time.
 # ONE implementation per process: the other implementation was NOT timed here.
+# This summary describes THIS PROCESS ONLY. It is not a canonical
+# result on its own; the canonical dataset pools repetitions across
+# multiple balanced processes. See docs/SPSC_THROUGHPUT.md.
 # exact invocation (argv as received):
 #   argv[0]=build-spsc-perf/spsc_throughput_bench
 #   argv[1]=--impl=spsc
@@ -19,20 +22,20 @@ capacity=1024
 message_count=10000000
 measured_reps=5
 warmup_reps=1
-median_ns_per_message=38.897108
-min_ns_per_message=37.004946
-max_ns_per_message=41.926650
-spread_pct=13.300
-median_messages_per_second=25708851.987
-producer_full_retries_total=1149014
-consumer_empty_retries_total=207059813
+median_ns_per_message=39.305588
+min_ns_per_message=36.578100
+max_ns_per_message=40.042975
+spread_pct=9.473
+median_messages_per_second=25441675.436
+producer_full_retries_total=445490
+consumer_empty_retries_total=247386099
 checksum=8986780111068692703
 expected_checksum=8986780111068692703
 correctness=PASS
 # per-repetition detail — every measured repetition, none discarded:
 rep,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum
-0,401022084,40.102208,24936282.561,103703,34685412,8986780111068692703
-1,419266500,41.926650,23851178.189,694670,40924469,8986780111068692703
-2,370049458,37.004946,27023414.800,185344,39923032,8986780111068692703
-3,388971083,38.897108,25708851.987,78439,46781143,8986780111068692703
-4,388629584,38.862958,25731443.029,86858,44745757,8986780111068692703
+0,385219667,38.521967,25959214.590,68924,50571541,8986780111068692703
+1,400429750,40.042975,24973169.451,142781,49501836,8986780111068692703
+2,365781000,36.578100,27338762.812,76782,47003948,8986780111068692703
+3,393055875,39.305588,25441675.436,71824,50004868,8986780111068692703
+4,394319834,39.431983,25360124.289,85179,50303906,8986780111068692703
