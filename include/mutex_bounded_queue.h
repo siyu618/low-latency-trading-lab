@@ -9,8 +9,8 @@
 // behavior, so this type exists to be compared against, not to be fast.
 //
 // Deliberate non-goals (this is a reference queue, not a candidate):
-//   * No condition_variable — the API is non-blocking (try_*). A condvar is
-//     pointless without blocking wait/pop, and Phase 1 never blocks.
+//   * No condition_variable — the try_* API never waits for the QUEUE STATE to
+//     change. (Acquiring the mutex can still block; see the contract below.)
 //   * Not optimized — one mutex per call, modulo indexing, no batching.
 //   * No virtual interface. MutexBoundedQueue and SpscRingBuffer share a
 //     common conceptual API (try_push/try_pop/empty/capacity) by convention
@@ -23,13 +23,24 @@
 // Storage is a fixed preallocated std::array<T, Capacity>. As a Phase-1
 // simplification T must be default-constructible (so the array elements can
 // exist) and assignable from the pushed value / into the popped out-parameter.
-// No allocation happens inside try_push / try_pop (or anywhere in this queue).
+// The queue's own storage is preallocated and the implementation performs no
+// allocator calls in the hot path; T's copy/move assignment is arbitrary user
+// code and may itself allocate, throw, or block.
 //
-// Exception behavior: the mutex machinery itself never throws. If T's copy or
-// move assignment throws, the exception propagates out of try_push / try_pop;
-// the queue is left internally consistent because the cursor (count_/head_) is
-// only advanced after the element assignment succeeds. See the same note in
-// spsc_ring_buffer.h for the SPSC variant's (slightly different) guarantee.
+// BLOCKING / EXCEPTION CONTRACT (a mutex queue, and honest about it):
+//   * try_push / try_pop / empty never wait for the QUEUE STATE to change —
+//     they report full/empty immediately once they hold the mutex.
+//   * However, obtaining the mutex itself may BLOCK under contention, and
+//     std::mutex::lock() may throw std::system_error. So these methods are
+//     neither non-blocking nor noexcept, and MutexBoundedQueue is not claimed
+//     to be either. That is expected and acceptable for a reference baseline;
+//     no attempt is made to optimize it away.
+//   * If T's copy/move assignment throws, the exception propagates out of
+//     try_push / try_pop. The queue stays internally consistent because
+//     count_ / head_ advance only after the element assignment succeeds. The
+//     VALUE guarantee is the same weak one documented in spsc_ring_buffer.h:
+//     a throwing move may leave the source slot partially moved-from, and no
+//     rollback is attempted.
 // ---------------------------------------------------------------------------
 
 #include <array>
@@ -60,12 +71,12 @@ public:
     // Maximum number of elements the queue can hold. Compile-time constant.
     static constexpr std::size_t capacity() noexcept { return Capacity; }
 
-    // Enqueue a copy of `v`. Returns false (and leaves the queue unchanged)
-    // if the queue is full. True if the element was enqueued.
-    //
-    // noexcept is true exactly when T's copy assignment cannot throw; a
-    // throwing copy assignment would propagate before count_ is advanced.
-    bool try_push(const T& v) noexcept(std::is_nothrow_copy_assignable_v<T>) {
+    // Enqueue a copy of `v`. Returns false (and leaves the queue unchanged) if
+    // the queue is full; true if the element was enqueued. Does not wait for
+    // the queue to drain, but acquiring the mutex may block under contention.
+    // Not noexcept: std::mutex::lock() may throw std::system_error, and T's
+    // copy assignment may throw.
+    bool try_push(const T& v) {
         std::lock_guard<std::mutex> lock(mu_);
         if (count_ == Capacity) {
             return false; // full; queue unchanged
@@ -76,7 +87,8 @@ public:
     }
 
     // Enqueue by moving from `v`. Returns false (queue unchanged) if full.
-    bool try_push(T&& v) noexcept(std::is_nothrow_move_assignable_v<T>) {
+    // Same blocking/exception contract as the copy overload.
+    bool try_push(T&& v) {
         std::lock_guard<std::mutex> lock(mu_);
         if (count_ == Capacity) {
             return false; // full; queue unchanged
@@ -87,9 +99,10 @@ public:
     }
 
     // Dequeue the front element into `out` by move assignment. Returns false
-    // (and leaves `out` untouched) if the queue is empty. True if an element
-    // was removed.
-    bool try_pop(T& out) noexcept(std::is_nothrow_move_assignable_v<T>) {
+    // (and leaves `out` untouched) if the queue is empty; true if an element was
+    // removed. Does not wait for an element to arrive, but acquiring the mutex
+    // may block under contention. Not noexcept, as above.
+    bool try_pop(T& out) {
         std::lock_guard<std::mutex> lock(mu_);
         if (count_ == 0) {
             return false; // empty; out untouched
@@ -100,8 +113,11 @@ public:
         return true;
     }
 
-    // True if the queue holds no elements. Exact (serialized by the mutex).
-    bool empty() const noexcept {
+    // True if the queue holds no elements. Exact (serialized by the mutex), but
+    // unlike SpscRingBuffer::empty() it is not observational-only — it takes the
+    // lock, so it may block under contention and is not noexcept. The result is
+    // still only valid at the instant it is returned.
+    bool empty() const {
         std::lock_guard<std::mutex> lock(mu_);
         return count_ == 0;
     }

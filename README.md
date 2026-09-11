@@ -33,22 +33,24 @@ directories.
 > `docs/results/phase4-macos-tail-pre4.1-invalid/`.
 >
 > **Experiment 02 — SPSC Ring Buffer / Concurrency: Phase 1 (Correctness /
-> Memory Model) COMPLETE.** A bounded single-producer / single-consumer ring
-> buffer (`include/spsc_ring_buffer.h`) and a mutex reference queue
+> Memory Model) COMPLETE / FROZEN.** A bounded single-producer / single-consumer
+> ring buffer (`include/spsc_ring_buffer.h`) and a mutex reference queue
 > (`include/mutex_bounded_queue.h`) are implemented, correctness is green
-> (single-thread semantics, a one-producer / one-consumer deterministic stress,
-> and a differential run against the mutex queue), strict-warning clean, and
-> sanitizer-clean. The memory-model argument (happens-before, ordering choices,
-> counter wrap) is documented in `docs/SPSC_MEMORY_MODEL.md`. Phase 2
-> (throughput), Phase 3 (false sharing + cursor caching), and Phase 4 (tail
-> latency) are NOT STARTED.
+> (single-thread semantics, one-producer / one-consumer deterministic stress,
+> rapid slot reuse at Capacity = 2, a multi-field fixed-size payload stress, and
+> a differential run against the mutex queue), strict-warning clean, and
+> sanitizer-clean (ASan/UBSan/TSan where the host supports them — see
+> `docs/SPSC_MEMORY_MODEL.md` §10 for the exact commands). The memory-model
+> argument (happens-before, ordering choices, counter wrap) is documented in
+> `docs/SPSC_MEMORY_MODEL.md`. Phase 2 (throughput), Phase 3 (false sharing +
+> cursor caching), and Phase 4 (tail latency) are NOT STARTED.
 
 ## Experiments
 
 | # | Experiment | Status |
 |---|------------|--------|
 | 01 | L2 Order Book: `std::map` vs Flat Representation | Phase 1, 2, 4 COMPLETE / FROZEN; Phase 3M tooling COMPLETE + recordings COLLECTED (attribution analysis deferred); Phase 3L tooling READY (native Linux measurement deferred) |
-| 02 | SPSC Ring Buffer / Concurrency | Phase 1 (Correctness / Memory Model) COMPLETE; Phase 2, 3, 4 NOT STARTED |
+| 02 | SPSC Ring Buffer / Concurrency | Phase 1 (Correctness / Memory Model) COMPLETE / FROZEN; Phase 2, 3, 4 NOT STARTED |
 
 ## Layout
 
@@ -64,7 +66,9 @@ low-latency-trading-lab/
 │   │                                       #   flat book + transition-aware
 │   │                                       #   positive path, NO bitmap
 │   ├── mutex_bounded_queue.h  # Exp 02 reference: mutex-guarded bounded FIFO
-│   └── spsc_ring_buffer.h     # Exp 02 candidate: lock-free SPSC ring buffer
+│   └── spsc_ring_buffer.h     # Exp 02 candidate: SPSC ring buffer; lock-free
+│                              #   cursor protocol where atomic<size_t> is
+│                              #   always lock-free (static_assert, no fallback)
 ├── tests/
 │   ├── order_book_tests.cpp # every scenario run against BOTH books
 │   ├── bitset_order_book_tests.cpp  # Optimization Study: four-way differential
@@ -369,7 +373,7 @@ reserved for sparse best-delete-gap regimes. See
 
 ## Experiment 02 — SPSC Ring Buffer
 
-**Status: Phase 1 — Correctness / Memory Model: implemented** (this task).
+**Status: Phase 1 — Correctness / Memory Model: COMPLETE / FROZEN.**
 A bounded, single-producer / single-consumer message queue with no mutex and no
 CAS, modeling `Feed / Decoder → SPSC → OrderBook / Strategy`. Two header-only
 types in `lltl`:
@@ -379,16 +383,33 @@ types in `lltl`:
   safe for any number of producers/consumers by construction; deliberately not
   optimized; not a candidate.
 - `include/spsc_ring_buffer.h` — `SpscRingBuffer<T, Capacity>`: the candidate.
-  Power-of-two capacity enforced by `static_assert`; monotonic 64-bit
-  producer/consumer counters index slots by `counter & (Capacity - 1)`; full
-  capacity usable (`full: head - tail == Capacity`, `empty: head == tail`).
+  Power-of-two capacity enforced by `static_assert`; unsigned `std::size_t`
+  monotonic counters (64-bit on the canonical hosts) index slots by
+  `counter & (Capacity - 1)`; full capacity usable
+  (`full: head - tail == Capacity`, `empty: head == tail`). A second
+  `static_assert` requires `std::atomic<std::size_t>::is_always_lock_free`, so
+  the lock-free claim is checked at compile time rather than assumed; there is
+  deliberately **no mutex fallback**.
 
-Both expose the same non-blocking conceptual API:
+Both expose the same conceptual `try_*` API:
 `bool try_push(const T&)`, `bool try_push(T&&)`, `bool try_pop(T&)`,
-`bool empty()`, `static constexpr std::size_t capacity()`. No allocation, no
-blocking, no spinning, no sleeping inside either queue; successful hot paths
-never throw for nothrow-movable message types. `T` must be default-constructible
-and assignable (Phase-1 simplification).
+`bool empty()`, `static constexpr std::size_t capacity()`. Neither `try_*` ever
+waits for the queue *state* to change, and neither queue spins or sleeps
+internally. Allocation and throwing are properties of the payload, not the
+queue: the queue's own storage is preallocated and the implementation makes no
+allocator calls in the hot path, but `T`'s copy/move assignment is user code and
+may allocate, throw, or block. `MutexBoundedQueue` is additionally **neither
+noexcept nor truly non-blocking** — acquiring its mutex may block under
+contention and `std::mutex::lock()` may throw `std::system_error`. `T` must be
+default-constructible and assignable (Phase-1 simplification); intended
+low-latency message types are fixed-size, nothrow, allocation-free values.
+
+The lock-free claim is scoped to the **cursor protocol** on platforms where the
+cursor atomic is always lock-free — it says nothing about `T`'s copy/move
+assignment, which may allocate or block. A throwing payload assignment is not
+recoverable: the cursor is not advanced (the queue stays structurally
+consistent), but a throwing move may already have partially moved-from the
+stored payload, so no strong value guarantee is offered.
 
 Threading: exactly one producer may call `try_push`, exactly one consumer
 `try_pop` (documented contract, not enforced by locks). The producer is the only
@@ -406,14 +427,23 @@ push-when-full false; pop-after-full; repeated physical wrap-around; interleaved
 fill/drain vs a `std::deque` model; payload sequence preservation; structured
 messages copied/moved correctly (overloads exercised by a copy/move-counting
 type); a 2^20-message one-producer/one-consumer stress where the consumer
-verifies every value arrives exactly once in exact order; and a differential run
-feeding identical logical ops to `MutexBoundedQueue` and `SpscRingBuffer`,
-checked against each other and the model at every step. Same
-exit-code-self-test guard as the Experiment 01 runners.
+verifies every value arrives exactly once in exact order; a **rapid slot-reuse**
+stress at `Capacity = 2` (400k messages, so nearly every push overwrites a slot
+the consumer just released) checking no loss, no duplication, exact FIFO; a
+**multi-field payload** stress at `Capacity = 4` pushing a fixed-size
+allocation-free `MarketMessage {seq, price, qty, checksum}` and validating every
+field against deterministic functions of `seq`, so a torn or reordered payload
+would fail rather than pass; and a differential run feeding identical logical ops
+to `MutexBoundedQueue` and `SpscRingBuffer`, checked against each other and the
+model at every step. Same exit-code-self-test guard as the Experiment 01
+runners.
 
 Phase 1 is correctness only — no false-sharing padding and no remote-cursor
 cache are present (both are deliberately deferred to Phase 3 as controlled
-optimizations), and no throughput numbers are reported.
+optimizations), and no throughput numbers are reported. The unpadded
+`head_`/`tail_` layout *permits and is likely to exhibit* false sharing; Phase 3
+will verify the actual cursor addresses / cache-line placement for a packed
+same-line control and a separated/padded control rather than assume it.
 
 Planned next phases (NOT STARTED):
 

@@ -6,9 +6,12 @@
 //     fill/drain cycles;
 //   * payload tests — exact sequence preservation, and structured messages that
 //     verify the copy overload truly copies and the move overload truly moves;
-//   * a concurrent test — one producer, one consumer, a large deterministic
-//     sequence, the consumer verifying every value arrives exactly once, in
-//     exact order (any duplicate, missing, or reordered message fails);
+//   * concurrent tests — one producer, one consumer, a large deterministic
+//     sequence where the consumer verifies every value arrives exactly once, in
+//     exact order (any duplicate, missing, or reordered message fails); a
+//     rapid-slot-reuse stress at Capacity = 2 that forces repeated overwrite of
+//     the same physical slots; and a multi-field fixed-size payload stress where
+//     every field (and a checksum binding them) is validated per message;
 //   * a reference differential test — identical deterministic logical
 //     operations fed to MutexBoundedQueue and SpscRingBuffer, both required to
 //     agree with each other and with a std::deque model at every step.
@@ -340,6 +343,178 @@ void test_concurrent_producer_consumer() {
 }
 
 // ---------------------------------------------------------------------------
+// Test-side waiting helper. The QUEUE never spins or sleeps; this is only how a
+// test thread waits for the other side to make progress. It retries busily for a
+// bounded number of attempts and then yields, so it stays fast on a multicore
+// host while still guaranteeing progress if both threads share one core.
+// ---------------------------------------------------------------------------
+struct SpinWaiter {
+    int misses = 0;
+
+    void pause() {
+        if (++misses >= 1024) {
+            misses = 0;
+            std::this_thread::yield();
+        }
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Rapid slot-reuse stress: a tiny ring (Capacity = 2) forces the producer to
+// overwrite the SAME physical slots over and over while the consumer is reading
+// them. This is the sharpest test of the slot-reuse edge: an insufficient reuse
+// ordering here shows up as a consumer reading a payload that has already been
+// overwritten (duplicate/incorrect values), not merely as a lost message.
+// ---------------------------------------------------------------------------
+void test_concurrent_rapid_slot_reuse() {
+    constexpr std::size_t kCapacity = 2;              // smallest legal ring
+    constexpr std::uint64_t kMessages = 400'000;      // several hundred thousand
+
+    SpscRingBuffer<std::uint64_t, kCapacity> q;
+    std::atomic<bool> start{false};
+    std::atomic<bool> order_ok{true};
+    std::atomic<std::uint64_t> consumed{0};
+
+    std::thread producer([&] {
+        while (!start.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        SpinWaiter wait;
+        std::uint64_t i = 0;
+        while (i < kMessages) {
+            if (q.try_push(i)) {
+                ++i;
+            } else {
+                wait.pause(); // full; the consumer has not freed a slot yet
+            }
+        }
+    });
+
+    std::thread consumer([&] {
+        while (!start.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        SpinWaiter wait;
+        std::uint64_t expected = 0;
+        std::uint64_t v        = 0;
+        while (expected < kMessages) {
+            if (q.try_pop(v)) {
+                if (v != expected) {
+                    order_ok.store(false, std::memory_order_relaxed);
+                }
+                ++expected;
+                consumed.store(expected, std::memory_order_relaxed);
+            } else {
+                wait.pause(); // empty; the producer has not published yet
+            }
+        }
+    });
+
+    start.store(true, std::memory_order_release);
+    producer.join();
+    consumer.join();
+
+    CHECK(consumed.load(std::memory_order_relaxed) == kMessages);
+    CHECK(order_ok.load(std::memory_order_relaxed)); // exact FIFO, no dup/loss
+}
+
+// ---------------------------------------------------------------------------
+// Multi-field payload publication. A fixed-size, allocation-free message whose
+// every field is a deterministic function of seq: the consumer validates each
+// field independently AND a checksum that binds all fields together, so a torn
+// / partially published payload is detected even if one field alone happened to
+// look plausible. This demonstrates that the release/acquire publication edge
+// protects the WHOLE payload, not merely the sequence cursor.
+//
+// Fixed-size, trivially copyable, nothrow-movable => the intended low-latency
+// message type (and the noexcept path of try_push / try_pop). No strings here.
+// ---------------------------------------------------------------------------
+struct MarketMessage {
+    std::uint64_t seq      = 0;
+    std::uint64_t price    = 0;
+    std::uint64_t qty      = 0;
+    std::uint64_t checksum = 0;
+};
+
+// Deterministic field functions of seq (the consumer recomputes all of them).
+constexpr std::uint64_t field_price(std::uint64_t seq) { return 900'000ull + (seq % 100'000ull); }
+constexpr std::uint64_t field_qty(std::uint64_t seq) { return 1ull + (seq % 1'000ull); }
+
+// Binds seq + price + qty into one value, so any inconsistency between fields is
+// caught by a single comparison.
+constexpr std::uint64_t field_checksum(std::uint64_t seq, std::uint64_t price, std::uint64_t qty) {
+    std::uint64_t h = seq * 0x9E3779B97F4A7C15ull;
+    h ^= price + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+    h ^= qty + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+    return h;
+}
+
+MarketMessage make_market_message(std::uint64_t seq) {
+    MarketMessage m;
+    m.seq      = seq;
+    m.price    = field_price(seq);
+    m.qty      = field_qty(seq);
+    m.checksum = field_checksum(m.seq, m.price, m.qty);
+    return m;
+}
+
+void test_concurrent_multi_field_payload() {
+    constexpr std::size_t kCapacity = 4;         // small ring: rapid slot reuse
+    constexpr std::uint64_t kMessages = 200'000;
+
+    SpscRingBuffer<MarketMessage, kCapacity> q;
+    std::atomic<bool> start{false};
+    std::atomic<bool> fields_ok{true};
+    std::atomic<std::uint64_t> consumed{0};
+
+    std::thread producer([&] {
+        while (!start.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        SpinWaiter wait;
+        std::uint64_t i = 0;
+        while (i < kMessages) {
+            if (q.try_push(make_market_message(i))) {
+                ++i;
+            } else {
+                wait.pause();
+            }
+        }
+    });
+
+    std::thread consumer([&] {
+        while (!start.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        SpinWaiter wait;
+        std::uint64_t expected = 0;
+        MarketMessage m;
+        while (expected < kMessages) {
+            if (q.try_pop(m)) {
+                const bool ok = (m.seq == expected) &&
+                                (m.price == field_price(m.seq)) &&
+                                (m.qty == field_qty(m.seq)) &&
+                                (m.checksum == field_checksum(m.seq, m.price, m.qty));
+                if (!ok) {
+                    fields_ok.store(false, std::memory_order_relaxed);
+                }
+                ++expected;
+                consumed.store(expected, std::memory_order_relaxed);
+            } else {
+                wait.pause();
+            }
+        }
+    });
+
+    start.store(true, std::memory_order_release);
+    producer.join();
+    consumer.join();
+
+    CHECK(consumed.load(std::memory_order_relaxed) == kMessages);
+    CHECK(fields_ok.load(std::memory_order_relaxed)); // every field intact, in order
+}
+
+// ---------------------------------------------------------------------------
 // Reference differential test: identical deterministic logical operations are
 // fed to MutexBoundedQueue (the correctness reference) and SpscRingBuffer; at
 // every step both must agree with each other AND with a std::deque model. This
@@ -464,6 +639,12 @@ int main() {
 
     test_concurrent_producer_consumer();
     total += summary("concurrent: SPSC large deterministic sequence");
+
+    test_concurrent_rapid_slot_reuse();
+    total += summary("concurrent: rapid slot reuse (Capacity = 2)");
+
+    test_concurrent_multi_field_payload();
+    total += summary("concurrent: multi-field payload publication");
 
     test_reference_differential();
     total += summary("reference differential (mutex vs spsc vs model)");
