@@ -1,0 +1,6 @@
+[warmup 1/1] impl=spsc bytes=64 cap=4096 elapsed=166448625ns correct=yes (untimed, excluded)
+[rep 1/5] impl=spsc bytes=64 cap=4096 elapsed=135941042ns ns_per_message=13.594104 full_retries=925182 empty_retries=66560 correct=yes
+[rep 2/5] impl=spsc bytes=64 cap=4096 elapsed=168362084ns ns_per_message=16.836208 full_retries=964635 empty_retries=198656 correct=yes
+[rep 3/5] impl=spsc bytes=64 cap=4096 elapsed=150857542ns ns_per_message=15.085754 full_retries=1012797 empty_retries=168960 correct=yes
+[rep 4/5] impl=spsc bytes=64 cap=4096 elapsed=181829791ns ns_per_message=18.182979 full_retries=1052542 empty_retries=936960 correct=yes
+[rep 5/5] impl=spsc bytes=64 cap=4096 elapsed=184914042ns ns_per_message=18.491404 full_retries=776811 empty_retries=280576 correct=yes

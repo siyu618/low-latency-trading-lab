@@ -1,0 +1,9 @@
+# Experiment 02 Phase 2 raw repetitions — ONE implementation per process.
+# ns_per_message = END-TO-END elapsed_ns / messages delivered (NOT a per-call latency, NOT one-way handoff).
+# All 5 measured repetitions are present; 1 untimed warm-up repetition(s) are excluded.
+rep,impl,message_bytes,capacity,message_count,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum,correctness
+0,spsc,8,65536,10000000,387088500,38.708850,25833885.533,0,77476864,18446744073709551615,PASS
+1,spsc,8,65536,10000000,401069417,40.106942,24933339.657,675517,85185234,18446744073709551615,PASS
+2,spsc,8,65536,10000000,390209000,39.020900,25627292.041,701440,81445354,18446744073709551615,PASS
+3,spsc,8,65536,10000000,402613916,40.261392,24837690.906,708608,87093074,18446744073709551615,PASS
+4,spsc,8,65536,10000000,407722542,40.772254,24526483.012,1595739,78982456,18446744073709551615,PASS

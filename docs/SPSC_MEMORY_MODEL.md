@@ -237,6 +237,51 @@ pushes — outside any practical run, including the stress test). The reasoning
 above is the documented correctness argument for the wrap assumption, which is
 the standard one for a single-writer/single-reader monotonic-counter design.
 
+### 4.1 Why a stale `tail_` cannot slip past the full check
+
+The producer's `tail_.load(acquire)` may return a value older than the
+consumer's latest release store, so it is fair to ask whether that staleness
+could ever let `head_ - observed_tail` **exceed** `Capacity` — i.e. whether the
+`== Capacity` equality test could be jumped over and a slot the consumer has not
+finished reading could be overwritten. It cannot. Three steps:
+
+1. **One thread's successive observations of `tail_` never move backward.** Each
+   atomic object has a modification order, and coherence requires that reads of a
+   single object by a single thread are consistent with it: if the producer
+   observes `tail_ == a` and later observes `tail_ == b`, then `b` is `a` or a
+   later value in that modification order. `tail_` only ever increases (the
+   consumer stores `t + 1`), so the producer's sequence of observed tail values
+   is non-decreasing. The observation is stale, but it is never *contradictory*.
+
+2. **The producer's `head_` stops advancing once it is `Capacity` ahead of the
+   tail value it has observed.** `head_` is private to the producer, which
+   therefore tracks it exactly. A push that succeeds has just loaded some
+   `observed_tail` and found `h - observed_tail != Capacity`; combined with the
+   invariant of the previous section (`h - observed_tail <= Capacity`, maintained
+   from `0 - 0 = 0` and preserved by `h + 1 - observed_tail <= Capacity` on every
+   successful push), that leaves `h - observed_tail < Capacity`. After the store
+   it is `head_ - observed_tail <= Capacity` **for that observed value**.
+
+3. **It cannot advance again until it observes a later `tail_`.** Every
+   observation is of the same object and is `<=` any later observation of it
+   (step 1), so the difference computed against the *most recent* observation is
+   the *smallest* one — hence still `<= Capacity`. If that most recent value has
+   not moved, the difference is exactly `Capacity` and the next push is refused.
+   Room can only appear when the producer observes a strictly later `tail_`,
+   which happens only because the consumer actually released a slot.
+
+So `head_ - observed_tail > Capacity` is unreachable, and `== Capacity` is the
+exact "no room" condition rather than an approximation that a stale read could
+outrun. The failure mode of staleness is a **conservative false-full**: the
+producer reports full while a slot is in fact free, retries, and succeeds once a
+later `tail_` value is observed. That is the safe direction — it costs
+throughput, never correctness (and Phase 2 counts exactly these retries).
+
+This is a coherence/bookkeeping argument about *when a push is permitted*. It is
+not a substitute for the §1.2 happens-before edge: coherence tells the producer
+that the consumer's read has been announced, while the acquire load is what
+orders the producer's subsequent payload write *after* that read.
+
 ---
 
 ## 5. Ownership model, threading contract, and unsupported uses
@@ -307,16 +352,37 @@ they *do* have that race; the SPSC contract removes it by construction.
 
 ### 6.3 Why `seq_cst` is stronger than necessary
 
-`seq_cst` orders every `seq_cst` operation into **one total order across the
-entire system**, consistent across all threads, and gives each such operation
-full acquire *and* release semantics. The SPSC protocol needs only two
-one-directional edges (producer→consumer payload publication; consumer→producer
-slot release), each delivered by a single release store matched with a single
-acquire load on the far side. A total order over unrelated atomics elsewhere in
-the program is not needed for correctness, and on weakly-ordered hardware (ARM,
-the architecture family of the development machine) `seq_cst` loads/stores
-compile to stronger instructions/barriers than their acquire/release
-counterparts, adding latency to the hot path for no correctness benefit.
+`seq_cst` is the strongest of the three orderings, and what it adds beyond
+acquire/release is **participation in a single total order (the "SC order") of
+all `seq_cst` operations in the program**, consistent across every thread. It
+does *not* mean that each `seq_cst` operation independently carries both
+acquire and release semantics. Precisely:
+
+- a **`seq_cst` load** provides *acquire-style* ordering (it is at least an
+  acquire load) **plus** its place in the single SC order;
+- a **`seq_cst` store** provides *release-style* ordering (it is at least a
+  release store) **plus** its place in the single SC order;
+- a **`seq_cst` read-modify-write** operation is where "both" genuinely applies:
+  it is at least an acquire *and* a release operation, plus its place in the SC
+  order.
+
+The SPSC protocol here **does not require a global sequentially-consistent
+order at all**. It needs exactly two one-directional edges — producer→consumer
+payload publication and consumer→producer slot release — each delivered by a
+single release store matched with a single acquire load on the far side (§3.4).
+A total order over `seq_cst` operations (including unrelated ones elsewhere in
+the program) is not needed for that correctness argument, so `seq_cst` would buy
+ordering this queue never uses.
+
+It is tempting to add "and `seq_cst` is slower on ARM". That is **not a
+guarantee, and this document does not claim it**. Whether `seq_cst` compiles to
+stronger instructions or extra barriers than acquire/release — and how much that
+costs — is **architecture-, microarchitecture- and compiler-dependent**, and on
+a given host it is a question for measurement, not for assertion. The reason to
+prefer the minimum here is that the *protocol does not need the extra ordering*,
+which holds regardless of what the codegen happens to look like. (Phase 2
+measures the acquire/release baseline as written; it does not run a `seq_cst`
+variant.)
 
 Relaxed-only cross-thread publication is likewise **not** claimed correct here
 — §3.4 shows the acquire/release edges are load-bearing. The minimum is exactly:
@@ -408,6 +474,14 @@ Reproducible checks for this phase. Run from the repository root. None of these
 cannot establish that a protocol is correct for all executions; the argument in
 §3 is what carries that weight.
 
+Every command below compiles a translation unit that **spawns threads**, so it
+passes `-pthread` explicitly. The CMake build gets the same thing through
+`find_package(Threads REQUIRED)` + `Threads::Threads`; `-pthread` is the direct
+compiler equivalent, and it matters on Linux (it selects the threaded runtime
+and defines `_REENTRANT`). On macOS it is accepted and is effectively a no-op,
+which is why it is easy to omit by accident — the CMake linkage is what makes
+the requirement explicit either way.
+
 ```sh
 # 1. Clean Release build + full suite (Experiment 01 + Experiment 02)
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -415,25 +489,31 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 
 # 2. Strict Clang warnings on the Experiment 02 translation unit
-clang++ -std=c++20 -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion \
-        -Werror -Iinclude tests/spsc_ring_buffer_tests.cpp -o /tmp/spsc_strict
+clang++ -std=c++20 -pthread -Wall -Wextra -Wpedantic -Wconversion \
+        -Wsign-conversion -Werror -Iinclude \
+        tests/spsc_ring_buffer_tests.cpp -o /tmp/spsc_strict
 /tmp/spsc_strict
 
 # 3. AddressSanitizer (macOS: leak detection is unsupported -> detect_leaks=0)
-clang++ -std=c++20 -O1 -g -fsanitize=address -Iinclude \
+clang++ -std=c++20 -pthread -O1 -g -fsanitize=address -Iinclude \
         tests/spsc_ring_buffer_tests.cpp -o /tmp/spsc_asan
 ASAN_OPTIONS=detect_leaks=0 /tmp/spsc_asan
 
 # 4. UndefinedBehaviorSanitizer (abort on first UB)
-clang++ -std=c++20 -O1 -g -fsanitize=undefined -fno-sanitize-recover=all \
-        -Iinclude tests/spsc_ring_buffer_tests.cpp -o /tmp/spsc_ubsan
+clang++ -std=c++20 -pthread -O1 -g -fsanitize=undefined \
+        -fno-sanitize-recover=all -Iinclude \
+        tests/spsc_ring_buffer_tests.cpp -o /tmp/spsc_ubsan
 /tmp/spsc_ubsan
 
 # 5. ThreadSanitizer (where supported by the toolchain/platform)
-clang++ -std=c++20 -O1 -g -fsanitize=thread -Iinclude \
+clang++ -std=c++20 -pthread -O1 -g -fsanitize=thread -Iinclude \
         tests/spsc_ring_buffer_tests.cpp -o /tmp/spsc_tsan
 /tmp/spsc_tsan
 ```
+
+**Sanitizers are correctness instruments, never measurement instruments.** The
+Phase 2 throughput numbers come exclusively from the Release/`-O3 -DNDEBUG`
+`spsc_throughput_bench` target; no ASan/UBSan/TSan build is ever timed.
 
 TSan availability is toolchain- and platform-dependent; on some Apple toolchain
 configurations it is unavailable or unsupported. **If TSan cannot be built or run

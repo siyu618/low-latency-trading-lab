@@ -170,6 +170,16 @@ public:
     // write after the consumer's read of the old occupant. A stale tail read is
     // conservative: it can only make the buffer look falsely full, never permit
     // overwriting a slot the consumer still owns.
+    //
+    // A stale read cannot slip past the equality test either. Coherence keeps
+    // one thread's successive observations of tail_ from moving backward in its
+    // modification order, and head_ (private to us) never gets more than
+    // Capacity ahead of the tail value observed by the push that advanced it.
+    // Since every observation is <= any later one, the difference against the
+    // most recently observed tail is the smallest, so head_ - observed_tail can
+    // never EXCEED Capacity -- only equal it, which is exactly "full". See
+    // "Why a stale tail_ cannot slip past the full check" in
+    // docs/SPSC_MEMORY_MODEL.md.
     bool try_push(const T& v) noexcept(std::is_nothrow_copy_assignable_v<T>) {
         const std::size_t h = head_.load(std::memory_order_relaxed);
         if (h - tail_.load(std::memory_order_acquire) == Capacity) {

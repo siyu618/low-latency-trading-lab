@@ -45,6 +45,21 @@ measurement family. Transient raw runs land in repo-root `results/`
   `fixed-domain-gap-validation/`. None of it is a Phase 2/4 canonical dataset;
   it is read against them. See its `README.md` and
   `docs/ORDERBOOK_BITMAP_OPTIMIZATION.md`.
+- `spsc-throughput/` — the **canonical Experiment 02 Phase 2 throughput
+  baseline**: two-thread end-to-end message-transfer throughput of the frozen
+  Phase-1 `SpscRingBuffer` against `MutexBoundedQueue`, 18 cells (2 impls × 3
+  message sizes × 3 capacities), 10M messages per repetition, 15 pooled
+  repetitions per cell over 3 independent processes, all `correctness=PASS`,
+  measured 2026-09-11 on the Apple M3 Max. `ns/msg` is END-TO-END elapsed /
+  messages delivered — never a per-call or one-way handoff latency. See its
+  `RESULTS_METADATA.md` and `docs/SPSC_THROUGHPUT.md`. **No number in it is
+  attributed to false sharing** (Phase 3).
+- `spsc-throughput-superseded-single-session/` — the first Phase-2 pass (one
+  process per cell), **SUPERSEDED, not canonical**. Real and self-validating,
+  but it samples only one thread/queue placement per cell, and the SPSC cells
+  turned out to be strongly bimodal under that sampling. Retained as a labeled
+  historical artifact and as the evidence for adopting pooled multi-session
+  measurement. See its `SUPERSEDED.md`; cite it only for that purpose.
 
 ## Honesty rule
 

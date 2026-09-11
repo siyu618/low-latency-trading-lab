@@ -33,8 +33,9 @@ directories.
 > `docs/results/phase4-macos-tail-pre4.1-invalid/`.
 >
 > **Experiment 02 — SPSC Ring Buffer / Concurrency: Phase 1 (Correctness /
-> Memory Model) COMPLETE / FROZEN.** A bounded single-producer / single-consumer
-> ring buffer (`include/spsc_ring_buffer.h`) and a mutex reference queue
+> Memory Model) COMPLETE / FROZEN; Phase 2 (Throughput Baseline) COMPLETE /
+> FROZEN.** A bounded single-producer / single-consumer ring buffer
+> (`include/spsc_ring_buffer.h`) and a mutex reference queue
 > (`include/mutex_bounded_queue.h`) are implemented, correctness is green
 > (single-thread semantics, one-producer / one-consumer deterministic stress,
 > rapid slot reuse at Capacity = 2, a multi-field fixed-size payload stress, and
@@ -42,15 +43,21 @@ directories.
 > sanitizer-clean (ASan/UBSan/TSan where the host supports them — see
 > `docs/SPSC_MEMORY_MODEL.md` §10 for the exact commands). The memory-model
 > argument (happens-before, ordering choices, counter wrap) is documented in
-> `docs/SPSC_MEMORY_MODEL.md`. Phase 2 (throughput), Phase 3 (false sharing +
-> cursor caching), and Phase 4 (tail latency) are NOT STARTED.
+> `docs/SPSC_MEMORY_MODEL.md`. Phase 2 measured the **frozen, unpadded** Phase-1
+> SPSC against `MutexBoundedQueue` — 18 cells, 10M messages per repetition, 15
+> pooled repetitions per cell over 3 independent processes, 2.7 billion message
+> transfers, all `correctness=PASS` — in `docs/results/spsc-throughput/`, with
+> methodology and analysis in `docs/SPSC_THROUGHPUT.md`. The result is **not a
+> clean win for either queue**: only 4 of 9 cells separate at all, 2 each way.
+> Phase 3 (false sharing + cursor caching) and Phase 4 (tail latency) are NOT
+> STARTED, and **no Phase-2 number is attributed to false sharing**.
 
 ## Experiments
 
 | # | Experiment | Status |
 |---|------------|--------|
 | 01 | L2 Order Book: `std::map` vs Flat Representation | Phase 1, 2, 4 COMPLETE / FROZEN; Phase 3M tooling COMPLETE + recordings COLLECTED (attribution analysis deferred); Phase 3L tooling READY (native Linux measurement deferred) |
-| 02 | SPSC Ring Buffer / Concurrency | Phase 1 (Correctness / Memory Model) COMPLETE / FROZEN; Phase 2, 3, 4 NOT STARTED |
+| 02 | SPSC Ring Buffer / Concurrency | Phase 1 (Correctness / Memory Model) COMPLETE / FROZEN; Phase 2 (Throughput Baseline) COMPLETE / FROZEN; Phase 3, 4 NOT STARTED |
 
 ## Layout
 
@@ -83,10 +90,13 @@ low-latency-trading-lab/
 │   │                                 #   throughput + --check/--gaps/--memory/--inproc
 │   ├── order_book_gap_bench.cpp     # Optimization Study: next-best-gap ladder sweep
 │   ├── order_book_tail_bench.cpp  # Phase 4 fixed-batch tail-latency sampler
+│   ├── spsc_throughput_bench.cpp  # Exp 02 Phase 2: two-thread end-to-end SPSC vs
+│   │                              #   mutex transfer throughput (-O3 -DNDEBUG forced)
 │   └── tail_stats.h            # Phase 4 distribution metrics / percentile definitions
 ├── scripts/
 │   ├── bench.sh                # Phase 2 canonical per-process run
 │   ├── tail-bench.sh           # Phase 4 canonical matrix runner (one invocation per cell)
+│   ├── spsc-throughput.sh      # Exp 02 Phase 2 canonical matrix runner (18 cells x 3 sessions)
 │   ├── verify-tail-summary.sh  # Phase 4 raw<->summary verification
 │   ├── perf-profile.sh         # Linux perf profiling harness (Phase 3L, per-cell)
 │   ├── phase3m-instruments.sh  # Phase 3M xctrace/Instruments recorder (needs full Xcode)
@@ -95,11 +105,14 @@ low-latency-trading-lab/
 │   └── assert_nonzero_exit.cmake  # ctest guard for the test exit-code self-test
 ├── docs/
 │   ├── results/             # committed datasets (phase2-m3max/, phase3-macos-apple-silicon/,
-│   │   │                    #   phase4-macos-tail/ canonical + -pre4.1-invalid/ archived, and
-│   │   │                    #   orderbook-bitmap-optimization/ study; see README.md)
+│   │   │                    #   phase4-macos-tail/ canonical + -pre4.1-invalid/ archived,
+│   │   │                    #   orderbook-bitmap-optimization/ study, and
+│   │   │                    #   spsc-throughput/ canonical Exp 02 Phase 2 + its
+│   │   │                    #   superseded single-session pass; see README.md)
 │   │   └── README.md        # layout + honesty rule
 │   ├── ORDERBOOK_BITMAP_OPTIMIZATION.md  # Optimization Study analysis (item 12)
 │   ├── SPSC_MEMORY_MODEL.md  # Exp 02: happens-before + memory-order argument
+│   ├── SPSC_THROUGHPUT.md    # Exp 02 Phase 2: throughput methodology + analysis
 │   └── profiling/           # Phase 3 guides (README.md, MACOS_INSTRUMENTS.md) + Phase 4
 │                            #   tail-latency methodology (PHASE4_TAIL_LATENCY.md)
 ├── CMakeLists.txt
@@ -373,7 +386,8 @@ reserved for sparse best-delete-gap regimes. See
 
 ## Experiment 02 — SPSC Ring Buffer
 
-**Status: Phase 1 — Correctness / Memory Model: COMPLETE / FROZEN.**
+**Status: Phase 1 — Correctness / Memory Model: COMPLETE / FROZEN.
+Phase 2 — Throughput Baseline: COMPLETE / FROZEN.**
 A bounded, single-producer / single-consumer message queue with no mutex and no
 CAS, modeling `Feed / Decoder → SPSC → OrderBook / Strategy`. Two header-only
 types in `lltl`:
@@ -440,14 +454,64 @@ runners.
 
 Phase 1 is correctness only — no false-sharing padding and no remote-cursor
 cache are present (both are deliberately deferred to Phase 3 as controlled
-optimizations), and no throughput numbers are reported. The unpadded
+optimizations), and Phase 1 itself reported no throughput numbers. The unpadded
 `head_`/`tail_` layout *permits and is likely to exhibit* false sharing; Phase 3
 will verify the actual cursor addresses / cache-line placement for a packed
 same-line control and a separated/padded control rather than assume it.
 
-Planned next phases (NOT STARTED):
+### Phase 2 — Throughput Baseline (COMPLETE / FROZEN)
 
-- **Phase 2** — Throughput baseline (steady-state SPSC vs mutex transfer).
+**Research question:** *how much steady-state end-to-end message-transfer
+throughput does the Phase-1 SPSC protocol provide relative to a mutex-serialized
+bounded queue under controlled message sizes and capacities?* — asked and
+answered by measurement, with no answer assumed in advance.
+
+`benchmark/spsc_throughput_bench.cpp` (built with `-O3 -DNDEBUG` forced by its
+CMake target, `BUILD_BENCHMARKS=ON`) runs two threads over one queue at a time:
+8/32/64-byte trivially-copyable, nothrow, allocation-free payloads, capacities
+1024/4096/65536 selected by a compile-time switch, 10,000,000 messages per
+repetition. Thread creation, queue allocation and the expected-checksum pre-pass
+all happen **outside** the timed interval; the consumer records its own
+completion timestamp after receiving the final message. Both queues stay
+non-spinning APIs — the harness supplies backpressure
+(`while (!try_push(msg))` / `while (!try_pop(msg))`, busy retry with an
+occasional `yield`, no sleep) identically for both implementations, and counts
+`producer_full_retries` / `consumer_empty_retries` as observable metrics rather
+than failures. Every run must consume exactly N messages, in strictly increasing
+order with no gaps or duplicates, with a correct final checksum, or it exits
+non-zero and is not published.
+
+`scripts/spsc-throughput.sh` runs the canonical 18-cell matrix (2 impls × 3
+sizes × 3 capacities) with **one implementation per process**: 5 measured
+repetitions per process after an untimed warm-up, and **3 independent processes
+(sessions) per cell whose repetitions are pooled** — because a single process
+samples exactly one OS thread placement and one queue placement, and this host
+was observed to differ by ~2× between launches of byte-identical binaries.
+Nothing is filtered and the best repetition is never selected.
+
+**Measured (Apple M3 Max, 2026-09-11; 15 pooled repetitions per cell, 2.7 billion
+message transfers, all `correctness=PASS`).** The frozen unpadded SPSC does
+**not** dominate the mutex baseline, and the mutex baseline does not dominate
+it. Pooled medians span 0.465× (SPSC 2.15× faster) to 2.128× (mutex 2.13×
+faster), and only **4 of 9 cells separate at all** under a non-overlapping
+`[min, max]` test — 2 for SPSC (64 bytes at capacities 4096 and 65536) and 2 for
+mutex (32 bytes at capacities 4096 and 65536). The remaining 5 cells, including
+the largest apparent SPSC wins, overlap. Capacity 1024 makes the mutex baseline
+1.77–2.55× slower; SPSC shows no monotone capacity behaviour. The two fail in opposite
+directions: mutex is producer-side full-queue dominated, SPSC is consumer-side
+starvation dominated (up to 8.0 empty retries per delivered message). **Nothing
+here is attributed to false sharing** — Phase 2 has no packed/separated control
+and no cache-line verification.
+
+Full methodology, the matrix, the derivation and the limitations (macOS
+scheduling, placement bimodality, retry overhead, unoptimized baseline) are in
+`docs/SPSC_THROUGHPUT.md`; the canonical data, with host/toolchain metadata and
+the exact commands, is in `docs/results/spsc-throughput/`. The first
+single-session pass is retained, clearly labeled SUPERSEDED, in
+`docs/results/spsc-throughput-superseded-single-session/`.
+
+Phases NOT STARTED:
+
 - **Phase 3** — False sharing (`head_`/`tail_` packed vs separated/padded) and
   remote-cursor caching, as controlled experiments.
 - **Phase 4** — Tail latency / jitter under load.
@@ -457,5 +521,6 @@ Planned next phases (NOT STARTED):
 Experiment 01: Phase 3M per-function call-tree symbolization (an Instruments GUI
 pass over the six committed recordings); Phase 3L (Linux `perf` measurement)
 when a Linux host is available; Phase 5 (engineering write-up).
-Experiment 02: Phase 2 (throughput baseline), Phase 3 (false sharing + cursor
-caching), Phase 4 (tail latency) — see the Experiment 02 section above.
+Experiment 02: Phase 3 (false sharing + cursor caching), Phase 4 (tail latency)
+— see the Experiment 02 section above. Phase 2 (throughput baseline) is
+COMPLETE / FROZEN.

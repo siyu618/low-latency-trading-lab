@@ -1,0 +1,38 @@
+# Experiment 02 Phase 2 — two-thread END-TO-END message-transfer throughput.
+# ns_per_message = elapsed_ns / messages delivered: it INCLUDES queue synchronization,
+# payload assignment, cache-coherence traffic, harness retry/backpressure and OS scheduling.
+# It is NOT a per-try_push latency, NOT a per-try_pop latency, and NOT a one-way handoff time.
+# ONE implementation per process: the other implementation was NOT timed here.
+# exact invocation (argv as received):
+#   argv[0]=build-spsc-perf/spsc_throughput_bench
+#   argv[1]=--impl=spsc
+#   argv[2]=--message-bytes=64
+#   argv[3]=--capacity=1024
+#   argv[4]=--messages=10000000
+#   argv[5]=--reps=5
+#   argv[6]=--warmup=1
+#   argv[7]=--raw-out=docs/results/spsc-throughput/raw/spsc_b64_c1024_s1.csv
+#   argv[8]=--summary-out=docs/results/spsc-throughput/summaries/spsc_b64_c1024_s1.txt
+impl=spsc
+message_bytes=64
+capacity=1024
+message_count=10000000
+measured_reps=5
+warmup_reps=1
+median_ns_per_message=38.897108
+min_ns_per_message=37.004946
+max_ns_per_message=41.926650
+spread_pct=13.300
+median_messages_per_second=25708851.987
+producer_full_retries_total=1149014
+consumer_empty_retries_total=207059813
+checksum=8986780111068692703
+expected_checksum=8986780111068692703
+correctness=PASS
+# per-repetition detail — every measured repetition, none discarded:
+rep,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum
+0,401022084,40.102208,24936282.561,103703,34685412,8986780111068692703
+1,419266500,41.926650,23851178.189,694670,40924469,8986780111068692703
+2,370049458,37.004946,27023414.800,185344,39923032,8986780111068692703
+3,388971083,38.897108,25708851.987,78439,46781143,8986780111068692703
+4,388629584,38.862958,25731443.029,86858,44745757,8986780111068692703
