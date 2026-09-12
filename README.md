@@ -60,8 +60,9 @@ directories.
 > 1 same-line-faster) and 3 are inconclusive, so the result is a cell-dependent
 > coherence-layout effect rather than a general win for padding. Its first dataset
 > changed a second variable along with cursor placement (the two cursor policies
-> were 128 and 256 bytes, so the payload array began at a different object offset
-> and in a different cache set in the two variants); that dataset is real and
+> were 128 and 256 bytes, so the payload array's offset within the queue object
+> shifted by 128 bytes between the variants — an uncontrolled object-layout
+> variable, not just a cursor-placement one); that dataset is real and
 > self-validating, and is retained unedited at
 > `docs/results/spsc-false-sharing-pre3a1-payload-offset-confounded/` but must not
 > be cited for causal cursor-placement claims. The shipped design gives both
@@ -633,9 +634,12 @@ rather than being published: an unverified layout is not evidence about layout.
 The first Phase-3A dataset changed two things at once: the same-line policy was
 128 bytes and the separated policy 256, and because the payload array follows the
 cursors in the object, the payload began at object offset 128 in one variant and
-256 in the other — a different cache set, not just a different cursor placement.
-That dataset is real and self-validating, but it cannot support a cursor-placement
-attribution. The hardened design gives **both** policies a
+256 in the other. That is a second object-layout/address-mapping variable on top
+of cursor placement, so the dataset is real and self-validating but cannot support
+a cursor-placement attribution. (Phase 3A records object addresses and cursor
+placement; it does not measure the hardware's cache-set indexing function and
+makes no claim about which cache set either offset landed in.)
+The hardened design gives **both** policies a The hardened design gives **both** policies a
 `2 * kAssumedCacheLineSize` footprint: same-line keeps *both* cursors in the first
 block and reserves an inert second block that nothing reads or writes, whose only
 purpose is to equalize the footprint. Both the policy `sizeof` and the queue
@@ -708,8 +712,9 @@ it and collects no profiling evidence that could.
 The first dataset is retained unedited at
 `docs/results/spsc-false-sharing-pre3a1-payload-offset-confounded/` with a
 `SUPERSEDED.md`, and **must not be cited**: there the same-line cursor policy was
-128 bytes and the separated policy 256, so the payload array sat at a different
-object offset — and therefore a different cache set — in the two variants.
+128 bytes and the separated policy 256, so the payload array's relative offset
+within the object differed by 128 bytes between the variants — an uncontrolled
+object-layout shift that rode along with the cursor placement.
 Equalizing the footprint moved per-cell median ratios by up to ~24% in both
 directions and changed one cell's sign, but the two datasets also differ by run,
 so that comparison is reported only as a secondary methodology observation and is
@@ -721,10 +726,20 @@ summaries, runtime layout verification for every measured repetition, the
 equal-footprint evidence, the invariant report and `PROVENANCE.md` — is in
 `docs/results/spsc-false-sharing/`.
 
-**Phase 3A changes exactly one variable.** No cached `head`/`tail`, no batching,
-no memory-order change, no CAS, no affinity — those are Phase 3B and later, and
-combining any of them here would destroy the attribution this dataset exists to
-support. The frozen Phase-1 `SpscRingBuffer` was not modified and is **not** one
+**Phase 3A changes exactly one program-layout treatment: cursor placement.** That
+is what "one variable" means here, and it is a real control — the two queue types
+are one algorithm body parameterised by a storage-only cursor policy, so the
+algorithm, payload storage and indexing, memory orders, retry policy and message
+types are identical by construction. It does **not** mean the two legs' processes
+are identical in every respect: they are independent processes with independently
+allocated objects, so absolute addresses, scheduler placement, DVFS and thermal
+state and background-system state all differ and are **not** eliminated by
+construction. Those nuisance variables are addressed by the design — adjacent
+process pairing, balanced AB/BA ordering and four repeated sessions — and by the
+directional-stability criterion, not by construction. No cached `head`/`tail`, no
+batching, no memory-order change, no CAS, no affinity: those are Phase 3B and
+later, and combining any of them here would destroy the attribution this dataset
+exists to support. The frozen Phase-1 `SpscRingBuffer` was not modified and is **not** one
 of the two controls: it is unpadded, but adjacency is not proof of same-line
 placement and Phase 2 recorded no cursor addresses, so it can make no cache-line
 claim. It is available as `--impl=natural` for observational use only.

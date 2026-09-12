@@ -29,10 +29,12 @@
 // (3) EQUAL FOOTPRINT (Phase 3A.1). Cursor placement must be the ONLY thing
 //     that differs. If the two cursor policies were different sizes, the payload
 //     array declared after them would start at a different offset in each
-//     variant — a second changed variable, and one that moves the payload into a
-//     different cache set. So these tests require, for every T/Capacity the
-//     experiment uses: identical cursor-policy size and alignment, identical
-//     queue object size, and an identical payload offset from the object base.
+//     variant — a second changed variable that shifts the object's internal
+//     layout, and hence how the payload maps to cache lines/sets. So these tests
+//     require, for every T/Capacity the experiment uses: identical cursor-policy
+//     size and alignment, identical queue object size, and an identical payload
+//     offset from the object base. The equality being tested is of the relative
+//     offset; these tests measure no cache-set indexing and claim none.
 //     The header asserts this at compile time as well; it is tested here so that
 //     the requirement is visible where the experiment's claims are checked.
 //

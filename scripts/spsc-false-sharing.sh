@@ -23,10 +23,15 @@
 #
 # THE ONE VARIABLE ALSO REQUIRES AN EQUAL FOOTPRINT (Phase 3A.1). The two cursor
 # policies both occupy 2 x 128 = 256 bytes, so the payload array declared after
-# them starts at the SAME object offset in both variants. Earlier, the same-line
-# policy was 128 bytes and the separated policy 256, which moved the payload
-# between cache sets as well as moving the cursors — two changed variables at
-# once. `same_line` keeps BOTH cursors in the first line and reserves an inert
+# them keeps the SAME RELATIVE OFFSET within the object in both variants.
+# Earlier, the same-line policy was 128 bytes and the separated policy 256, which
+# shifted the payload's relative offset by 128 bytes as well as moving the
+# cursors — two object-layout changes at once. What is claimed is that layout
+# shift: this runner records object addresses and cursor placement, does not
+# measure the hardware's cache-set indexing, and does not claim that either
+# variant's objects land in any particular hardware cache set. The two legs are
+# separate processes with independently allocated objects, so their absolute
+# addresses differ and are not equalised by construction. `same_line` keeps BOTH cursors in the first line and reserves an inert
 # second line purely to match the footprint. The benchmark refuses to time a cell
 # whose two variants disagree on object size or payload offset, and leg 3
 # re-checks the recorded footprint columns of every raw row.
@@ -999,10 +1004,11 @@ LAYOUT_MD="$OUT/LAYOUT_VERIFICATION.md"
     echo
     echo "## Equal footprint (Phase 3A.1)"
     echo
-    echo "Cursor placement is the ONLY variable, so the payload array must start at"
-    echo "the same offset from the object base in both variants — otherwise the"
-    echo "payload moves between cache sets too and the comparison changes two things"
-    echo "at once. Each row below lists the object size and payload offset the two"
+    echo "Cursor placement is the ONLY program-layout treatment, so the payload array"
+    echo "must keep the same RELATIVE offset from the object base in both variants —"
+    echo "otherwise the object's internal layout shifts with cursor placement and the"
+    echo "comparison changes two things at once. Each row below lists the object size"
+    echo "and payload offset the two"
     echo "layouts' processes reported, measured on the objects they actually ran."
     echo "They MUST agree. The benchmark refuses to time a cell that fails this, so"
     echo "these columns are a re-check of already-gated evidence."
@@ -1202,10 +1208,15 @@ session_median() {  # $1=impl $2=bytes $3=cap $4=session
     echo "  changes cursor placement only, but the same-line process's threads both"
     echo "  touch the same line for their own cursor accesses, which is exactly the"
     echo "  effect under study."
-    echo "- Padding removes FALSE sharing only. The producer must still observe the"
-    echo "  consumer's tail cursor and vice versa; those remote observations are"
-    echo "  required for correctness and remain in both variants. See"
-    echo "  \`docs/SPSC_FALSE_SHARING.md\`."
+    echo "- Separating the cursor lines removes the colocated line-granularity"
+    echo "  interference component between the two independent cursor writes. It does"
+    echo "  NOT remove the required remote observations: the producer still reads"
+    echo "  \`tail\` at the reuse gate and the consumer still reads \`head\` at the"
+    echo "  availability gate, in both variants and with the same memory orders."
+    echo "  Separation also changes whether those two legitimately shared cursor values"
+    echo "  occupy one coherence line or two, so a same-line vs separated difference is"
+    echo "  the NET effect of controlled cursor placement, not pure false-sharing cost."
+    echo "  See \`docs/SPSC_FALSE_SHARING.md\`."
     echo "- The frozen natural Phase-1/2 SPSC is **not** a control in this"
     echo "  comparison. It is unpadded, but adjacency is not proof of same-line"
     echo "  placement and Phase 2 recorded no cursor addresses."
@@ -1348,10 +1359,16 @@ hash_file() {  # $1=path -> "sha256  path", or a NOT_PRESENT line
 {
     echo "# Experiment 02 Phase 3A — results metadata"
     echo
-    echo "CONTROLLED cursor-placement (coherence-layout) experiment. ONE variable:"
-    echo "the cache-line placement of the two SPSC cursors, whose policies have the"
-    echo "SAME footprint so the payload array starts at the same object offset in"
-    echo "both variants."
+    echo "CONTROLLED cursor-placement (coherence-layout) experiment. ONE program-layout"
+    echo "treatment: the cache-line placement of the two SPSC cursors, whose policies"
+    echo "have the SAME footprint so the payload array keeps the same RELATIVE offset"
+    echo "within the object in both variants. The two legs are separate processes with"
+    echo "independently allocated objects, so absolute addresses and environmental"
+    echo "state (scheduler, DVFS, thermal, background load) are NOT equalised by"
+    echo "construction; adjacent pairing, balanced AB/BA order and repeated sessions"
+    echo "are what address those. This removes a systematic type/layout-induced"
+    echo "difference between the legs; it does not place them in the same hardware"
+    echo "cache sets, which are neither controlled nor measured."
     echo
     echo "| item | value |"
     echo "|---|---|"

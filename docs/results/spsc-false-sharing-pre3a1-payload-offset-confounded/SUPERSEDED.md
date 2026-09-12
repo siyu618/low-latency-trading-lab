@@ -34,7 +34,12 @@ The two Phase-3A controls did not have the same cursor-policy footprint:
 | `separated` | 256 bytes | **256** |
 
 Because `slots_` is declared after `cursors_`, the payload array began at a
-different offset in the two variants, and therefore in a different cache set.
+different *relative offset within the object* in the two variants — 128 bytes
+apart. That is a systematic object-layout/address-mapping shift on top of the
+cursor move. It is stated as a layout shift, not as a known hardware cache set:
+this experiment recorded object addresses and cursor placement, did not measure
+the hardware's cache-set indexing function, and the two variants ran in separate
+processes with independently allocated objects.
 The run therefore changed **two** things at once:
 
 1. cursor cache-line placement — the intended variable; and

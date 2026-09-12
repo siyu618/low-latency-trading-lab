@@ -65,14 +65,17 @@ measurement family. Transient raw runs land in repo-root `results/`
   messages per repetition, 5 measured repetitions per process, 4 sessions per
   cell in a **balanced AB/BA** order (2 same-line-first + 2 separated-first),
   72 processes, one implementation per process. **Cursor cache-line placement is
-  the only variable** — no cached remote cursor, no batching, no memory-order
-  change, no CAS, no affinity — **and, since Phase 3A.1, both cursor policies
-  have the same `2 × 128 = 256`-byte footprint**, so the payload array begins at
-  the same offset within the object (and therefore in the same cache set) in both
-  variants. Same-line keeps *both* cursors in the first block and reserves an
-  inert second block whose only purpose is to equalize the footprint; the earlier
-  128-vs-256-byte design moved the payload from object offset 128 to 256 along
-  with the cursor placement, which is why its dataset was superseded. Layout is
+  the only program-layout treatment** — no cached remote cursor, no batching, no
+  memory-order change, no CAS, no affinity — **and, since Phase 3A.1, both cursor
+  policies have the same `2 × 128 = 256`-byte footprint**, so the payload array
+  keeps the same *relative* offset within the object in both variants. Same-line
+  keeps *both* cursors in the first block and reserves an inert second block whose
+  only purpose is to equalize the footprint; the earlier 128-vs-256-byte design
+  shifted the payload's relative offset by 128 bytes along with the cursor
+  placement — an uncontrolled object-layout change — which is why its dataset was
+  superseded. The equality is of the relative offset: the legs run as separate
+  processes with independently allocated objects, so absolute addresses and the
+  actual hardware cache-set mapping remain uncontrolled and unmeasured. Layout is
   established by construction (`static_assert` on policy size, alignment and
   cursor offset) **and verified at runtime**: a pre-timing gate aborts the process
   if the two variants' `object_size` / `payload_offset_from_object_base` disagree,
@@ -107,8 +110,9 @@ measurement family. Transient raw runs land in repo-root `results/`
   placement verified at runtime under the host's 128-byte line. It is superseded
   because it changed **two** variables at once — the cursor policy footprints
   were 128 bytes (`same_line`) and 256 bytes (`separated`), and since the payload
-  array follows the cursors in the object, the payload began at object offset 128
-  in one variant and 256 in the other, i.e. in a different cache set. Its numbers
+  array follows the cursors in the object, the payload's relative offset differed
+  by 128 bytes between the variants — a second object-layout variable, not merely
+  a cursor-placement one. Its numbers
   therefore cannot be attributed to cursor placement, and it must **not** be cited
   for causal cursor-placement claims. Nothing in it was edited or deleted; see its
   `SUPERSEDED.md` for why, and for the one comparison that is still legitimate

@@ -20,17 +20,26 @@ phrasing used throughout is therefore *"separated-faster is consistent with
 reduced false-sharing interference"* — never *"false sharing was proven to cause
 the full measured difference."*
 
-**Phase 3A changes ONE variable: cursor cache-line placement — and that requires
-an equal footprint.** There is no cached remote cursor, no batching, no
-memory-order change, no CAS, and no affinity anywhere in this phase.
+**Phase 3A changes ONE program-layout treatment: cursor cache-line placement —
+and that requires an equal footprint.** "One variable" means the two queue
+implementations differ in exactly one intentional program-layout treatment. It
+does **not** mean the two legs' processes are identical in every respect: each
+leg runs as an independent process with its own independently allocated queue
+object, so absolute addresses, scheduler placement, DVFS and thermal state, and
+background-system state all differ and are **not** eliminated by construction.
+Those nuisance variables are handled by the design — adjacent process pairing,
+balanced AB/BA ordering, four repeated sessions — and by the four-session
+directional-stability criterion (§3.4, §4.4), not by construction. There is no
+cached remote cursor, no batching, no memory-order change, no CAS, and no
+affinity anywhere in this phase.
 Remote-cursor caching is Phase 3B and is deliberately **not** combined with the
 layout change, because an experiment that moves two things at once attributes the
 result to neither. By the same logic, the two cursor policies must have the same
-size, so that the payload array after them starts at the same object offset and
-does not move between cache sets when the cursors move (§2.2, §2.7). An earlier
-same-line policy was 128 bytes against the separated policy's 256, which changed
-cursor placement **and** payload placement at once; that dataset is archived and
-superseded (§7.5).
+size, so that the payload array after them keeps the same relative offset within
+the object when the cursors move (§2.2, §2.7). An earlier same-line policy was
+128 bytes against the separated policy's 256, which shifted the payload's offset
+by 128 bytes at the same time as it changed cursor placement — two object-layout
+changes at once; that dataset is archived and superseded (§7.5).
 
 **Status: Phase 3A — Controlled Cursor Placement: COMPLETE / FROZEN.**
 The equal-footprint canonical dataset was collected 2026-09-12 and verified
@@ -294,9 +303,9 @@ explicitly does **not**, for three reasons:
    variants) and in having no `alignas` on the payload. Any difference measured
    against it would be attributable to placement *or* to those differences.
 3. **Its payload offset is a third value again.** The frozen object puts the
-   payload first, so its payload offset is 0 — a different cache set from either
-   Phase-3A variant. Comparing against it would move cursor placement, member
-   order and payload offset simultaneously.
+   payload first, so its payload offset is 0 — a third relative offset, distinct
+   from either Phase-3A variant's. Comparing against it would move cursor
+   placement, member order and payload offset simultaneously.
 
 The frozen type is therefore available in the benchmark as `--impl=natural` for
 **observational** use only, is excluded from the canonical matrix, and can make
@@ -364,10 +373,22 @@ the earlier dataset is superseded (§7.5).**
 Cursor placement is only the sole variable if nothing *else* about the object
 moves when the cursor policy changes. Both variants declare `cursors_` first and
 `slots_` second, so the payload offset is determined by the cursor policy's size.
-If the two policies differed in size, the payload array would begin at a
-different offset in each variant — and, relative to a 128-aligned allocation
-base, in a different **cache set**. The experiment would then change cursor
-placement *and* payload/set placement at once.
+The old design's two policies differed in size by 128 bytes, so the payload
+array's **relative offset within the queue object** differed by 128 bytes between
+the variants. That introduces an additional object-layout / address-mapping
+variable that could affect cache-line and cache-set behaviour, and the experiment
+would then change cursor placement *and* object layout at once.
+
+**What the offset is, and is not.** Phase 3A records the object address, the
+object size, the payload offset and the measured cursor addresses; it does **not**
+measure the hardware's cache-set indexing function. The equal-footprint design
+gives both variants the same *relative* payload offset, eliminating that
+systematic type/layout-induced shift. It does **not** guarantee that
+independently allocated objects in different processes occupy the same absolute
+addresses or the same hardware cache sets. Absolute address placement and the
+actual cache-set mapping remain uncontrolled and unmeasured nuisance factors —
+which is why this document traces the confound to the **relative offset**, not to
+a known cache set.
 
 Both policies are therefore asserted to be exactly `2 × kAssumedCacheLineSize`
 = 256 bytes, and the benchmark enforces the consequence at runtime **before
@@ -391,12 +412,11 @@ The verified outcome on the canonical host is that all nine
 payload offsets across the two layouts — see `LAYOUT_VERIFICATION.md`.
 
 **What this does and does not buy.** Equal footprints remove payload offset as a
-*difference between the two variants*. They do not make the payload's absolute
-position irrelevant: the payload still sits at object base + 256 in both
-variants, and its cache-set relationship to the hammered cursor line(s) is
-whatever that host's indexing produces. That is now the *same* relationship in
-both legs, which is what the comparison needs, but Phase 3A still measures no
-cache-set or coherence-counter data and makes no claim about it.
+*difference between the two variants* at the level of type and object layout,
+which is the level the experiment controls. They do not make the payload's
+absolute position — or the host's actual cache-set mapping — controlled: both
+remain unmeasured nuisance factors (§7.5). What the control buys is that those
+factors are no longer **systematically** different between the two legs.
 
 ---
 
@@ -446,6 +466,18 @@ A runtime differential test (`test_variants_agree_under_identical_operation_sequ
 drives 200,000 identical operations through both layouts and requires
 observation-for-observation agreement, making the equivalence claim falsifiable
 rather than merely asserted.
+
+**What "the only difference" quantifies over.** It is a claim about the *program*:
+the two queue implementations differ in one intentional program-layout treatment,
+cursor placement, and in nothing else that the source controls. It is not a claim
+that the two legs' *processes* are identical. Because the legs run as separate
+processes with independently allocated objects, their absolute addresses differ,
+and their scheduler placement, DVFS and thermal state and background-system state
+differ too; none of that is eliminated by construction (§3.1, §3.4). The
+construction removes the program-level difference so that the *measurement
+design* — adjacent pairing, balanced AB/BA order, four sessions — can address the
+environmental ones. §1's "one variable" statement should be read this way
+throughout.
 
 ### 3.3 One repetition, one session
 
@@ -600,7 +632,7 @@ at four levels:
 
 | check | where | result |
 |---|---|---|
-| policy `sizeof` / `alignof` / cursor offsets | compile time (`static_assert`) | PASS for both policies |
+| policy `sizeof` / `alignof` / cursor offsets | compile time (`static_assert`) | PASS for both policies — `SameLine` **256 bytes**, `Separated` **256 bytes** |
 | `object_size` and `payload_offset_from_object_base` agree across variants | pre-timing runtime gate, every control process | PASS, every process |
 | `payload_begin_addr − object_addr == payload_offset` and `object_size − payload_offset == message_bytes × capacity` | runner over the published raw rows | PASS, all 360 rows |
 | cross-layout equality of `object_size` and `payload_offset` per cell | runner over the published raw rows | PASS, all 9 cells |
@@ -612,12 +644,13 @@ writes its result files only if these hold; the run that produced this section
 reported `all_invariants=PASS`.
 
 The cursor treatment itself was verified on the object that each repetition
-actually timed: all 360 measured rows carry the measured `head`/`tail`
-addresses, their line indices under the reported 128-byte line, and a
-`layout_ok=PASS` verdict. Every `same_line` row measured `head_line ==
+actually timed: all 72 processes and all 360 measured rows carry the measured
+`head`/`tail` addresses, their line indices under the reported 128-byte line,
+and a `layout_ok=PASS` verdict. Every `same_line` row measured `head_line ==
 tail_line`; every `separated` row measured `head_line != tail_line`; no row put
-a cursor on the payload's line. Correctness was `PASS` on all 360 rows, and the
-checksum was stable within every cell.
+a cursor on the payload's line (cursor/payload line disjointness `PASS` on every
+row). Correctness was `PASS` on all 360 rows, and the checksum was stable within
+every cell.
 
 ### 4.3 Primary result — paired per-session ratios
 
@@ -715,12 +748,12 @@ Median paired ratio, superseded → equal-footprint:
 
 Three observations, all of them about methodology:
 
-1. **The uncontrolled variable was not negligible.** Moving the payload offset
-   changed the median paired ratio by up to ~24%, which is the same order as the
-   effects being measured in the 32 B and 64 B rows. Whatever the mechanism, a
-   design that let the payload move between cache sets could not have claimed a
-   one-variable result — which is why the earlier dataset is archived rather than
-   cited.
+1. **The uncontrolled variable was not negligible.** Moving the payload's
+   relative offset within the object changed the median paired ratio by up to
+   ~24%, which is the same order as the effects being measured in the 32 B and
+   64 B rows. Whatever the mechanism, a design that shifted the object layout
+   when it changed cursor placement could not have claimed a one-variable result
+   — which is why the earlier dataset is archived rather than cited.
 2. **The change is not a constant offset.** It moves ratios in both directions
    and changes the *sign* of exactly one cell (64 B / 1024, from a stable
    same-line win to a split). It therefore cannot be modelled away as a fixed
@@ -856,8 +889,9 @@ is reported as **inconclusive**, not as a weak result:
   shared-cursor-colocation part.** Layout alone cannot separate them, and no
   counter evidence is collected.
 - **No claim that the payload-offset difference could not have mattered.** In the
-  superseded pre-3A.1 dataset the payload also moved between cache sets, and that
-  dataset contains no counter evidence bounding its contribution either (§7.5).
+  superseded pre-3A.1 dataset the payload's relative offset also changed with the
+  cursor policy, and that dataset contains no counter evidence bounding its
+  contribution either (§7.5).
 - No claim about the frozen Phase-1 layout's false-sharing behaviour (§2.4).
 - No claim that padding is free (§1.4).
 
@@ -904,12 +938,19 @@ flaw is stated plainly.**
 
 **The flaw.** In the first Phase-3A design the two cursor policies were 128 bytes
 (`same_line`) and 256 bytes (`separated`). Because both variants declare
-`cursors_` first and `slots_` second, relative to a 128-aligned allocation base
-the payload began at **base + 128** in one variant and **base + 256** in the
-other — a different cache set. The run therefore changed **two** things at once:
-cursor cache-line placement, which was the intended variable, and payload/object
-relative layout, which was not controlled at all. A difference measured under
-that design cannot be attributed to cursor placement alone.
+`cursors_` first and `slots_` second, the payload's relative offset within the
+object was determined by the cursor policy's size: it began at **object base +
+128** in one variant and **object base + 256** in the other. The run therefore
+changed **two** things at once: cursor cache-line placement, which was the
+intended variable, and the object's internal layout / address mapping, which was
+not controlled at all. A difference measured under that design cannot be
+attributed to cursor placement alone.
+
+**What is and is not being claimed about that.** The confound is real because the
+**object layout changed** — the two variants did not merely differ in where the
+cursors sat. Phase 3A does not measure the hardware's cache-set indexing function
+and does not assert that either offset landed in a particular hardware cache set;
+the objection is to the uncontrolled shift itself, not to a known mapping.
 
 **This is a real controlled-variable flaw regardless of how large the effect
 looked.** The harness feeds every failed attempt straight back into the next
@@ -947,12 +988,17 @@ cursor-placement claims. It may be compared against the equal-footprint dataset
 as a **secondary methodology observation** only; primary conclusions use the
 equal-footprint dataset.
 
-**Still not controlled.** Equal footprints make the payload offset identical, not
-irrelevant: the payload still sits at object base + 256 in both variants, and its
-cache-set relationship to the hammered cursor line(s) is whatever the host's
-indexing produces. That relationship is now the *same* in both legs, which is
-what the comparison needs. Phase 3A measures no cache-set or coherence-counter
-data and makes no claim about it.
+**Still not controlled.** Equal footprints make the payload's *relative* offset
+identical, not irrelevant: the payload still sits at object base + 256 in both
+variants, and where that lands in the host's cache sets is whatever the host's
+indexing function produces. The two legs also run as independent processes with
+independently allocated objects, so their absolute addresses differ and nothing
+in the design makes them equal. What the control guarantees is only that the
+object layout is not *systematically* different between the legs — absolute
+address placement and the actual cache-set mapping remain uncontrolled and
+unmeasured nuisance factors. Phase 3A records no cache-set or coherence-counter
+data and makes no claim about it. The same caveat applies in reverse to the
+equal-footprint case, and §2.7 states it there.
 
 ### 7.6 Scope of the dataset
 

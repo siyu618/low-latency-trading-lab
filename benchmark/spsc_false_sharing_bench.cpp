@@ -9,14 +9,21 @@
 //   head cursor and the consumer-owned tail cursor are FORCED to share one cache
 //   line, versus being placed in distinct cache lines?
 //
-//   Exactly ONE variable is changed: cursor cache-line placement. Both cursor
-//   policies have the SAME footprint, so the payload array that follows them
-//   starts at the SAME object offset in both variants and the payload does not
-//   move between cache sets (see EQUAL FOOTPRINT below). The two variants are
-//   one algorithm body with two layout policies — see
+//   Exactly ONE program-layout treatment is changed: cursor cache-line
+//   placement. Both cursor policies have the SAME footprint, so the payload
+//   array that follows them keeps the SAME relative offset within the object in
+//   both variants (see EQUAL FOOTPRINT below). The two variants are one
+//   algorithm body with two layout policies — see
 //   include/spsc_cursor_layout_ring_buffer.h. No cached remote cursor, no
 //   batching, no CAS, no affinity, no memory-order change: those are Phase 3B and
 //   later, and combining any of them here would destroy the attribution.
+//
+//   "One variable" is a claim about the PROGRAM, not about the environment. The
+//   two legs run as separate processes with independently allocated queue
+//   objects, so their absolute addresses differ and nothing here makes them
+//   equal; scheduler placement, DVFS and thermal state and background-system
+//   state differ too. Those are addressed by the run design — adjacent pairing,
+//   balanced AB/BA order, repeated sessions — not by construction.
 //
 // WHAT THE MEASURED DIFFERENCE DOES AND DOES NOT ISOLATE
 //   The two cursors are not purely independent write-only state. The producer
@@ -58,12 +65,16 @@
 //   In the original Phase-3A design the same-line policy was 128 bytes and the
 //   separated policy 256, so the payload array declared after them began at
 //   object offset 128 in one variant and 256 in the other — a second changed
-//   variable that also moved the payload into a different cache set. Both
-//   policies are now 2 * kAssumedCacheLineSize bytes: the same-line variant keeps
-//   BOTH cursors in the first line and reserves an inert second line purely to
-//   match the footprint. This tool refuses to publish unless, for the exact
+//   variable that also shifted the payload's relative offset within the object.
+//   Both policies are now 2 * kAssumedCacheLineSize bytes: the same-line variant
+//   keeps BOTH cursors in the first line and reserves an inert second line purely
+//   to match the footprint. This tool refuses to publish unless, for the exact
 //   message type and capacity being timed, the two variants agree on object size
-//   and on payload offset from the object base.
+//   and on payload offset from the object base. The equality claimed is of the
+//   relative offset, which removes a systematic type/layout-induced difference
+//   between the legs; it does NOT put independently allocated objects in
+//   different processes at the same absolute addresses or the same hardware cache
+//   sets, and this tool measures no cache-set indexing.
 //
 // THE LAYOUT EVIDENCE IS PART OF THE MEASUREMENT
 //   An experiment that does not verify the layout it claims is worthless, so this
@@ -849,7 +860,8 @@ int run_cell(const Config& c, std::size_t reported_line_size) {
                      "are that same object's footprint evidence:\n"
                      "# the two cursor policies must agree on object_size and on "
                      "payload_offset so the payload does not\n"
-                     "# move between cache sets when cursor placement changes.\n"
+                     "# keep the same relative offset when cursor placement "
+                     "changes.\n"
                      "# All %d measured repetitions are present; %d warm-up "
                      "repetition(s) are excluded from every published figure.\n"
                      "rep,impl,message_bytes,capacity,message_count,elapsed_ns,"
@@ -912,10 +924,15 @@ int run_cell(const Config& c, std::size_t reported_line_size) {
     std::fprintf(out,
                  "# Experiment 02 Phase 3A — CONTROLLED cursor-placement "
                  "(coherence-layout) experiment.\n"
-                 "# The ONE variable is the cache-line placement of the two SPSC "
-                 "cursors; both cursor policies have the\n"
-                 "# same footprint, so the payload array starts at the same object "
-                 "offset in both variants.\n"
+                 "# The ONE program-layout treatment is the cache-line placement "
+                 "of the two SPSC cursors; both cursor\n"
+                 "# policies have the same footprint, so the payload array keeps the "
+                 "same relative offset within the object\n"
+                 "# in both variants. The two legs are separate processes with "
+                 "independently allocated objects, so absolute\n"
+                 "# addresses and environmental state are NOT equalised by "
+                 "construction — adjacent pairing, balanced\n"
+                 "# AB/BA order and repeated sessions are what address those.\n"
                  "# ns_per_message = elapsed_ns / messages delivered: it INCLUDES "
                  "queue synchronization,\n"
                  "# payload assignment, cache-coherence traffic, harness "

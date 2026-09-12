@@ -118,10 +118,15 @@ descriptive criterion, not a significance test.
   changes cursor placement only, but the same-line process's threads both
   touch the same line for their own cursor accesses, which is exactly the
   effect under study.
-- Padding removes FALSE sharing only. The producer must still observe the
-  consumer's tail cursor and vice versa; those remote observations are
-  required for correctness and remain in both variants. See
-  `docs/SPSC_FALSE_SHARING.md`.
+- Separating the cursor lines removes the colocated line-granularity
+  interference component between the two independent cursor writes. It does
+  NOT remove the required remote observations: the producer still reads
+  `tail` at the reuse gate and the consumer still reads `head` at the
+  availability gate, in both variants and with the same memory orders.
+  Separation also changes whether those two legitimately shared cursor values
+  occupy one coherence line or two, so a same-line vs separated difference is
+  the NET effect of controlled cursor placement, not pure false-sharing cost.
+  See `docs/SPSC_FALSE_SHARING.md`.
 - The frozen natural Phase-1/2 SPSC is **not** a control in this
   comparison. It is unpadded, but adjacency is not proof of same-line
   placement and Phase 2 recorded no cursor addresses.

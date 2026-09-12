@@ -46,8 +46,12 @@
 // In the original Phase-3A design the two policies were 128 and 256 bytes, so
 // the payload array — declared after the cursor policy — began at object
 // offset 128 in one variant and 256 in the other. That is a second changed
-// variable: the payload landed in a different cache set, so a measured
-// difference could not be attributed to cursor placement alone.
+// variable: the object's internal layout, and hence how the payload maps to
+// cache lines/sets, differed systematically between the variants, so a measured
+// difference could not be attributed to cursor placement alone. What is claimed
+// is the layout shift itself; this code records object addresses and cursor
+// placement, does not measure the hardware's cache-set indexing function, and
+// makes no claim about which cache set either offset landed in.
 //
 // Both policies are now exactly 2 * kAssumedCacheLineSize bytes:
 //

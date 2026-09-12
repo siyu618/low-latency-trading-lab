@@ -20,10 +20,11 @@ control could not be justified by construction.
 
 ## Equal footprint (Phase 3A.1)
 
-Cursor placement is the ONLY variable, so the payload array must start at
-the same offset from the object base in both variants — otherwise the
-payload moves between cache sets too and the comparison changes two things
-at once. Each row below lists the object size and payload offset the two
+Cursor placement is the ONLY program-layout treatment, so the payload array
+must keep the same RELATIVE offset from the object base in both variants —
+otherwise the object's internal layout shifts with cursor placement and the
+comparison changes two things at once. Each row below lists the object size
+and payload offset the two
 layouts' processes reported, measured on the objects they actually ran.
 They MUST agree. The benchmark refuses to time a cell that fails this, so
 these columns are a re-check of already-gated evidence.

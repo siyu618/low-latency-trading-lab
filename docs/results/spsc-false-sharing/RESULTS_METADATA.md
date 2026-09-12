@@ -1,9 +1,15 @@
 # Experiment 02 Phase 3A — results metadata
 
-CONTROLLED cursor-placement (coherence-layout) experiment. ONE variable:
-the cache-line placement of the two SPSC cursors, whose policies have the
-SAME footprint so the payload array starts at the same object offset in
-both variants.
+CONTROLLED cursor-placement (coherence-layout) experiment. ONE program-layout
+treatment: the cache-line placement of the two SPSC cursors, whose policies
+have the SAME footprint so the payload array keeps the same RELATIVE offset
+within the object in both variants. The two legs are separate processes with
+independently allocated objects, so absolute addresses and environmental
+state (scheduler, DVFS, thermal, background load) are NOT equalised by
+construction; adjacent pairing, balanced AB/BA order and repeated sessions
+are what address those. This removes a systematic type/layout-induced
+difference between the legs; it does not place them in the same hardware
+cache sets, which are neither controlled nor measured.
 
 | item | value |
 |---|---|
