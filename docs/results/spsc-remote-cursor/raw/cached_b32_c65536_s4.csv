@@ -1,0 +1,17 @@
+# Experiment 02 Phase 3B raw repetitions — ONE implementation per process.
+# ns_per_message = END-TO-END elapsed_ns / messages delivered (NOT a per-call latency, NOT one-way handoff).
+# The ONE implementation treatment is HOW OFTEN each thread reads the opposite thread's cursor. Cursor placement is the
+# verified SEPARATED layout in BOTH variants, and both variants have the same object_size and payload_offset.
+# measurement_mode=performance means no hot-path counting was compiled in; remote_load columns are 0 and instrumented=0.
+# measurement_mode=mechanism means the counters were live; a throughput number from those rows is NOT the canonical result.
+# remote loads are ORDINARY THREAD-OWNED counters, read after both threads joined — never global atomics on the hot path.
+# The cursor/cached addresses and line indices below were measured on the SAME object this repetition timed,
+# OUTSIDE the timed interval. layout_ok=PASS means the measured placement matched the claim; cached_placement_ok=PASS means
+# each cached remote cursor sat on its OWN owner's line and not on the remote cursor's line.
+# All 5 measured repetitions are present; 1 warm-up repetition(s) are excluded from every published figure.
+rep,measurement_mode,impl,message_bytes,capacity,message_count,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum,correctness,instrumented,producer_remote_tail_loads,consumer_remote_head_loads,producer_remote_tail_loads_per_message,consumer_remote_head_loads_per_message,reported_cache_line_size,head_addr,tail_addr,head_line,tail_line,cursors_same_line,layout_ok,cached_tail_addr,cached_head_addr,cached_tail_line,cached_head_line,cached_placement_ok,object_addr,object_size,payload_offset,payload_begin_addr
+0,performance,cached,32,65536,10000000,721304625,72.130462,13863768.030,0,165237844,17026924093925341122,PASS,0,0,0,0.000000000,0.000000000,128,4563435520,4563435648,35651840,35651841,no,PASS,4563435528,4563435656,35651840,35651841,PASS,4563435520,2097408,256,4563435776
+1,performance,cached,32,65536,10000000,742715375,74.271537,13464107.970,214722,176319225,17026924093925341122,PASS,0,0,0,0.000000000,0.000000000,128,4563435520,4563435648,35651840,35651841,no,PASS,4563435528,4563435656,35651840,35651841,PASS,4563435520,2097408,256,4563435776
+2,performance,cached,32,65536,10000000,704519416,70.451942,14194072.971,0,167644660,17026924093925341122,PASS,0,0,0,0.000000000,0.000000000,128,4429217792,4429217920,34603264,34603265,no,PASS,4429217800,4429217928,34603264,34603265,PASS,4429217792,2097408,256,4429218048
+3,performance,cached,32,65536,10000000,654688125,65.468812,15274448.425,0,160290782,17026924093925341122,PASS,0,0,0,0.000000000,0.000000000,128,4563435520,4563435648,35651840,35651841,no,PASS,4563435528,4563435656,35651840,35651841,PASS,4563435520,2097408,256,4563435776
+4,performance,cached,32,65536,10000000,674885041,67.488504,14817338.350,0,162397042,17026924093925341122,PASS,0,0,0,0.000000000,0.000000000,128,4429217792,4429217920,34603264,34603265,no,PASS,4429217800,4429217928,34603264,34603265,PASS,4429217792,2097408,256,4429218048

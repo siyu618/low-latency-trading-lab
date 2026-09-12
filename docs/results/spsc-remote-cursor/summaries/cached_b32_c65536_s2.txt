@@ -1,0 +1,72 @@
+# Experiment 02 Phase 3B — REMOTE CURSOR CACHING.
+# The ONE implementation treatment is the FREQUENCY of remote cursor loads: the baseline performs one acquire
+# load of the opposite cursor per try_push / try_pop; the cached variant keeps a thread-owned copy and refreshes
+# it only when that copy says the queue MAY be full (producer) or MAY be empty (consumer).
+# Everything else is identical by construction: same payload storage, same object footprint, same SEPARATED
+# cursor placement, same capacity, same slot indexing, same publication protocol, same retry/yield harness,
+# same message types. There is no batching, no memory-order change, no CAS, no affinity and no NUMA tuning.
+# The release/acquire publication edge EXISTS IN BOTH VARIANTS. The cache changes how OFTEN the remote cursor
+# is read, not what reading it guarantees; no memory order was weakened or removed.
+# ns_per_message = elapsed_ns / messages delivered: it INCLUDES queue synchronization, payload assignment,
+# cache-coherence traffic, harness retry/backpressure and OS scheduling. It is NOT a per-try_push latency,
+# NOT a per-try_pop latency, and NOT a one-way handoff time.
+# ONE implementation per process: the other implementation was NOT timed here.
+# This summary describes THIS PROCESS ONLY. It is not a canonical
+# result on its own; the canonical dataset pools repetitions across balanced processes.
+# exact invocation (argv as received):
+#   argv[0]=build-spsc-remote-cursor/spsc_remote_cursor_bench
+#   argv[1]=--impl=cached
+#   argv[2]=--instrument=0
+#   argv[3]=--message-bytes=32
+#   argv[4]=--capacity=65536
+#   argv[5]=--messages=10000000
+#   argv[6]=--reps=5
+#   argv[7]=--warmup=1
+#   argv[8]=--raw-out=docs/results/spsc-remote-cursor/raw/cached_b32_c65536_s2.csv
+#   argv[9]=--summary-out=docs/results/spsc-remote-cursor/summaries/cached_b32_c65536_s2.txt
+measurement_mode=performance
+instrumented=no
+impl=cached
+message_bytes=32
+capacity=65536
+message_count=10000000
+measured_reps=5
+warmup_reps=1
+median_ns_per_message=78.167142
+min_ns_per_message=69.828692
+max_ns_per_message=82.509058
+spread_pct=18.159
+median_messages_per_second=12793099.243
+producer_full_retries_total=69120
+consumer_empty_retries_total=902913015
+checksum=17026924093925341122
+expected_checksum=17026924093925341122
+correctness=PASS
+# ---- MEASURED MECHANISM (only meaningful when instrumented=yes) ----
+producer_remote_tail_loads_total=0
+consumer_remote_head_loads_total=0
+producer_remote_tail_loads_per_message=0.000000000
+consumer_remote_head_loads_per_message=0.000000000
+remote_load_counters=thread_owned_ordinary_counters
+# In the baseline these equal the try_push / try_pop CALL counts and are reported for verification only.
+# In the cached variant they count ACTUAL refresh loads, which is the mechanism the experiment is about.
+# ---- MEASURED LAYOUT (Phase-3A separated + Phase-3B cached placement) ----
+layout_invariant=PASS
+cached_placement_invariant=PASS
+layout_first_measured_rep=layout=separated alignment=128 reported_cache_line_size=128 head_addr=0x138008000 tail_addr=0x138008080 head_line=40894720 tail_line=40894721 same_line=no cursor_shares_payload_line=no object_addr=0x138008000 object_size=2097408 payload_offset=256 line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS cached_tail_addr=0x138008008 cached_head_addr=0x138008088 cached_tail_line=40894720 cached_head_line=40894721 cached_placement=PASS
+cursor_policy_size=256
+object_size=2097408
+payload_offset_from_object_base=256
+cursor_layout=separated
+cache_line_size_reported=128
+cache_line_size_assumed=128
+# object_size and payload_offset_from_object_base must be identical for the baseline and cached
+# processes of this cell; the canonical runner compares them across the pair and refuses to publish
+# if they differ.
+# per-repetition detail — every measured repetition, none discarded:
+rep,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum,head_line,tail_line,cached_tail_line,cached_head_line
+0,777552292,77.755229,12860871.356,69120,182417788,17026924093925341122,40894720,40894721,40894720,40894721
+1,698286917,69.828692,14320760.932,0,167978212,17026924093925341122,42991872,42991873,42991872,42991873
+2,781671416,78.167142,12793099.243,0,176243531,17026924093925341122,42991872,42991873,42991872,42991873
+3,822527583,82.252758,12157646.998,0,185250528,17026924093925341122,42991872,42991873,42991872,42991873
+4,825090583,82.509058,12119881.388,0,191022956,17026924093925341122,38797568,38797569,38797568,38797569

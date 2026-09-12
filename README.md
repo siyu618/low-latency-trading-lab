@@ -69,17 +69,38 @@ directories.
 > cursor policies the **same 256-byte footprint** — same-line keeps *both* cursors
 > in the first line and reserves an inert second line purely to equalize the
 > footprint — so the payload offset is identical across variants, enforced by both
-> the compiler and a pre-timing runtime gate. Phase 3B (remote-cursor caching) and
-> Phase 4 (tail latency) are NOT STARTED, and **no Phase-2 number is attributed to
+> the compiler and a pre-timing runtime gate. Phase 3B then re-ran the **separated**
+> layout only, adding a thread-owned cached copy of the remote cursor that is
+> refreshed only when the cached value says the operation may fail — cursor
+> placement, footprint, payload offset, capacity, publication protocol and harness
+> all held identical by construction, so **remote-load frequency is the only
+> treatment**. It is **COMPLETE / FROZEN** in `docs/results/spsc-remote-cursor/`,
+> and the result is **negative**: the mechanism worked and the performance did not
+> follow. Remote cursor loads fell by up to **~44,910×** on one side of the
+> transfer (and *rose* on the other — the reduction is one-sided, and which side
+> it lands on flips with message size), while the cached variant was **slower in 6
+> of 9 cells, stably across all four balanced sessions, by 1.09×–2.00×**, with 3
+> cells inconclusive. The release/acquire publication edge still exists in both
+> variants; caching reduced its *frequency*, it did not replace it. Phase 4 (tail
+> latency) is NOT STARTED, and **no Phase-2 number is attributed to
 > false sharing** — Phase 2 verified no cursor addresses, so it cannot be cited
 > for or against the frozen layout's line placement.
+>
+> **Phase 3B's absolute `ns/message` values are NOT comparable to Phase 3A's.**
+> The cell shape is strongly bimodal on the development host and the compiled
+> binary's code placement selects the regime: Phase 3A's separated 8 B/1024 cell
+> measured ~15.6 ns/message from its own binary while the Phase-3B `baseline`
+> variant of the same cell measures ~46 ns/message, with ~10× the consumer
+> spinning. Both Phase-3B variants share one binary and therefore one regime, so
+> the *comparison* is internally valid while the *level* is a property of the
+> binary and this host. See `docs/SPSC_REMOTE_CURSOR_CACHE.md` §7.5.
 
 ## Experiments
 
 | # | Experiment | Status |
 |---|------------|--------|
 | 01 | L2 Order Book: `std::map` vs Flat Representation | Phase 1, 2, 4 COMPLETE / FROZEN; Phase 3M tooling COMPLETE + recordings COLLECTED (attribution analysis deferred); Phase 3L tooling READY (native Linux measurement deferred) |
-| 02 | SPSC Ring Buffer / Concurrency | Phase 1 (Correctness / Memory Model) COMPLETE / FROZEN; Phase 2 (Throughput Baseline) COMPLETE / FROZEN; Phase 3A (Controlled Cursor Placement) COMPLETE / FROZEN; Phase 3B, 4 NOT STARTED |
+| 02 | SPSC Ring Buffer / Concurrency | Phase 1 (Correctness / Memory Model) COMPLETE / FROZEN; Phase 2 (Throughput Baseline) COMPLETE / FROZEN; Phase 3A (Controlled Cursor Placement) COMPLETE / FROZEN; Phase 3B (Remote Cursor Caching) COMPLETE / FROZEN; Phase 4 NOT STARTED |
 
 ## Layout
 
@@ -100,9 +121,12 @@ low-latency-trading-lab/
 │   │                          #   always lock-free (static_assert, no fallback)
 │   ├── cache_line.h           # Exp 02 Phase 3A: runtime host cache-line query
 │   │                          #   + the guards that fail rather than mis-measure
-│   └── spsc_cursor_layout_ring_buffer.h  # Exp 02 Phase 3A: the two cursor-layout
-│                              #   controls over ONE algorithm body (same-line vs
-│                              #   separated) + runtime layout report
+│   ├── spsc_cursor_layout_ring_buffer.h  # Exp 02 Phase 3A: the two cursor-layout
+│   │                          #   controls over ONE algorithm body (same-line vs
+│   │                          #   separated) + runtime layout report
+│   └── spsc_remote_cursor_ring_buffer.h  # Exp 02 Phase 3B: remote-cursor caching
+│                              #   over the ONE Phase-3A separated layout (direct vs
+│                              #   cached remote reads) + cached-placement report
 ├── tests/
 │   ├── order_book_tests.cpp # every scenario run against BOTH books
 │   ├── bitset_order_book_tests.cpp  # Optimization Study: four-way differential
@@ -110,9 +134,12 @@ low-latency-trading-lab/
 │   ├── phase4_stats_tests.cpp  # Phase 4 distribution/percentile regression tests
 │   ├── spsc_ring_buffer_tests.cpp  # Exp 02: semantics + SPSC stress +
 │   │                               #   differential vs the mutex queue
-│   └── spsc_false_sharing_tests.cpp  # Exp 02 Phase 3A: the same protocol against
-│                                   #   BOTH layouts + runtime layout evidence
-│                                   #   (incl. a negative control on the guard)
+│   ├── spsc_false_sharing_tests.cpp  # Exp 02 Phase 3A: the same protocol against
+│   │                               #   BOTH layouts + runtime layout evidence
+│   │                               #   (incl. a negative control on the guard)
+│   └── spsc_remote_cursor_tests.cpp  # Exp 02 Phase 3B: the same protocol against
+│                                   #   BOTH remote-read treatments + cached-state
+│                                   #   placement evidence + counter-wrap tests
 ├── benchmark/
 │   ├── stream_gen.h            # single source of truth for the A/B/C/D/E op streams
 │   ├── order_book_bench.cpp    # Phase 2 steady-state apply() throughput benchmark
@@ -124,6 +151,10 @@ low-latency-trading-lab/
 │   │                              #   mutex transfer throughput (-O3 -DNDEBUG forced)
 │   ├── spsc_false_sharing_bench.cpp  # Exp 02 Phase 3A: same-line vs separated
 │   │                                 #   cursor placement (--impl=...; one impl per process)
+│   ├── spsc_remote_cursor_bench.cpp  # Exp 02 Phase 3B: direct vs cached remote
+│   │                                 #   cursor reads (--impl=... --instrument=...;
+│   │                                 #   one impl per process; canonical throughput
+│   │                                 #   comes only from --instrument=0)
 │   └── tail_stats.h            # Phase 4 distribution metrics / percentile definitions
 ├── scripts/
 │   ├── bench.sh                # Phase 2 canonical per-process run
@@ -132,6 +163,9 @@ low-latency-trading-lab/
 │   │                           #   (18 cells x 4 balanced AB/BA sessions, one impl per process)
 │   ├── spsc-false-sharing.sh   # Exp 02 Phase 3A canonical matrix runner
 │   │                           #   (2 layouts x 18 cells x 4 balanced AB/BA sessions)
+│   ├── spsc-remote-cursor.sh   # Exp 02 Phase 3B canonical matrix runner (2 treatments
+│   │                           #   x 18 cells x 4 balanced AB/BA sessions + a separate
+│   │                           #   instrumented mechanism leg)
 │   ├── verify-tail-summary.sh  # Phase 4 raw<->summary verification
 │   ├── perf-profile.sh         # Linux perf profiling harness (Phase 3L, per-cell)
 │   ├── phase3m-instruments.sh  # Phase 3M xctrace/Instruments recorder (needs full Xcode)
@@ -146,7 +180,9 @@ low-latency-trading-lab/
 │   │   │                    #   two superseded passes (fixed-order,
 │   │   │                    #   single-session), and spsc-false-sharing/
 │   │   │                    #   canonical Exp 02 Phase 3A + its superseded
-│   │   │                    #   payload-offset-confounded pass; see README.md)
+│   │   │                    #   payload-offset-confounded pass, and
+│   │   │                    #   spsc-remote-cursor/ canonical Exp 02
+│   │   │                    #   Phase 3B; see README.md)
 │   │   └── README.md        # layout + honesty rule
 │   ├── ORDERBOOK_BITMAP_OPTIMIZATION.md  # Optimization Study analysis (item 12)
 │   ├── SPSC_MEMORY_MODEL.md  # Exp 02: happens-before + memory-order argument
@@ -154,6 +190,9 @@ low-latency-trading-lab/
 │   ├── SPSC_FALSE_SHARING.md # Exp 02 Phase 3A: controlled cursor-placement
 │   │                         #   methodology + analysis (false vs true sharing;
 │   │                         #   equal-footprint control; runtime layout proof)
+│   ├── SPSC_REMOTE_CURSOR_CACHE.md  # Exp 02 Phase 3B: remote-cursor caching
+│   │                         #   WHY/WHAT/HOW, correctness + counter-wrap
+│   │                         #   argument, mechanism vs performance split
 │   └── profiling/           # Phase 3 guides (README.md, MACOS_INSTRUMENTS.md) + Phase 4
 │                            #   tail-latency methodology (PHASE4_TAIL_LATENCY.md)
 ├── CMakeLists.txt
@@ -432,8 +471,9 @@ Phase 2 — Throughput Baseline: COMPLETE / FROZEN.
 Phase 3A — Controlled Cursor Placement: COMPLETE / FROZEN (its first,
 payload-offset-confounded dataset is retained unedited but superseded; see
 below).
-Phase 3B — Remote-Cursor Caching: NOT STARTED. Phase 4 — Tail Latency: NOT
-STARTED.**
+Phase 3B — Remote-Cursor Caching: COMPLETE / FROZEN (the mechanism reduced
+remote cursor loads as designed; the throughput did not follow).
+Phase 4 — Tail Latency: NOT STARTED.**
 A bounded, single-producer / single-consumer message queue with no mutex and no
 CAS, modeling `Feed / Decoder → SPSC → OrderBook / Strategy`. Two header-only
 types in `lltl`:
@@ -744,10 +784,125 @@ of the two controls: it is unpadded, but adjacency is not proof of same-line
 placement and Phase 2 recorded no cursor addresses, so it can make no cache-line
 claim. It is available as `--impl=natural` for observational use only.
 
+### Phase 3B — Remote Cursor Caching (COMPLETE / FROZEN)
+
+**Research question:** *how much does SPSC throughput change when each thread
+caches the opposite thread's cursor and refreshes it only when the cached value
+is insufficient to prove that progress is safe?* — asked and answered by
+measurement.
+
+Phase 3B re-runs the **separated** layout only — the layout Phase 3A verified —
+and adds one thing: a thread-owned, **non-atomic** cached copy of the remote
+cursor. The producer owns `cached_tail`, the consumer owns `cached_head`, and
+neither is synchronized; each is read and written by exactly one thread.
+`include/spsc_remote_cursor_ring_buffer.h` defines both variants as aliases over
+**one** algorithm body, `RemoteCursorRingBuffer<T, Capacity, RemoteCursorMode>`,
+selected by `if constexpr`. A stale cached value can only ever produce a **false
+full** (producer) or a **false empty** (consumer) — it can never make the
+producer believe more capacity was released than really was, nor the consumer
+believe unpublished data exists. The producer still publishes with a release
+store to `head` and the consumer still reads the payload only after an acquire
+observation of `head`: **the release/acquire edge is not removed, only made less
+frequent.** Both cached values start at 0, matching the initial queue state, so
+construction performs no remote acquire load.
+
+**Cursor placement, footprint and payload offset are held identical by
+construction, not by convention.** Both variants use the Phase-3A separated
+placement (`head` and `tail` on distinct verified cache lines) and both are
+`2 * kAssumedCacheLineSize` = 256 bytes of cursor state, so the payload offset
+is 256 in both. The cached values are stored *with their owner's state* — the
+producer's `cached_tail` on the producer's line, the consumer's `cached_head` on
+the consumer's — so the addition introduces no new cross-thread line-sharing
+relationship. `static_assert`s check size, alignment, cursor offsets and
+owner-line placement; a runtime gate **before any timing** re-checks the same
+properties on the actual object and aborts rather than publishing. Every
+measured repetition then records the addresses it is about to time, outside the
+timed interval: **all 360 canonical rows report `layout_ok=PASS`,
+`cached_placement_ok=PASS` and `cursors_same_line=no`.**
+
+**Instrumentation is compile-time eliminated, and the canonical numbers are
+uninstrumented.** The two counters (`producer_remote_tail_loads`,
+`consumer_remote_head_loads`) are ordinary non-atomic members owned by one
+thread each — no global atomic enters the hot path to count anything — and the
+increment sites are behind `if constexpr (Instrumented)`. The counter storage
+stays in the type so the object layout is identical either way, but the
+uninstrumented build emits no increment at all, and the runner fails the run if
+any canonical process reports non-zero counters. Mechanism counting therefore
+comes from a **separate 18-process instrumented leg** that is a different binary
+instantiation and is excluded from every canonical figure.
+
+**Methodology is the proven Phase-2 / Phase-3A design, unchanged:**
+`scripts/spsc-remote-cursor.sh` runs 2 variants × 3 message sizes × 3 capacities
+= 18 cells per session, 4 sessions, **72 processes**, 10M messages, 1 excluded
+warm-up, 5 measured repetitions; the two variants of a pair run as adjacent
+processes with variant order and traversal direction balanced (2
+baseline-first + 2 cached-first per cell), and the balance is **verified by
+parsing the execution order back out of `command.txt`**. The retry/yield policy
+is the hardened Phase-2 one, byte for byte.
+
+The primary figure is the paired per-session ratio (**cached median ÷ baseline
+median**; `< 1` means cached was faster).
+
+**Measured (Apple M3 Max, 2026-09-12; 72 canonical processes, 360 measured
+repetitions, `correctness=PASS` on every row, equal object size and equal
+payload offset across the two variants in all 9 cells).** The result is
+**negative**, and in the way that matters most for the causal language:
+
+| region | result |
+|---|---|
+| 8 B, capacities 1024 / 4096 / 65536 | baseline faster **4/4 sessions** each (median ratios 1.087 / 2.005 / 1.103) |
+| 64 B, capacities 1024 / 4096 / 65536 | baseline faster **4/4** each (1.270 / 1.406 / 1.569) |
+| 32 B, all three capacities | **inconclusive** — direction flipped between sessions (3–1, 3–1, 2–2) |
+
+So **6 of 9 cells hold one direction across all four balanced sessions — all six
+baseline-faster — and 3 are inconclusive**; across all 36 paired observations,
+32 favour the baseline and 4 favour the cached variant. **No cell is stably
+cached-faster.** The mechanism, by contrast, did exactly what it was designed to
+do, and the reduction is **one-sided, with the side flipping on message size**:
+
+- At **8 B and 32 B** the *producer's* remote loads collapse — up to **~70,102×**
+  at 8 B/65536 and **~65,805×** at 32 B/65536 — while the *consumer's* rise (up
+  to 4.1× at 8 B/65536).
+- At **64 B** the reverse: the *consumer's* remote loads collapse — up to
+  **~44,910×** at 64 B/65536 — while the *producer's* rise ~3×.
+
+The mechanism leg also shows why: caching cannot help a thread that keeps finding
+the queue genuinely empty (or genuinely full), because the real remote cursor has
+not moved, so every failed attempt refreshes anyway — the baseline's count, plus
+a comparison. That is a property of the design, reported rather than smoothed
+over, and it is visible in the seven cells where the cached variant did *more*
+remote loads on one side.
+
+**The emphasized case is real and it is not small.** Cells exist where remote
+loads fall dramatically and throughput does **not** improve but degrades: 64 B /
+65536 consumer loads fall ~44,910× with throughput **1.569× worse** (stable 4/4);
+8 B / 65536 producer loads fall ~70,102× with throughput 1.103× worse (stable
+4/4); 8 B / 4096 producer loads fall ~57× with throughput **2.005× worse** — the
+largest penalty in the dataset. Under the Phase-3B causal rule, the valid
+statement is that **remote-cursor caching reduced explicit remote cursor
+observations and was associated with *worse* end-to-end throughput under this
+workload**. No cache-miss, coherence-transaction or cache-line-transfer count was
+measured, and none is claimed.
+
+Two limits must travel with these numbers. First, the mechanism counts are
+end-to-end totals for the whole run, so part of the losing side's *increase* is a
+consequence of the slowdown rather than a cause of it, and the instrumented leg
+is a different instantiation whose regime can differ from the canonical leg's —
+so no "loads saved per nanosecond" arithmetic is performed anywhere. Second, as
+in Phase 3A, **this cell shape is strongly bimodal on the development host and
+the compiled image's code placement selects the regime**; the two Phase-3B
+variants share one binary and therefore one regime, so the *comparison* is
+internally valid while the *level* is a property of the binary and the host. See
+`docs/SPSC_REMOTE_CURSOR_CACHE.md` §7.5.
+
+Full methodology, the correctness argument, the counter-wrap reasoning and the
+limitations are in `docs/SPSC_REMOTE_CURSOR_CACHE.md`; the canonical data — raw
+repetitions, per-process summaries, paired session summaries, per-repetition
+layout verification, the separate mechanism leg, the invariant report and
+`PROVENANCE.md` — is in `docs/results/spsc-remote-cursor/`.
+
 Phases NOT STARTED:
 
-- **Phase 3B** — Remote-cursor caching (`cached_head` / `cached_tail`). Must not
-  be combined with the Phase 3A layout change.
 - **Phase 4** — Tail latency / jitter under load.
 
 ## Next phases
@@ -755,5 +910,5 @@ Phases NOT STARTED:
 Experiment 01: Phase 3M per-function call-tree symbolization (an Instruments GUI
 pass over the six committed recordings); Phase 3L (Linux `perf` measurement)
 when a Linux host is available; Phase 5 (engineering write-up).
-Experiment 02: Phase 3B (remote-cursor caching), Phase 4 (tail latency) — see
-the Experiment 02 section above. Phases 1, 2 and 3A are COMPLETE / FROZEN.
+Experiment 02: Phase 4 (tail latency) — see the Experiment 02 section above.
+Phases 1, 2, 3A and 3B are COMPLETE / FROZEN.

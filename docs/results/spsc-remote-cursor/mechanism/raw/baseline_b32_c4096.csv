@@ -1,0 +1,15 @@
+# Experiment 02 Phase 3B raw repetitions — ONE implementation per process.
+# ns_per_message = END-TO-END elapsed_ns / messages delivered (NOT a per-call latency, NOT one-way handoff).
+# The ONE implementation treatment is HOW OFTEN each thread reads the opposite thread's cursor. Cursor placement is the
+# verified SEPARATED layout in BOTH variants, and both variants have the same object_size and payload_offset.
+# measurement_mode=performance means no hot-path counting was compiled in; remote_load columns are 0 and instrumented=0.
+# measurement_mode=mechanism means the counters were live; a throughput number from those rows is NOT the canonical result.
+# remote loads are ORDINARY THREAD-OWNED counters, read after both threads joined — never global atomics on the hot path.
+# The cursor/cached addresses and line indices below were measured on the SAME object this repetition timed,
+# OUTSIDE the timed interval. layout_ok=PASS means the measured placement matched the claim; cached_placement_ok=PASS means
+# each cached remote cursor sat on its OWN owner's line and not on the remote cursor's line.
+# All 3 measured repetitions are present; 1 warm-up repetition(s) are excluded from every published figure.
+rep,measurement_mode,impl,message_bytes,capacity,message_count,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum,correctness,instrumented,producer_remote_tail_loads,consumer_remote_head_loads,producer_remote_tail_loads_per_message,consumer_remote_head_loads_per_message,reported_cache_line_size,head_addr,tail_addr,head_line,tail_line,cursors_same_line,layout_ok,cached_tail_addr,cached_head_addr,cached_tail_line,cached_head_line,cached_placement_ok,object_addr,object_size,payload_offset,payload_begin_addr
+0,mechanism,baseline,32,4096,10000000,581061250,58.106125,17209889.663,0,112034687,17026924093925341122,PASS,1,10000000,122034687,1.000000000,12.203468700,128,4563435520,4563435648,35651840,35651841,no,PASS,4563435528,4563435656,35651840,35651841,PASS,4563435520,131328,256,4563435776
+1,mechanism,baseline,32,4096,10000000,587879167,58.787917,17010298.308,1024,110379249,17026924093925341122,PASS,1,10001024,120379249,1.000102400,12.037924900,128,4966088704,4966088832,38797568,38797569,no,PASS,4966088712,4966088840,38797568,38797569,PASS,4966088704,131328,256,4966088960
+2,mechanism,baseline,32,4096,10000000,578461417,57.846142,17287237.672,20860,111772319,17026924093925341122,PASS,1,10020860,121772319,1.002086000,12.177231900,128,4966088704,4966088832,38797568,38797569,no,PASS,4966088712,4966088840,38797568,38797569,PASS,4966088704,131328,256,4966088960

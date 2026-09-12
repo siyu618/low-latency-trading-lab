@@ -1,0 +1,20 @@
+# Experiment 02 Phase 3B — paired-session comparison (PRIMARY)
+# DERIVED from the per-process summaries in summaries/, one row per cell.
+# ratio_sN = cached session-N median / baseline session-N median.
+#   ratio < 1  => in that session, the CACHED variant completed a message faster
+#   ratio > 1  => in that session, the BASELINE variant completed a message faster
+# The two processes of a pair ran ADJACENTLY with order balanced AB/BA.
+# DESCRIPTIVE paired analysis — NOT a significance test. Four paired
+# observations per cell cannot establish formal statistical significance.
+# message_count=10000000 reps_per_process=5 sessions=4
+# UTC: 2026-09-12T04:17:48Z
+message_bytes,capacity,first_impl_s1,ratio_s1,first_impl_s2,ratio_s2,first_impl_s3,ratio_s3,first_impl_s4,ratio_s4,median_paired_ratio,min_paired_ratio,max_paired_ratio,sessions_cached_faster,sessions_baseline_faster
+8,1024,baseline,1.061651,cached,1.112765,cached,1.287495,baseline,1.061285,1.087208,1.061285,1.287495,0,4
+8,4096,baseline,2.325356,cached,2.087948,cached,1.921525,baseline,1.045458,2.004736,1.045458,2.325356,0,4
+8,65536,baseline,1.079973,cached,1.187388,cached,1.025708,baseline,1.126103,1.103038,1.025708,1.187388,0,4
+32,1024,baseline,0.902198,cached,1.134246,cached,1.129122,baseline,1.084509,1.106815,0.902198,1.134246,1,3
+32,4096,baseline,0.987780,cached,1.116540,cached,1.065905,baseline,1.048703,1.057304,0.987780,1.116540,1,3
+32,65536,baseline,1.105562,cached,1.084057,cached,0.973671,baseline,0.981684,1.032871,0.973671,1.105562,2,2
+64,1024,baseline,1.224958,cached,1.268467,cached,1.296675,baseline,1.271797,1.270132,1.224958,1.296675,0,4
+64,4096,baseline,1.359593,cached,1.425219,cached,1.387124,baseline,1.448949,1.406172,1.359593,1.448949,0,4
+64,65536,baseline,1.546578,cached,1.617520,cached,1.590520,baseline,1.518352,1.568549,1.518352,1.617520,0,4
