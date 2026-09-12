@@ -1,8 +1,9 @@
 // Experiment 02 — SPSC Ring Buffer / Concurrency, Phase 3B correctness tests.
 //
-// Phase 3B changes exactly one thing about the Phase-3A separated SPSC ring
-// buffer: how OFTEN each thread performs the acquire load of the opposite
-// thread's cursor. Its correctness burden is therefore four-fold, and all four
+// Phase 3B applies exactly one intended algorithmic treatment to the Phase-3A
+// separated SPSC ring buffer: remote-cursor caching, whose primary mechanism is
+// how OFTEN each thread performs the acquire load of the opposite thread's
+// cursor. Its correctness burden is therefore four-fold, and all four
 // halves are exercised here.
 //
 // (1) SEMANTIC EQUIVALENCE. Both Phase-3B variants must pass the SAME Phase-1

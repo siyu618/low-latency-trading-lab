@@ -2,13 +2,21 @@
 
 ## What is being compared
 
-The **only** difference between the two implementations compared here is
-the **frequency of remote cursor loads**. Both come from one algorithm body parameterised by a
+The two implementations compared here differ in **one intended algorithmic
+treatment: remote-cursor caching**. Both come from one algorithm body parameterised by a
 compile-time mode, so the payload storage, the payload offset, the object
 size, the SEPARATED cursor placement, the capacity, the slot indexing, the
 publication protocol, the retry/yield harness and the message types are
 identical by construction. There is no batching, no changed memory ordering,
 no CAS, no MPSC/MPMC, no affinity and no NUMA tuning in either variant.
+
+**Reduced remote-load frequency is the primary mechanism of that treatment, but
+the treatment also carries its local fast-path bookkeeping cost** — a
+thread-owned cached-cursor read, a comparison and a branch, plus occasional
+cached-value updates. The two are not separated by this design, so **no
+throughput difference here isolates the cost of a single remote atomic load.**
+Nor are the variants the same machine code: they are distinct template
+instantiations with different emitted instruction sequences.
 
 **The release/acquire publication edge exists in BOTH variants and was not
 weakened.** The producer still publishes with a release store to `head` and
@@ -122,16 +130,21 @@ descriptive criterion, not a significance test.
   "4 out of 4 agreed here", not "the effect is proven".
 - No CPU pinning or affinity is used or claimed; macOS may migrate threads
   mid-run and may place the two processes' threads on different core types.
-- **This cell shape is strongly bimodal on the development host, and the
-  swing between regimes is larger than any plausible treatment effect.** A
-  process can settle into a state where the consumer spins on an empty queue
-  tens of millions of times instead of blocking on real handoffs, and the
-  compiled image's code placement — not the variant being measured — selects
-  between those regimes. The `producer_full_retries` and
-  `consumer_empty_retries` columns are preserved in `summary.csv` and in
-  every raw CSV precisely so the regime of each process is visible. **No
-  ratio here should be read as resolving a difference smaller than that
-  swing.**
+- **This cell shape exhibits strong run-to-run and build-to-build regime
+  variation on the development host, and the swing between regimes is larger
+  than any plausible treatment effect.** A process can settle into a state
+  where the consumer spins on an empty queue tens of millions of times instead
+  of blocking on real handoffs. A separate diagnostic suggested code-layout
+  sensitivity as **one possible contributor** to that bimodality, but **Phase 3B
+  does not isolate its cause** — and no reproducible diagnostic package is
+  preserved alongside this dataset. Note also that the two variants are distinct
+  template instantiations with different emitted code, and the two legs are
+  independent processes that are not guaranteed to share scheduler placement,
+  core type, migration history, DVFS, thermal state or background load. The
+  `producer_full_retries` and `consumer_empty_retries` columns are preserved in
+  `summary.csv` and in every raw CSV precisely so the state of each process is
+  visible. **No ratio here should be read as resolving a difference smaller
+  than that swing.**
 - The mechanism leg (`mechanism/`, `MECHANISM.md`) is a SEPARATE set of
   runs at a different instrumentation setting. Its throughput numbers are NOT
   the canonical figures and are not used here.

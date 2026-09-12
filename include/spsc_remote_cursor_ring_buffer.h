@@ -5,8 +5,12 @@
 //
 // RemoteCursorRingBuffer: the SAME single-producer / single-consumer ring
 // buffer as the frozen Phase-1 SpscRingBuffer and the Phase-3A separated
-// control, with exactly ONE thing made controllable — the FREQUENCY with which
-// each thread loads the other thread's synchronization cursor.
+// control, with exactly ONE intended algorithmic treatment made controllable —
+// REMOTE-CURSOR CACHING: whether each thread consults a thread-owned cached copy
+// of the opposite cursor and refreshes it only when the cached value is
+// insufficient to prove progress is safe. Reduced remote-load frequency is the
+// primary mechanism of that treatment; the treatment also carries its own local
+// fast-path bookkeeping (a cached-value read, a comparison and a branch).
 //
 // ---------------------------------------------------------------------------
 // WHY THIS IS A SEPARATE TYPE
@@ -18,9 +22,12 @@
 // opposite cursor and refreshes it only when the cached value says the queue MAY
 // be full (producer) or MAY be empty (consumer).
 //
-// The claim "the only difference between the two Phase-3B variants is remote
-// cursor refresh frequency" is enforced BY CONSTRUCTION rather than by
-// discipline, exactly as Phase 3A did:
+// The claim "the two Phase-3B variants differ in one intended algorithmic
+// treatment — remote-cursor caching" is enforced BY CONSTRUCTION rather than by
+// discipline, exactly as Phase 3A did. It is a claim about the ALGORITHM AND
+// OBJECT LAYOUT, not about the emitted instruction stream: the two variants are
+// distinct template instantiations and necessarily have different machine code
+// (see "WHAT THE MEASURED DIFFERENCE DOES AND DOES NOT ISOLATE" below).
 //
 //   * There is ONE algorithm body, below, written once. `try_push` and
 //     `try_pop` are a single function each, with the cached/uncached decision
@@ -42,7 +49,7 @@
 // ---------------------------------------------------------------------------
 // WHAT PHASE 3B DELIBERATELY DOES NOT DO
 // ---------------------------------------------------------------------------
-// Remote cursor refresh frequency is the ONLY variable. The following are all
+// Remote-cursor caching is the ONLY intended treatment. The following are all
 // separate, later, controlled experiments and are intentionally absent here:
 //
 //   * NO change to cursor placement. Both variants use the SEPARATED layout,
@@ -79,25 +86,61 @@
 // therefore a REAL possible outcome, not a contradiction. Both are measured
 // separately and reported separately.
 //
+// Because the treatment carries that local bookkeeping, a measured throughput
+// difference must NOT be described as isolating the cost of one remote atomic
+// load. What the treatment bundles — fewer remote loads, plus a cached-value
+// read and a branch — is what the difference is between.
+//
 // ---------------------------------------------------------------------------
 // WHY A STALE CACHED REMOTE CURSOR IS SAFE
 // ---------------------------------------------------------------------------
 // The cached copies are NOT atomic and are NOT shared: `cached_tail` is written
 // and read only by the producer, `cached_head` only by the consumer. They are
 // ordinary thread-owned members. No synchronization exists for them, and none is
-// needed, because they can only ever be BEHIND reality, never ahead of it:
+// needed, because each cached copy only ever holds a value the real cursor had
+// at some EARLIER moment. A cached value can therefore be stale, but it is never
+// speculative: it cannot name a cursor position the remote thread has not
+// actually reached.
 //
-//   * `cached_tail` holds a value that the real `tail` had at some earlier
-//     moment. `tail` only increases, so `cached_tail <= tail` always. A stale
-//     cached_tail can therefore only make the producer believe FEWER slots have
-//     been released than actually have — it may report FALSE FULL and cost an
-//     extra refresh, but it can never make the producer believe more capacity is
-//     available than the consumer has really released.
-//   * `cached_head` holds a value that the real `head` had at some earlier
-//     moment, so `cached_head <= head`. A stale cached_head can only make the
-//     consumer believe FEWER messages have been published than actually have —
-//     it may report FALSE EMPTY, but it can never make the consumer believe
-//     unpublished data exists.
+// "Earlier" must be stated in MODULAR DISTANCE, not in ordinary numeric
+// ordering. The cursors are unsigned counters that wrap, so `cached_tail <=
+// tail` is NOT a valid way to say "cached_tail is behind tail": at
+// cached_tail = SIZE_MAX - 3 and tail = 2 the cached value IS behind, and the
+// ordinary comparison says the opposite. The quantities that are actually
+// meaningful are differences, and they are what the code compares.
+//
+//   * PRODUCER. Let `h` be the producer's own head and write every difference
+//     modulo 2^width(std::size_t):
+//
+//         real_occupancy   = h - real_tail
+//         cached_occupancy = h - cached_tail
+//         remote_progress  = real_tail - cached_tail
+//
+//     `tail` only ever increases, so cached_tail is a past value of tail and
+//     remote_progress is a small non-negative distance. Substituting:
+//
+//         cached_occupancy = real_occupancy + remote_progress     (exactly)
+//
+//     The fast path proceeds only when cached_occupancy < Capacity. With
+//     remote_progress >= 0 that gives real_occupancy <= cached_occupancy <
+//     Capacity: the queue really does have room. A stale cached_tail can only
+//     make the producer UNDER-count the slots the consumer has released, i.e.
+//     report FALSE FULL and pay an extra refresh — never overwrite a slot the
+//     consumer has not released.
+//   * CONSUMER. Let `t` be the consumer's own tail. The same construction gives
+//     cached_head - t <= real_head - t, and the fast path proceeds only when
+//     cached_head - t != 0. A non-zero modular distance means at least one
+//     message was published at or before the cached observation, and `head` only
+//     ever increases, so that message is still available: real_head - t != 0 as
+//     well. A stale cached_head can only report FALSE EMPTY — never read a
+//     payload that was never published.
+//
+// Both steps are exact only because the differences above stay small: `head` and
+// `tail` never differ by more than Capacity (Phase 1's constraint, unchanged),
+// and a cached value lags its cursor by far less than 2^63, so no difference
+// aliases into a large wrapped-around value. The counter-wrap tests exercise
+// this through the ordinary API across the boundary rather than assuming it; see
+// the TEST-ONLY seed constructor below.
 //
 // Correctness still rests on the acquire loads, unchanged:
 //   * the producer's refresh `cached_tail = tail_.load(acquire)` is what orders
@@ -497,18 +540,21 @@ public:
 
     // --- Producer side (call ONLY from the single producer thread) ---------
     //
-    // The ONLY difference between the two modes is the first block below.
+    // The only algorithmic difference between the two modes is the first block
+    // below: whether the cached value is consulted before the remote cursor is
+    // read. Everything after it is byte-for-byte the same source.
     //
     // Direct: one acquire load of the remote `tail` per call, exactly as the
     // Phase-3A separated control does.
     //
-    // Cached: the thread-owned `cached_tail` is consulted first. It can only be
-    // BEHIND the real tail, so `h - cached_tail < Capacity` proves the queue
-    // cannot be full, and the remote load is skipped. Otherwise the cached value
-    // is refreshed with exactly the same acquire load the baseline performs, and
-    // the test is repeated. A stale cached value can therefore only cause an
-    // extra refresh and a FALSE FULL, never a slot reuse the consumer has not
-    // released.
+    // Cached: the thread-owned `cached_tail` is consulted first. The modular
+    // distance `h - cached_tail` is `cached_occupancy`, and the bounded-distance
+    // invariant keeps it <= Capacity, so the test below is `cached_occupancy <
+    // Capacity` — which proves the queue cannot be full and skips the remote
+    // load. Otherwise the cached value is refreshed with exactly the same
+    // acquire load the baseline performs, and the test is repeated. A stale
+    // cached value can therefore only cause an extra refresh and a FALSE FULL,
+    // never a slot reuse the consumer has not released.
     //
     // Both modes then perform the identical payload write and the identical
     // release store. The release store is what publishes the payload and is
@@ -559,12 +605,15 @@ public:
 
     // --- Consumer side (call ONLY from the single consumer thread) ---------
     //
-    // Dual to the producer. `cached_head` can only be BEHIND the real head, so
-    // `cached_head != t` proves data is available (given the invariant
-    // t <= cached_head, which the loop below maintains) and the remote load is
-    // skipped. Otherwise the cached value is refreshed with the same acquire
-    // load the baseline performs. A stale cached value can cause a FALSE EMPTY,
-    // never a read of a payload that has not been published.
+    // Dual to the producer. The modular distance `cached_head - t` is the
+    // number of messages that were available as of the cached observation, so
+    // `cached_head != t` means that distance is non-zero and data is available
+    // (the invariant that cached_head lies chronologically between t and the
+    // real head, never outside them, is what the refresh below maintains) and
+    // the remote load is skipped. Otherwise the cached value is refreshed with
+    // the same acquire load the baseline performs. A stale cached value can
+    // cause a FALSE EMPTY, never a read of a payload that has not been
+    // published.
     bool try_pop(T& out) noexcept(std::is_nothrow_move_assignable_v<T>) {
         const std::size_t t = cursors_.tail.load(std::memory_order_relaxed);
         if constexpr (Mode == RemoteCursorMode::Cached) {

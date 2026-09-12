@@ -6,7 +6,11 @@
 // the SAME footprint, the SAME cursor placement, the SAME capacity, the SAME
 // slot indexing, the SAME publication protocol, the SAME retry/yield harness and
 // the SAME message types, run in two variants that differ in exactly ONE
-// intended implementation treatment:
+// intended algorithmic treatment — remote-cursor caching. Reduced remote-load
+// frequency is the primary mechanism of that treatment; the treatment also
+// carries its own local fast-path bookkeeping (a cached-value read, a
+// comparison and a branch), so a measured difference here does NOT isolate the
+// cost of a single remote atomic load:
 //
 //     baseline  — the Phase-3A separated algorithm: the producer performs an
 //                 acquire load of the consumer's `tail` on EVERY try_push, and

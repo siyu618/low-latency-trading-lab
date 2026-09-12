@@ -33,6 +33,7 @@ summary_vs_raw_verification=VERIFIED for every process
 | `summaries/` | one process summary per canonical process |
 | `stderr/` | the layout-verification trace of each canonical process |
 | `mechanism/` | the instrumented leg: raw, summaries and stderr |
+| `mechanism/ATTEMPTS.csv` | **DERIVED** attempt-normalized mechanism metrics (`loads_per_attempt`, the primary mechanism metric). Computed from `mechanism/raw/*.csv`; no raw file was edited and no new measurement was taken. |
 | `summary.csv` | pooled per-process view (SECONDARY) |
 | `paired_summary.csv` | the paired ratios (PRIMARY), machine-readable |
 | `PAIRED_COMPARISON.md` | the paired analysis (PRIMARY) |

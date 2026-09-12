@@ -13,16 +13,28 @@ Phase 3A moved *where* the cursors live. Phase 3B holds placement fixed at the
 layout Phase 3A verified, and moves only *how often* each thread reads the
 other's cursor.
 
-**Phase 3B changes ONE implementation treatment: the frequency of remote cursor
-loads.** As in Phase 3A, "one variable" means the two implementations differ in
-exactly one intentional treatment. It does **not** mean the two legs' processes
-are identical in every respect: each leg runs as an independent process with its
-own independently allocated queue object, so absolute addresses, scheduler
-placement, DVFS and thermal state, and background-system state all differ and
-are **not** eliminated by construction. Those nuisance variables are handled by
-the design — adjacent process pairing, balanced AB/BA ordering, four repeated
-sessions — and by the four-session directional-stability criterion (§3.3,
-§4.4), not by construction.
+**The two variants differ in one intended algorithmic treatment: remote-cursor
+caching** (`SeparatedBaseline` reads the remote cursor directly; 
+`SeparatedCachedRemoteCursor` keeps a thread-owned cached copy). As in Phase 3A,
+"one treatment" means the two implementations differ in exactly one *intended*
+change. It does **not** mean the two variants are otherwise identical, and the
+distinction matters for how the result may be read:
+
+**Reduced remote-load frequency is the primary mechanism of that treatment, but
+the treatment also carries its local fast-path bookkeeping cost.** Caching
+necessarily introduces a thread-owned cached-cursor read, a comparison and a
+branch, and occasional cached-cursor updates. It is therefore **not** a pure
+"fewer remote atomic loads" manipulation, and no throughput difference measured
+here may be described as isolating the cost of a single remote atomic load
+(§6.2, §7.2).
+
+Nor are the two legs' processes identical in every respect: each leg runs as an
+independent process with its own independently allocated queue object, so
+absolute addresses, scheduler placement, DVFS and thermal state, and
+background-system state all differ and are **not** eliminated by construction.
+Those nuisance variables are handled by the design — adjacent process pairing,
+balanced AB/BA ordering, four repeated sessions — and by the four-session
+directional-stability criterion (§3.3, §4.4), not by construction.
 
 There is no batching, no changed memory ordering, no CAS, no MPSC/MPMC, no
 affinity or NUMA tuning, and no tail-latency instrumentation anywhere in this
@@ -168,7 +180,7 @@ document treats them as having been measured together.
 re-instantiated through the Phase-3B template, so that the two variants can
 share one algorithm body (§2.2).
 
-### 2.2 One algorithm body, so the "only one variable" claim is structural
+### 2.2 One algorithm body, so the "one intended treatment" claim is structural
 
 The two variants are **one template** parameterised by a compile-time mode, not
 two copy-pasted implementations:
@@ -190,28 +202,67 @@ two similar types — it is *the same type*, and it cannot differ. The
 compile-time `static_assert`s on the block's size, alignment and member offsets
 (§2.4) are therefore satisfied by both variants simultaneously.
 
+**What "one intended treatment" quantifies over — and what it does not.** It is
+a claim about the **algorithm and the object layout**: everything listed above
+is identical by construction, and the single intended change is remote-cursor
+caching. It is **not** a claim that the two variants differ in one *machine-level*
+effect. Two consequences follow, and both are load-bearing:
+
+* The cached variant is a **distinct template instantiation** and therefore has
+  its own emitted instruction sequence and its own code addresses, even though
+  both are built into the same executable (§7.2, §7.5).
+* The treatment **bundles** the reduced remote-load frequency together with the
+  fast-path bookkeeping that produces it — a thread-owned cached-cursor read, a
+  comparison and a branch, plus occasional cached-value updates. This design
+  does not separate those, so a measured throughput difference may not be
+  attributed to the remote-load count alone.
+
 ### 2.3 The correctness argument — why a stale cached value is safe
 
-**The cached copies can only ever be BEHIND reality, never ahead of it.**
-Both cursors are monotonically increasing `std::size_t` counters (§2.6), so:
+**The cached copies can only ever be BEHIND reality, never ahead of it — and
+"behind" must be stated as a modular distance, not as an ordinary comparison.**
+Both cursors are monotonically increasing `std::size_t` counters that are
+allowed to wrap. Writing `cached_tail <= tail` would therefore be wrong as a
+statement of the invariant: at `cached_tail = SIZE_MAX - 3` and `tail = 2` the
+cached value *is* behind, and the ordinary comparison reports the opposite. The
+quantities that carry the argument are differences, evaluated modulo
+2^width(`std::size_t`), and differences are what the code actually compares.
 
-* `cached_tail` holds a value the real `tail` had at some earlier moment, and
-  `tail` only increases, so **`cached_tail <= tail`** always holds.
-* `cached_head` holds a value the real `head` had at some earlier moment, so
-  **`cached_head <= head`** always holds.
+* **Producer.** With `h` the producer's own head, define
+
+  ```
+  real_occupancy   = h - real_tail
+  cached_occupancy = h - cached_tail
+  remote_progress  = real_tail - cached_tail
+  ```
+
+  `tail` only ever increases, so `cached_tail` is a past value of `tail` and
+  `remote_progress` is a small non-negative distance. Substituting gives the
+  identity
+
+  ```
+  cached_occupancy = real_occupancy + remote_progress        (exactly)
+  ```
+
+  so `cached_occupancy >= real_occupancy`: the cached view can only
+  *over*-state how full the queue is.
+
+* **Consumer.** With `t` the consumer's own tail, the same construction gives
+  `cached_head - t <= real_head - t`, so the cached view can only
+  *under*-state how much data is available.
 
 The two failure modes that follow are both **conservative**:
 
 | stale value | what the thread wrongly concludes | consequence |
 |---|---|---|
-| `cached_tail < tail` | "the queue may be full" (FALSE FULL) | producer refreshes and may refuse a push that would in fact have fit |
-| `cached_head < head` | "the queue may be empty" (FALSE EMPTY) | consumer refreshes and may refuse a pop that would in fact have succeeded |
+| `cached_tail` behind `tail` | "the queue may be full" (FALSE FULL) — `cached_occupancy` is at least `real_occupancy` | producer refreshes and may refuse a push that would in fact have fit |
+| `cached_head` behind `head` | "the queue may be empty" (FALSE EMPTY) — `cached_head - t` is at most `real_head - t` | consumer refreshes and may refuse a pop that would in fact have succeeded |
 
 Neither can cause a slot to be reused before the consumer has released it, and
 neither can expose a payload the producer has not published. The producer's
-abbreviated test `head - cached_tail == Capacity` can only *under*-estimate the
+abbreviated test `h - cached_tail == Capacity` can only *under*-estimate the
 free space, never over-estimate it; the consumer's abbreviated test
-`cached_head == tail` can only *under*-estimate the published count. A false
+`cached_head == t` can only *under*-estimate the published count. A false
 negative costs a refresh and a retry; a false positive is impossible.
 
 **The two induction steps that make the abbreviated check exact.** The claim is
@@ -219,26 +270,33 @@ not merely "a stale cache is conservative" but "the cached variant accepts
 exactly the pushes/pops the baseline accepts, up to refresh timing":
 
 1. *No slot is written before it is free.* The producer writes
-   `slots_[head & (Capacity-1)]` only after establishing
-   `head - cached_tail < Capacity`, hence `head - tail < Capacity` (since
-   `cached_tail <= tail`). The slot being written is therefore at least
-   `Capacity` positions behind `head`, which is precisely the slot the consumer
-   has already finished reading. The acquire load that produced `cached_tail` is
-   what makes that "already finished" ordering observable, and it is still
-   present (§1.3).
+   `slots_[h & (Capacity-1)]` only after establishing
+   `cached_occupancy < Capacity`. Since `cached_occupancy = real_occupancy +
+   remote_progress` with `remote_progress >= 0`, that gives
+   `real_occupancy <= cached_occupancy < Capacity`, i.e. `h - real_tail <
+   Capacity`. The slot being written is therefore at least `Capacity` positions
+   behind `h` — precisely the slot the consumer has already finished reading.
+   The acquire load that produced `cached_tail` is what makes that "already
+   finished" ordering observable, and it is still present (§1.3).
 2. *No payload is read before it is published.* The consumer reads
-   `slots_[tail & (Capacity-1)]` only after establishing `cached_head != tail`,
-   hence `head != tail` (since `cached_head <= head`, a strict inequality
-   against a stale value implies the real `head` has moved past `tail`). The
-   acquire load that produced `cached_head` is the edge that orders the
-   producer's payload write before this read.
+   `slots_[t & (Capacity-1)]` only after establishing `cached_head - t != 0`.
+   A non-zero modular distance means at least one message was published at or
+   before the cached observation, and `head` only ever increases, so that
+   message is still available: `real_head - t != 0`. The acquire load that
+   produced `cached_head` is the edge that orders the producer's payload write
+   before this read.
 
 **On counter wrap.** `head == tail` means empty and `head - tail == Capacity`
 means full, so the actual number of messages in flight must never reach
 `2^N` for an N-bit counter. Phase 1 already established that the counters are
 unsigned and that the difference arithmetic is correct across wrap; Phase 3B
-preserves those assumptions unchanged, and adds no signed arithmetic. The tests
-cover physical ring wrap-around specifically (§3.4).
+preserves those assumptions unchanged, and adds no signed arithmetic. The two
+steps above are exact only because every difference stays small: `head` and
+`tail` never differ by more than `Capacity`, and a cached value lags its cursor
+by far less than `2^63`, so no difference aliases into a large wrapped-around
+value. The tests cover this directly — they drive the ordinary API across the
+physical wrap boundary and assert the lemma as a modular difference rather than
+as an ordering (§3.4).
 
 **Construction.** Both cached values are initialised to `0`, matching the
 initial `head` and `tail`. Construction performs no remote acquire at all: there
@@ -599,9 +657,21 @@ Two features of this table are worth separating:
   1 (0.90–1.13), i.e. the split is not two wildly different populations but a
   small effect whose sign does not survive the AB/BA swap. That is reported as
   inconclusive, not as a median.
-* **The magnitude is not uniform in message size.** The penalty grows with
-  message size: medians of 1.06–2.00 at 8 B, 1.03–1.11 at 32 B, and 1.27–1.57 at
-  64 B. The largest single median is **2.005 at 8 B / 4096**.
+* **The magnitude is not monotonic in message size.** Message size clearly
+  interacts with the result, but not in a simple increasing way:
+  * **8 B** — a stable baseline advantage whose *magnitude is strongly
+    capacity-dependent*: 1.087 at capacity 1024, **2.005 at 4096**, 1.103 at
+    65536. **8 B / 4096 is the largest regression in the entire dataset, and it
+    sits at the smallest message size.**
+  * **32 B** — a small effect whose direction does not survive the AB/BA swap at
+    any capacity (all three cells split); medians 1.033–1.107.
+  * **64 B** — a *consistently moderate* baseline advantage across all three
+    capacities, 1.270–1.569.
+
+  So "the penalty grows with message size" is **false as stated**: it would have
+  to explain why the largest penalty sits at 8 B, and why 32 B is smaller than
+  both of its neighbours. Message size interacts with the result; the
+  relationship is not monotonic in it.
 
 ### 4.5 The pooled matrix, as a secondary view
 
@@ -621,10 +691,78 @@ the per-session spread.
 
 ### 4.6 MEASURED MECHANISM — remote cursor loads
 
-From the **separate** instrumented leg (`mechanism/`), reported as loads **per
-message**. These are software counts of loads the program executed; they are
-**not** hardware cache-miss or coherence counters, and nothing here is described
-in those terms (§6.1).
+From the **separate** instrumented leg (`mechanism/`). These are software counts
+of loads the program executed; they are **not** hardware cache-miss or coherence
+counters, and nothing here is described in those terms (§6.1).
+
+There are two ways to normalize the same counters, and they answer different
+questions. The attempt-normalized one is primary.
+
+#### Primary: loads per try attempt
+
+```
+producer_attempts = message_count + producer_full_retries
+consumer_attempts = message_count + consumer_empty_retries
+```
+
+| bytes | capacity | producer L/attempt (cached) | consumer L/attempt (cached) | producer refresh rate | consumer refresh rate |
+|---|---|---|---|---|---|
+| 8 | 1024 | 0.083036 | 0.951795 | 8.30% | 95.18% |
+| 8 | 4096 | 0.017692 | 0.971932 | 1.77% | 97.19% |
+| 8 | 65536 | 0.0000152 | 0.994197 | 0.00152% | 99.42% |
+| 32 | 1024 | 0.269509 | 0.960854 | 26.95% | 96.09% |
+| 32 | 4096 | 0.007859 | 0.992189 | 0.786% | 99.22% |
+| 32 | 65536 | 0.0000152 | 0.996582 | 0.00152% | 99.66% |
+| 64 | 1024 | 0.982862 | 0.001078 | 98.29% | 0.108% |
+| 64 | 4096 | 0.990389 | 0.000277 | 99.04% | 0.0277% |
+| 64 | 65536 | 0.985637 | 0.0000223 | 98.56% | 0.00223% |
+
+The baseline is **exactly 1.000000000** on both sides in every cell — verified
+in integer arithmetic on all 27 baseline repetitions, since the baseline
+performs one remote load per try operation by construction. The cached rates are
+therefore directly comparable to a known 1.0, not to an assumed denominator.
+
+**No cached cell exceeds 1.000000000 loads per attempt on either side; the
+maximum anywhere in the matrix is 0.996582097.** Caching never made a try
+operation *more* likely to read the remote cursor. That is the treatment doing
+what it was designed to do, and it is directly counted.
+
+**The mechanism the attempt-normalized data exposes:** *the side that can make
+sustained progress reuses its cached remote cursor across many attempts, while
+the side blocked on genuinely-full or genuinely-empty state reaches the
+may-fail path on nearly every failed attempt and therefore refreshes on nearly
+every one of them.* A cached value can only say the queue *may* be full or
+empty; if the real remote cursor has not moved, re-reading the cache cannot
+change that answer, so the only way to learn anything is to go and look at the
+real cursor. That is the baseline's load count plus one comparison.
+
+The side it lands on differs by message size, and the three sizes are described
+separately here and in `MECHANISM.md`:
+
+* **8 B** — the consumer is the blocked side (it also waits: 5–20 empty retries
+  per message, §4.7). Its refresh rate stays at **95.2%–99.4%**, essentially the
+  baseline's 100%, while the producer's falls to 8.30% → 1.77% → 0.00152% as
+  capacity grows.
+* **32 B** — the same shape, with the producer's rate at **26.95% → 0.786% →
+  0.00152%** and the consumer's still **96.1%–99.7%**. The 32 B cells are *not*
+  a copy of the 8 B ones: the producer's benefit is much smaller at capacity
+  1024 (26.95% vs 8.30%), and on the secondary metric below the consumer's
+  loads/message *fall* at two of the three capacities.
+* **64 B** — the roles swap. The consumer's refresh rate collapses to **0.108% →
+  0.0277% → 0.00223%** while the producer's stays at **98.3%–99.0%**,
+  essentially the baseline's 100%.
+
+At the top capacities the progressing side refreshes on roughly **1 attempt in
+45,000–66,000**.
+
+#### Secondary: loads per delivered message, and its confound
+
+Kept because the increase cases are real and worth showing. The relationship is
+exact:
+
+```
+loads/message = loads/attempt × attempts/message
+```
 
 | bytes | capacity | side | baseline loads/msg | cached loads/msg | change |
 |---|---|---|---|---|---|
@@ -647,28 +785,26 @@ in those terms (§6.1).
 | 64 | 65536 | producer | 2.027 | 6.028 | 3.0× **more** |
 | 64 | 65536 | consumer | 1.000 | 0.0000223 | **44,910× fewer** |
 
-**The remote-load reduction is directly verified, and it is real — but it is
-one-sided, and which side it lands on depends on message size.** At 8 B and
-32 B the *producer* is the side whose loads collapse (up to ~70,000×) while the
-*consumer* performs up to 4.1× **more** loads. At 64 B the pattern inverts: the
-*consumer*'s loads collapse (up to ~44,910×) while the *producer* performs ~3×
-**more**.
-
-The mechanism is therefore not "fewer remote loads"; it is **fewer remote loads
-on one side, more on the other**. A summary that reports only the collapsing
-side would misdescribe the result.
+**Every "more" in that table is retry volume, not a higher per-attempt refresh
+rate — and this must not be described as the cached algorithm performing more
+remote loads for a given try operation.** In all seven increase cases the
+loads/attempt column *fell*; the total rose because `attempts/message` rose by
+more. For example, 8 B / 65536 consumer: loads/attempt fell 1.000000 → 0.994197
+while attempts/message rose 2.77 → 11.48, so loads/message rose 4.1× even though
+the cache removed loads on a per-attempt basis. `MECHANISM.md` prints the
+decomposition for all seven.
 
 **A caveat that limits how these counts may be combined with §4.3.** The counts
 are end-to-end totals for a whole run, so a variant that takes longer to move
 the same number of messages also gets more opportunities to reach the failure
 path and load again. Part of the *increase* on the losing side is therefore a
-consequence of the slowdown rather than a cause of it, and these counters cannot
-separate the two. Additionally, the instrumented leg is a *different
-instantiation* from the canonical one (§3.2); its own `ns/msg` and retry rates
-differ from the canonical leg's, so the load counts and the §4.3 throughput
-ratios come from **separate runs in generally-similar but not identical
-regimes**. No "loads saved per nanosecond" arithmetic is performed anywhere in
-this document, and none is supported by this dataset.
+consequence of that run's retry behaviour rather than a cause of it, and these
+counters cannot separate the two. Additionally, the instrumented leg is a
+*different instantiation* from the canonical one (§3.2); its own `ns/msg` and
+retry rates differ from the canonical leg's, so the load counts and the §4.3
+throughput ratios come from **separate runs in generally-similar but not
+identical regimes**. No "loads saved per nanosecond" arithmetic is performed
+anywhere in this document, and none is supported by this dataset.
 
 ### 4.7 Backpressure and the producer/consumer balance
 
@@ -696,13 +832,25 @@ Per-message harness retry counts, canonical leg, summed over the four sessions
 | 64 | 65536 | baseline | 2.94 | 0.00 |
 | 64 | 65536 | cached | 6.84 | 0.00 |
 
-The side that waits **flips with message size, in both variants**: at 8 B and
-32 B the consumer is the pacer (5–20 empty retries per message against ≈0 full
-retries), while at 64 B the producer is the pacer (3–7 full retries per message
-against ≈0 empty retries). Caching did not create that asymmetry — it is present
-in the baseline too — but at 64 B the cached variant **shifts it further toward
-the producer**, raising producer full retries from 5.05 → 5.99, 4.25 → 6.66 and
-2.94 → 6.84.
+**Which side waits flips with message size, in both variants — and the
+pace-limiting side is the *other* one.** A thread retries only when the queue
+will not let it through, so the side that accumulates retries is the side being
+held up, and the remote side is what it is waiting for. Reading the table that
+way:
+
+* At **8 B and 32 B** the **consumer** is the side that waits (5–20 empty
+  retries per message against ≈0 full retries), so the **producer** is the
+  pace-limiting / bottleneck side.
+* At **64 B** the **producer** is the side that waits (3–7 full retries per
+  message against ≈0 empty retries), so the **consumer** is the pace-limiting /
+  bottleneck side.
+
+Caching did not create that asymmetry — it is present in the baseline too — but
+at 64 B the cached variant **makes the producer wait more**, raising producer
+full retries from 5.05 → 5.99, 4.25 → 6.66 and 2.94 → 6.84, i.e. it pushes the
+consumer further into the pace-limiting role. At 8 B and 32 B the cached variant
+does not move the waiting side: the consumer still waits, and the producer is
+still the pace-limiting side.
 
 ---
 
@@ -710,31 +858,78 @@ the producer**, raising producer full retries from 5.05 → 5.99, 4.25 → 6.66 
 
 **1. How much does remote cursor caching reduce actual remote cursor
 refreshes?**
-On one side, enormously: up to **~70,000×** fewer producer loads (8 B / 65536)
-and up to **~44,910×** fewer consumer loads (64 B / 65536). On the other side it
-**increases** them, by up to **4.1×** (consumer, 8 B / 65536) and **~3×**
-(producer, 64 B). It is not a uniform reduction in remote loads; it is a
-relocation of them (§4.6).
+Measured **per try attempt** — the metric that speaks to the mechanism, derived
+in `mechanism/ATTEMPTS.csv` and tabulated in `MECHANISM.md` — the answer is
+unambiguous: **on one side almost completely, on the other side not at all.**
+
+* On the side that can make sustained progress, the refresh probability falls
+  from the baseline's exact **1.000000000 per attempt** to 8.30% (8 B / 1024),
+  1.77% (8 B / 4096), 0.00152% (8 B / 65536), 26.95% (32 B / 1024), 0.786%
+  (32 B / 4096), 0.00152% (32 B / 65536), 0.108% (64 B / 1024), 0.0277%
+  (64 B / 4096) and 0.00223% (64 B / 65536).
+* On the side blocked on genuinely-full or genuinely-empty state, the refresh
+  probability stays at **95.2%–99.7%** of attempts — essentially the baseline's
+  100%. A thread that keeps finding the queue empty cannot learn anything from a
+  cached `head`, because the real `head` has not moved, so it refreshes on every
+  failed attempt.
+* **No cached cell exceeds 1.000000000 loads per attempt on either side.** The
+  maximum anywhere in the matrix is 0.996582097. Caching never made a try
+  operation *more* likely to read the remote cursor.
+
+The **end-to-end** metric (loads per delivered message) tells a noisier story,
+because it also carries retry volume:
+
+```
+loads/message = loads/attempt × attempts/message
+```
+
+On that metric the reduction reaches **~70,102×** (8 B / 65536 producer) and
+**~44,910×** (64 B / 65536 consumer), while the opposite side shows an
+*increase* of up to **4.1×** (8 B / 65536 consumer) and **~3×** (64 B
+producer). Those increases are retry volume, not a higher per-attempt refresh
+rate — in every one of those cells the per-attempt rate *fell* (§4.6 and
+`MECHANISM.md` decompose all seven cases). So on the mechanism metric the
+reduction is one-sided but never negative; on the end-to-end metric it can
+change sign, and when it does the cause is attempts, not caching.
 
 **2. Does lower remote-load frequency translate into higher end-to-end
 throughput?**
 **No.** Every directionally stable cell is **baseline-faster**, with median
 ratios from 1.087 to 2.005. No cell in this dataset is stably cached-faster. The
-one-sided load reduction of question 1 produced no throughput gain anywhere it
-was stable, and the largest penalties appear in cells where the load reduction
-was largest (§5, question 8).
+one-sided per-attempt load reduction of question 1 produced no throughput gain
+anywhere it was stable.
+
+The magnitude of the load reduction does not predict the magnitude of the
+throughput change, in either direction (§5, question 8).
 
 **3. Is the effect stable across message sizes?**
-**No — message size is the discriminating axis.** All three 8 B cells and all
-three 64 B cells are stable, but the penalty grows with size (8 B: 1.087–2.005;
-32 B: 1.033–1.107, all split; 64 B: 1.270–1.569). The *mechanism* also inverts
-with size: at 8 B/32 B the producer's loads collapse and the consumer's rise; at
-64 B the reverse.
+**Message size interacts with the result, but not monotonically.** Splitting the
+matrix by size:
+
+* **8 B — stable but strongly capacity-dependent.** All three cells are stable
+  4/4 baseline-faster, and the magnitude swings from 1.087 (capacity 1024) to
+  **2.005** (4096) and back to 1.103 (65536). The largest regression in the
+  dataset is here, at the *smallest* message size.
+* **32 B — small and directionally unstable.** All three cells are SPLIT, with
+  ratios clustered near 1 (0.90–1.13). No directional claim.
+* **64 B — consistently moderate.** All three cells stable 4/4 baseline-faster,
+  1.270–1.569.
+
+The *mechanism* also differs by size, and not as a binary flip: at 8 B and 32 B
+the producer is the side that benefits while the consumer's per-attempt rate is
+essentially unchanged; at 64 B the roles swap. On the end-to-end metric the 32 B
+cells do not even move together — the consumer's loads/message fall at 32 B /
+1024 and 32 B / 4096 and rise slightly at 32 B / 65536.
 
 **4. Is the effect stable across capacities?**
-**Within a message size, yes — capacity is not the discriminating axis.** At 8 B
-and at 64 B all three capacities give the same stable verdict (baseline-faster);
-at 32 B all three are split. Capacity changes the magnitude but not the sign.
+**Capacity does not change the directional verdict within the 8 B and 64 B
+groups, but it materially changes the magnitude — especially at 8 B, and
+capacity is not irrelevant.** At 8 B and 64 B all three capacities give the same
+stable verdict (baseline-faster); at 32 B all three are split. But "same sign"
+is not "same size": the 8 B group spans 1.087 → 2.005 → 1.103 across capacities,
+a factor of nearly two between the extremes of one message size, while the 64 B
+group moves only 1.270 → 1.569. There is no single number per message size that
+this dataset supports.
 
 **5. Which cells remain inconclusive?**
 **32 B / 1024, 32 B / 4096 and 32 B / 65536.** All three are SPLIT (1–3, 1–3,
@@ -743,19 +938,28 @@ not survive the AB/BA swap and no directional claim is made. Every other cell is
 directionally stable.
 
 **6. How do producer-full and consumer-empty retry patterns change?**
-The pacer flips with message size in both variants (§4.7). At 8 B and 32 B the
-consumer's empty retries dominate (5–20 per message) and the cached variant
-changes them only modestly (e.g. 13.97 → 10.89 at 8 B / 65536). At 64 B the
-producer is the pacer and the cached variant **raises** its full retries in all
-three cells (5.05 → 5.99, 4.25 → 6.66, 2.94 → 6.84) — the same cells with the
-largest throughput penalty. These counters cannot distinguish cause from effect
-(§7.4), and no causal claim is made from them.
+Which side *waits* flips with message size, in both variants, and the
+pace-limiting side is the other one (§4.7). At 8 B and 32 B the consumer's empty
+retries dominate (5–20 per message, against ≈0 full retries), so the consumer is
+the waiting side and the **producer** is the pace-limiting side; the cached
+variant changes those empty retries only modestly (e.g. 13.97 → 10.89 at 8 B /
+65536). At 64 B the producer is the waiting side (3–7 full retries per message,
+against ≈0 empty retries), so the **consumer** is the pace-limiting side, and
+the cached variant **raises** the producer's full retries in all three cells
+(5.05 → 5.99, 4.25 → 6.66, 2.94 → 6.84) — i.e. it makes the producer wait more.
+Those three cells are not the three largest penalties in the dataset (the
+largest is 8 B / 4096, at 2.005), so no correspondence between retry movement
+and throughput movement should be read out of this. These counters cannot
+distinguish cause from effect (§7.4), and no causal claim is made from them.
 
 **7. Does remote cursor caching alter the producer/consumer rate balance?**
-It does not create the balance — the flip between consumer-paced (8 B/32 B) and
-producer-paced (64 B) is present in the **baseline** as well. Within 64 B the
-cached variant shifts the balance further toward the producer by increasing its
-full retries roughly 1.2–2.3×. Elsewhere the balance is broadly preserved.
+It does not create the balance — the flip between producer-paced (8 B / 32 B,
+where the consumer waits) and consumer-paced (64 B, where the producer waits) is
+present in the **baseline** as well. Within 64 B the cached variant shifts the
+balance further in that same direction by increasing the producer's full retries
+roughly 1.2–2.3×, deepening the consumer's pace-limiting role. At 8 B and 32 B
+the balance is broadly preserved: the consumer still waits and the producer is
+still pace-limiting.
 
 **8. Are there cells where remote loads fall dramatically but throughput does
 not improve?**
@@ -777,6 +981,23 @@ loads coexists with a stable throughput **regression**. The mechanism was
 achieved; the wall-clock benefit was not. This is exactly the outcome §6.2
 anticipated, and it is the reason no result in this document treats mechanism
 reduction as evidence of performance improvement.
+
+**The size of the load reduction does not predict the size of the throughput
+change — and this dataset actively contradicts a monotonic reading of the two.**
+Compare the cells:
+
+| cell | one-sided per-message load reduction | median throughput ratio |
+|---|---|---|
+| 8 B / 65536 | ~70,102× (producer) | 1.103 |
+| 8 B / 4096 | ~57× (producer) | **2.005 — largest in the dataset** |
+| 64 B / 65536 | ~44,910× (consumer) | 1.569 |
+
+8 B / 65536 has **three orders of magnitude more** load reduction than 8 B /
+4096 yet less than half its throughput penalty, and 64 B / 65536 has a
+comparable reduction to 8 B / 65536 with a *larger* penalty. Any account of this
+dataset that ties regression magnitude to reduction magnitude is contradicted by
+these three rows. No functional relationship between the two is fitted here, and
+none is claimed.
 
 ---
 
@@ -887,47 +1108,68 @@ cannot distinguish cause from effect — a faster side simply arrives first and
 waits more. They are reported because they reveal **which regime** a process ran
 in (§7.5), not as an explanation of any ratio.
 
-### 7.5 The cell shape is strongly bimodal on the development host
+### 7.5 Strong regime variation, of unidentified cause
 
 This is the most important limitation in this document.
 
-This cell shape has **two regimes** on the canonical host, and which one a run
-lands in is selected by the *compiled binary's code placement*, not by the
-variant being measured. The diagnostic evidence:
+**The benchmark exhibits strong run-to-run and build-to-build regime variation
+on the development host.** The same cell can complete at very different
+`ns/message` depending on which side of the retry/yield feedback loop a process
+settles into, and the retry counts between regimes differ by orders of
+magnitude. This much is directly observed in the committed dataset: the raw
+`producer_full_retries` / `consumer_empty_retries` columns show canonical
+processes of the same cell sitting in visibly different states.
 
-* the same source, compiled two ways, produced `producer_full_retries ≈ 22.8 k`
-  / `consumer_empty_retries ≈ 42.8 M` in one build and `≈ 845 k` / `≈ 875 k` in
-  the other — a ~50× swing in retry counts;
-* the producer lambda extracted from a slow build and a fast build was
-  **83 instructions, byte-identical**: the code did not change, its placement
-  did;
-* a fixed-work dependent-add probe read a flat 0.744–0.766 ns/iteration whether
-  the benchmark was fast or slow, so the CPU was in the same speed regime in
-  both cases;
-* adding one unrelated template instantiation to the same translation unit moved
-  the path from ~37 ns/message to ~16 ns/message.
+**Phase 3B does not isolate the cause of that bimodality.** A separate
+diagnostic, run outside this dataset, suggested code-layout sensitivity as *one
+possible contributor*: recompiling the same source two ways moved the cell
+between regimes, and the extracted producer lambda was byte-identical in the
+instruction count examined. That is suggestive and it is why this limitation is
+documented so prominently — but the diagnostic is **not sufficient to establish
+code placement as the cause**, for reasons that are worth stating plainly:
+
+* The repository does **not** preserve, alongside the canonical dataset, a
+  reproducible diagnostic package — diagnostic source, exact build commands,
+  binaries and hashes, disassembly, raw timing results and probe results — that
+  would let a reader re-derive the claim. Without it, the finding is a report,
+  not evidence this dataset carries.
+* The `baseline` and `cached` variants are **different template
+  instantiations**, so they have **different emitted instruction sequences and
+  different code addresses even inside one executable**. "Same binary" does not
+  imply "same code", and it does not imply "same placement".
+* The two legs of a pair run as **independent processes**, which are not
+  guaranteed to share scheduler placement, core type, migration history, DVFS
+  state, thermal state or background load. A shared executable constrains the
+  compiler and toolchain, not the runtime environment.
 
 Consequences, all of which shape how this dataset may be read:
 
-1. **Both Phase-3B variants live in the same binary**, so the two processes of a
-   pair share code placement and therefore share a regime. The comparison is
-   internally valid even though the absolute level is regime-dependent.
-2. **The balanced AB/BA design is the mitigation** for drift *between* sessions,
-   and the four-session directional rule is what prevents a regime difference
-   from being read as a treatment difference.
-3. **The raw retry counts are preserved per repetition** so the regime of every
+1. **Both variants are built into the same benchmark executable, under the same
+   compiler and options.** That supports **build and toolchain comparability**.
+   It does **not** establish identical runtime state or a shared regime: the two
+   variants are distinct instantiations, and the two processes are independent.
+2. **The balanced adjacent AB/BA design mitigates temporal ordering bias** — it
+   keeps the two legs close in time and swaps which runs first — but it does not
+   guarantee identical machine state or regime for the pair, and it does not
+   remove the variation itself. The four-session directional rule is what
+   prevents a regime difference from being read as a treatment difference;
+   where it cannot, the cell is reported SPLIT.
+3. **The raw retry counts are preserved per repetition** so the state of every
    measured process is visible in the dataset rather than averaged away.
 4. **No Phase-3B result may be presented as resolving a difference smaller than
    the regime swing.** Where a cell's ratios are split across sessions, that is
    reported as SPLIT, not smoothed into a median.
 
 **The absolute `ns_per_message` values in this dataset are not comparable to
-Phase 3A's.** The Phase-3B benchmark binary lands in the slow regime on this
-host (Phase 3A's separated 8 B / 1024 cell measured ≈ 15.6 ns/message from its
-own binary; the Phase-3B `baseline` variant of the same cell measures several
-times that), while both Phase-3B variants are measured inside the same regime.
-The *comparison between the two variants* is the result; the *level* is a
-property of the binary and this host.
+Phase 3A's.** Phase 3A's separated 8 B / 1024 cell measured ≈ 15.6 ns/message
+from its own binary; the Phase-3B `baseline` variant of the same cell measures
+several times that, with roughly an order of magnitude more consumer spinning.
+Both figures come from different executables, so the level is a property of the
+binary and this host rather than of the queue design — and **within** Phase 3B,
+the two variants still run in independent processes, so even the pairing does
+not make their levels directly comparable in the way a single-process
+measurement would. The *paired ratio between the two variants* is the result;
+the *level* is not portable.
 
 ### 7.6 Scope of the dataset
 

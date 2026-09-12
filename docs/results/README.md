@@ -112,8 +112,10 @@ measurement family. Transient raw runs land in repo-root `results/`
   cells (2 variants × 3 message sizes × 3 capacities), 10M messages per
   repetition, 5 measured repetitions per process, 4 sessions per cell in a
   **balanced AB/BA** order (2 baseline-first + 2 cached-first), 72 processes, one
-  implementation per process. **Remote cursor refresh frequency is the only
-  treatment** — no batching, no memory-order change, no CAS, no MPSC/MPMC, no
+  implementation per process. **Remote-cursor caching is the only intended
+  treatment** — reduced remote-load frequency is its primary mechanism, though
+  the treatment also carries its own local fast-path bookkeeping — and there is
+  no batching, no memory-order change, no CAS, no MPSC/MPMC, no
   affinity. The release/acquire publication edge exists in **both** variants and
   was not weakened; a stale cached value can only cause a false full or a false
   empty, never a reused slot or a read of unpublished data. Cursor placement,
@@ -131,30 +133,53 @@ measurement family. Transient raw runs land in repo-root `results/`
   (`cached ÷ baseline`, `< 1` means cached is faster) in `PAIRED_COMPARISON.md`;
   the pooled matrix is secondary.
   **Result: negative — the mechanism worked and the performance did not follow.**
-  Remote cursor loads fell by up to **~44,910×** on one side of the transfer, and
-  the reduction is **one-sided**: at 8 B / 32 B the producer's loads collapse (up
-  to ~70,102×) while the consumer's rise, and at 64 B the reverse (consumer up to
-  ~44,910×, producer rising ~3×). Meanwhile the cached variant was **slower in 6
-  of 9 cells, stably across all four balanced sessions, by 1.09×–2.00×**, and 3
-  cells (all at 32 B) are inconclusive. 32 of 36 paired observations favour the
+  The primary mechanism metric is **remote loads per try attempt**
+  (`remote_loads / (message_count + retries_on_that_side)`, derived in
+  `mechanism/ATTEMPTS.csv`). The baseline is **exactly 1.000000** on both sides in
+  every cell by construction, and the cached variant is **below 1.000000 on both
+  sides in every cell** — it never refreshes more often per attempt (worst case
+  **0.996582**, 32 B/65536 consumer). End-to-end **loads per message** is a
+  secondary, confounded metric (`loads/message = loads/attempt ×
+  attempts/message`): at 8 B the producer's fall 17×–70,102× while the consumer's
+  rise 1.9×–4.1×; at 32 B the producer's fall 3×–65,806× while the consumer's
+  change is **not one-directional** (0.72× and 0.84× *down* at 1024/4096, 1.08×
+  *up* at 65536); at 64 B it reverses (consumer down 1,156×–44,910×, producer up
+  2.7×–3.1×). Where it rises, the cause is **retry volume**, not a higher
+  per-attempt refresh rate. Meanwhile the cached variant was **slower in 6 of 9
+  cells, stably across all four balanced sessions, by 1.09×–2.00×**, and 3 cells
+  (all at 32 B) are inconclusive. 32 of 36 paired observations favour the
   baseline; **no cell is stably cached-faster**. Cells exist where loads fall
   dramatically and throughput nonetheless degrades — 8 B / 4096 producer loads
-  fall ~57× with throughput **2.005× worse**, the largest penalty in the dataset.
-  Caching cannot help a thread that keeps finding the queue genuinely full or
-  genuinely empty, because the real remote cursor has not moved; seven cells show
-  the cached variant doing *more* remote loads on one side. No cache-miss,
-  coherence-transaction or cache-line-transfer count was measured, and none is
-  claimed. **These `ns/msg` levels are NOT comparable to Phase 3A's**: the cell
-  shape is strongly bimodal on this host and the compiled image's code placement
-  selects the regime, so both Phase-3B variants share one binary and therefore one
-  regime — the comparison is internally valid, the level is not portable.
+  fall ~57× with throughput **2.005× worse**, the largest penalty in the dataset,
+  while 8 B / 65536 falls ~70,102× for only a 1.103× regression: **reduction
+  magnitude alone does not predict the throughput outcome**. The message-size
+  relationship is **not monotonic** (32 B weak and directionally unstable, 64 B
+  consistently moderate, 8 B stable but strongly capacity-dependent), and capacity
+  is not irrelevant — it materially changes the magnitude at every size. Caching
+  cannot help a thread that keeps finding the queue genuinely full or genuinely
+  empty, because the real remote cursor has not moved; that is what drives the
+  seven cells where the cached variant does *more* loads/message on one side. No
+  cache-miss, coherence-transaction or cache-line-transfer count was measured, and
+  none is claimed. **These `ns/msg` levels are NOT comparable to Phase 3A's**:
+  this cell shape exhibits strong run-to-run and build-to-build regime variation
+  on this host and the swing between regimes exceeds any plausible treatment
+  effect. A separate diagnostic suggested code-layout sensitivity as one possible
+  contributor, but Phase 3B does not isolate the cause and no reproducible
+  diagnostic package is preserved. Both variants come from one executable built
+  under the same compiler and options — which supports build/toolchain
+  comparability — but each is a distinct template instantiation with its own
+  emitted machine code, and each leg is an independent process not guaranteed to
+  share scheduler placement, core type, migration history, DVFS, thermal state or
+  background load. That is neither identical code placement nor identical machine
+  regime: the comparison is internally valid, the level is not portable.
   Verified: 72 canonical processes, 360 measured repetitions, `correctness=PASS`,
   `layout_ok=PASS` and `cached_placement_ok=PASS` on every row, equal
   `object_size` / `payload_offset` across the two variants in all 9 cells,
   `instrumentation_leak_check=PASS`, summary-vs-raw verification for every
   process, `all_invariants=PASS`.
   See its `RESULTS_METADATA.md`, `LAYOUT_VERIFICATION.md`, `MECHANISM.md`,
-  `invariants.txt`, `PROVENANCE.md` and `docs/SPSC_REMOTE_CURSOR_CACHE.md`.
+  `mechanism/ATTEMPTS.csv` (derived, not measured), `invariants.txt`,
+  `PROVENANCE.md` and `docs/SPSC_REMOTE_CURSOR_CACHE.md`.
 - `spsc-false-sharing-pre3a1-payload-offset-confounded/` — the **first
   Phase-3A pass, SUPERSEDED, not canonical**. Real and self-validating: 72
   processes, 360 measured repetitions, all `correctness=PASS`, every row's cursor

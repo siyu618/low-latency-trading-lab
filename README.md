@@ -73,27 +73,44 @@ directories.
 > layout only, adding a thread-owned cached copy of the remote cursor that is
 > refreshed only when the cached value says the operation may fail — cursor
 > placement, footprint, payload offset, capacity, publication protocol and harness
-> all held identical by construction, so **remote-load frequency is the only
-> treatment**. It is **COMPLETE / FROZEN** in `docs/results/spsc-remote-cursor/`,
-> and the result is **negative**: the mechanism worked and the performance did not
-> follow. Remote cursor loads fell by up to **~44,910×** on one side of the
-> transfer (and *rose* on the other — the reduction is one-sided, and which side
-> it lands on flips with message size), while the cached variant was **slower in 6
-> of 9 cells, stably across all four balanced sessions, by 1.09×–2.00×**, with 3
-> cells inconclusive. The release/acquire publication edge still exists in both
-> variants; caching reduced its *frequency*, it did not replace it. Phase 4 (tail
-> latency) is NOT STARTED, and **no Phase-2 number is attributed to
-> false sharing** — Phase 2 verified no cursor addresses, so it cannot be cited
-> for or against the frozen layout's line placement.
+> all held identical by construction, so **remote-cursor caching is the only
+> intended treatment** — reduced remote-load frequency is its primary mechanism,
+> but the treatment also carries its own local fast-path bookkeeping (a cached
+> read, a comparison, a branch), so **no throughput difference here isolates the
+> cost of a single remote atomic load**. It is **COMPLETE / FROZEN** in
+> `docs/results/spsc-remote-cursor/`, and the result is **negative**: the
+> mechanism worked and the performance did not follow. **Per try attempt the
+> cached variant never refreshed the remote cursor more often than the baseline —
+> in any cell, on either side**; end-to-end **loads per message** fell by up to
+> **~44,910×** on one side and *rose* on the other, because the side that was
+> blocked simply attempted more times, not because it refreshed more often. Yet
+> the cached variant was **slower in 6 of 9 cells, stably across all four balanced
+> sessions, by 1.09×–2.00×**, with 3 cells inconclusive — and how far the loads
+> fell did **not** predict how much throughput suffered (8 B/4096 has a far smaller
+> reduction than 8 B/65536 but the largest penalty, ~2.005×). The release/acquire
+> publication edge still exists in both variants; caching reduced its *frequency*,
+> it did not replace it. Phase 4 (tail latency) is NOT STARTED, and **no Phase-2
+> number is attributed to false sharing** — Phase 2 verified no cursor addresses,
+> so it cannot be cited for or against the frozen layout's line placement.
 >
 > **Phase 3B's absolute `ns/message` values are NOT comparable to Phase 3A's.**
-> The cell shape is strongly bimodal on the development host and the compiled
-> binary's code placement selects the regime: Phase 3A's separated 8 B/1024 cell
-> measured ~15.6 ns/message from its own binary while the Phase-3B `baseline`
-> variant of the same cell measures ~46 ns/message, with ~10× the consumer
-> spinning. Both Phase-3B variants share one binary and therefore one regime, so
-> the *comparison* is internally valid while the *level* is a property of the
-> binary and this host. See `docs/SPSC_REMOTE_CURSOR_CACHE.md` §7.5.
+> This cell shape exhibits **strong run-to-run and build-to-build regime variation
+> on the development host**, and the swing between regimes is larger than any
+> plausible treatment effect: Phase 3A's separated 8 B/1024 cell measured
+> ~15.6 ns/message from its own binary while the Phase-3B `baseline` variant of the
+> same cell measures ~46 ns/message, with ~10× the consumer spinning. A separate
+> diagnostic, run outside this dataset, suggested code-layout sensitivity as **one
+> possible contributor** to that variation, but **Phase 3B does not isolate its
+> cause** and no reproducible diagnostic package is preserved alongside the data.
+> Both Phase-3B variants do come from **one executable built under the same
+> compiler and options**, which supports build/toolchain comparability — but each
+> variant is still a **distinct template instantiation with its own emitted machine
+> code**, and each leg runs in an **independent process** whose scheduler
+> placement, core type, migration history, DVFS, thermal state and background load
+> are not guaranteed to match. That is **not** the same as sharing runtime state or
+> regime. The balanced adjacent AB/BA design mitigates temporal ordering bias; it
+> does not guarantee identical machine state. See `docs/SPSC_REMOTE_CURSOR_CACHE.md`
+> §7.5.
 
 ## Experiments
 
@@ -857,43 +874,77 @@ payload offset across the two variants in all 9 cells).** The result is
 So **6 of 9 cells hold one direction across all four balanced sessions — all six
 baseline-faster — and 3 are inconclusive**; across all 36 paired observations,
 32 favour the baseline and 4 favour the cached variant. **No cell is stably
-cached-faster.** The mechanism, by contrast, did exactly what it was designed to
-do, and the reduction is **one-sided, with the side flipping on message size**:
+cached-faster.**
 
-- At **8 B and 32 B** the *producer's* remote loads collapse — up to **~70,102×**
-  at 8 B/65536 and **~65,805×** at 32 B/65536 — while the *consumer's* rise (up
-  to 4.1× at 8 B/65536).
-- At **64 B** the reverse: the *consumer's* remote loads collapse — up to
-  **~44,910×** at 64 B/65536 — while the *producer's* rise ~3×.
+The mechanism, by contrast, did exactly what it was designed to do. The primary
+mechanism metric is **remote loads per try attempt** — `remote_loads /
+(message_count + retries_on_that_side)` — because that is the quantity the
+treatment actually changes: how often a *try* must look at the remote cursor. On
+that metric the baseline is **exactly 1.000000** on both sides in every cell, by
+construction, and **the cached variant is below 1.000000 on both sides in every
+cell** — it never refreshes more often per attempt than the baseline (worst case
+**0.996582**, 32 B/65536 consumer). End-to-end **loads per message** is a
+secondary metric and is confounded, because `loads/message = loads/attempt ×
+attempts/message`; where it rises, the cause is **retry volume**, not a higher
+per-attempt refresh rate:
 
-The mechanism leg also shows why: caching cannot help a thread that keeps finding
-the queue genuinely empty (or genuinely full), because the real remote cursor has
-not moved, so every failed attempt refreshes anyway — the baseline's count, plus
-a comparison. That is a property of the design, reported rather than smoothed
-over, and it is visible in the seven cells where the cached variant did *more*
-remote loads on one side.
+- At **8 B** the *producer's* loads/message fall by 17×–70,102× while the
+  *consumer's* rise 1.9×–4.1×.
+- At **32 B** the producer's fall (3×–65,806×), but the consumer's change is
+  **not one-directional**: its loads/message *decrease* at 1024 (0.72×) and 4096
+  (0.84×) and *increase* slightly at 65536 (1.08×).
+- At **64 B** it reverses: the *consumer's* loads/message fall by
+  1,156×–44,910× while the *producer's* rise 2.7×–3.1×.
 
-**The emphasized case is real and it is not small.** Cells exist where remote
-loads fall dramatically and throughput does **not** improve but degrades: 64 B /
-65536 consumer loads fall ~44,910× with throughput **1.569× worse** (stable 4/4);
-8 B / 65536 producer loads fall ~70,102× with throughput 1.103× worse (stable
-4/4); 8 B / 4096 producer loads fall ~57× with throughput **2.005× worse** — the
-largest penalty in the dataset. Under the Phase-3B causal rule, the valid
-statement is that **remote-cursor caching reduced explicit remote cursor
-observations and was associated with *worse* end-to-end throughput under this
-workload**. No cache-miss, coherence-transaction or cache-line-transfer count was
-measured, and none is claimed.
+Which side is waiting flips with message size — and **the side that accumulates
+retries is the side being held up, so the pace-limiting side is the other one.**
+At 8 B and 32 B the consumer's `empty` retries dominate, so the consumer is
+waiting and the **producer** is pace-limiting; at 64 B the producer's `full`
+retries dominate, so the producer is waiting and the **consumer** is
+pace-limiting. The mechanism leg also shows why caching cannot help the waiting
+side: a thread that keeps finding the queue genuinely empty (or genuinely full)
+sees a remote cursor that has not moved, so every failed attempt refreshes anyway
+— the baseline's count, plus a comparison. That is a property of the design,
+reported rather than smoothed over, and it is what makes those seven cells'
+*loads/message* rise on one side.
+
+**The emphasized case is real and it is not small — but the size of the load
+reduction does not predict the size of the penalty.** 8 B/65536 has one of the
+largest reductions (~70,102×, producer) and only a 1.103× regression; 8 B/4096
+has a far smaller reduction (~57×) and the **largest regression in the dataset,
+~2.005×**; 64 B/65536 reduces consumer loads ~44,910× for a 1.569× regression.
+Reduction magnitude alone therefore does not order the throughput outcome. The
+message-size relationship is likewise **not monotonic in message size**: 32 B is
+small and directionally unstable across sessions; 64 B is consistently moderate
+(1.270× / 1.406× / 1.569×) across all three capacities; 8 B is stable per
+capacity but strongly capacity-dependent (1.087× / **2.005×** / 1.103×) and
+contains the largest single regression. Nor is capacity irrelevant — it
+materially changes the magnitude at every message size, even though it does not
+determine the verdict. Under the Phase-3B causal rule, the valid statement is
+that **remote-cursor caching reduced explicit remote cursor observations per try
+and was associated with *worse* end-to-end throughput under this workload**. No
+cache-miss, coherence-transaction or cache-line-transfer count was measured, and
+none is claimed.
 
 Two limits must travel with these numbers. First, the mechanism counts are
 end-to-end totals for the whole run, so part of the losing side's *increase* is a
 consequence of the slowdown rather than a cause of it, and the instrumented leg
 is a different instantiation whose regime can differ from the canonical leg's —
 so no "loads saved per nanosecond" arithmetic is performed anywhere. Second, as
-in Phase 3A, **this cell shape is strongly bimodal on the development host and
-the compiled image's code placement selects the regime**; the two Phase-3B
-variants share one binary and therefore one regime, so the *comparison* is
-internally valid while the *level* is a property of the binary and the host. See
-`docs/SPSC_REMOTE_CURSOR_CACHE.md` §7.5.
+in Phase 3A, **this cell shape exhibits strong run-to-run and build-to-build
+regime variation on the development host**, and the swing between regimes is
+larger than any plausible treatment effect. A separate diagnostic, run outside
+this dataset, suggested code-layout sensitivity as **one possible contributor**
+to that variation, but **Phase 3B does not isolate its cause**, and no
+reproducible diagnostic package is preserved alongside the data. Both Phase-3B
+variants do come from **one executable built under the same compiler and the same
+options**, which supports build/toolchain comparability — but each variant is a
+**distinct template instantiation with its own emitted machine code**, and each
+leg runs in an **independent process** whose scheduler placement, core type,
+migration history, DVFS, thermal state and background load are not guaranteed to
+match. That is neither "same compiled code placement" nor "same machine regime".
+The balanced adjacent AB/BA design mitigates temporal ordering bias; it does not
+guarantee identical machine state. See `docs/SPSC_REMOTE_CURSOR_CACHE.md` §7.5.
 
 Full methodology, the correctness argument, the counter-wrap reasoning and the
 limitations are in `docs/SPSC_REMOTE_CURSOR_CACHE.md`; the canonical data — raw

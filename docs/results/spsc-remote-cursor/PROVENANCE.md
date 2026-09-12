@@ -48,6 +48,34 @@ cmake -S . -B build-spsc-remote-cursor -DCMAKE_BUILD_TYPE=Release -DBENCH_ARCH_F
 cmake --build build-spsc-remote-cursor --target spsc_remote_cursor_bench -j
 ```
 
+## Post-hoc analysis-hardening note (Phase 3B.1, 2026-09-12)
+
+Phase 3B.1 was an **analysis and documentation hardening pass over this existing
+dataset**. No measurement was taken, no raw CSV was edited, no benchmark was
+rerun, and no source file that determines queue behaviour, memory ordering,
+cursor layout, the harness or the retry/yield policy was changed.
+
+Two consequences for this directory are worth recording explicitly:
+
+- **`command.txt` and `run_order.txt` are unchanged** and remain the verbatim
+  record of what the collection-time script emitted at repo HEAD `6ff0b57`.
+  Their comment headers therefore still carry the pre-hardening wording (e.g.
+  `command.txt` line 17 describes the treatment as "the ONLY variable ... the
+  frequency of remote cursor loads"). That sentence was corrected in the script
+  itself, so a future re-run would emit the hardened wording. The committed
+  record was deliberately **not** rewritten: it is a record of a past run, not
+  a description of the algorithm, and editing it would falsify the record.
+- **`mechanism/ATTEMPTS.csv` was added** by Phase 3B.1. It is *derived*, not
+  measured, and is labelled as such in its own header and in
+  `RESULTS_METADATA.md`. Every value in it is recomputable from
+  `mechanism/raw/*.csv`, which is untouched.
+
+`PAIRED_COMPARISON.md` and `MECHANISM.md` were edited, but only prose,
+structure and derived exposition: every canonical ratio, count and median in
+them is byte-identical to what the collection-time pipeline produced. The
+measured numbers live in `raw/`, `summaries/`, `summary.csv` and
+`paired_summary.csv`, and none of those files changed.
+
 ## What was NOT done
 
 - No frozen Phase-1, Phase-2, Phase-3A or Phase-4 result file was read,

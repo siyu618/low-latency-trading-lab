@@ -10,11 +10,20 @@
 # ONE IMPLEMENTATION PER PROCESS. Every process is a SEPARATE invocation of
 # spsc_remote_cursor_bench choosing exactly one --impl; no two variants are ever
 # timed inside one interval, one address space, or one warmed-up process state.
-# Both variants come from the SAME binary, so the two processes of a pair share
-# the compiled code and its placement in the image.
+# Both variants are built into the SAME benchmark executable under the SAME
+# compiler and options. That supports BUILD AND TOOLCHAIN COMPARABILITY. It does
+# NOT mean the legs share compiled code or runtime state: each variant is a
+# distinct template instantiation with its own emitted instruction sequence and
+# code addresses, and each leg runs in an independent process that is not
+# guaranteed to share scheduler placement, core type, migration history, DVFS,
+# thermal state or background load.
 #
-# THE ONE VARIABLE. Phase 3B holds everything fixed except ONE implementation
-# treatment: HOW OFTEN each thread reads the opposite thread's cursor.
+# THE ONE TREATMENT. Phase 3B holds everything else fixed and applies ONE
+# intended algorithmic treatment: remote-cursor caching. Its primary mechanism
+# is HOW OFTEN each thread reads the opposite thread's cursor; the treatment
+# also carries its own local fast-path bookkeeping (cached-value read,
+# comparison, branch), so a measured difference here does not isolate the cost
+# of a single remote atomic load.
 #
 #   baseline  the Phase-3A separated algorithm: one acquire load of the remote
 #             cursor per try_push / try_pop.
@@ -82,11 +91,13 @@
 #   recorded in command.txt as it runs; the balance is then VERIFIED by parsing
 #   that record back, not asserted from the constants above.
 #
-# SESSION-LEVEL DRIFT IS THE DOMINANT RISK AND IS NOT HIDDEN. This cell shape is
-# strongly bimodal on the development host: the same binary can complete the same
-# cell at very different ns/message depending on which side of the retry/yield
-# feedback loop the run settles into, and the compiled image's code placement
-# selects between those regimes. That is why the raw per-repetition
+# SESSION-LEVEL DRIFT IS THE DOMINANT RISK AND IS NOT HIDDEN. This cell shape
+# exhibits strong run-to-run and build-to-build regime variation on the
+# development host: the same binary can complete the same cell at very different
+# ns/message depending on which side of the retry/yield feedback loop the run
+# settles into. A separate diagnostic suggested code-layout sensitivity as one
+# possible contributor to that variation, but Phase 3B does not isolate its
+# cause, and no reproducible diagnostic package is preserved. That is why the raw per-repetition
 # producer_full_retries / consumer_empty_retries columns are preserved and
 # reported: the regime of every measured process is visible in the dataset rather
 # than averaged away. No Phase-3B result may be read as resolving a difference
@@ -300,7 +311,7 @@ echo "    messages=$MESSAGES reps=$REPS warmup=$WARMUP (warm-up excluded from al
     echo "# time order."
     echo "#"
     echo "# Each line below is a SEPARATE process with exactly ONE variant."
-    echo "# The ONLY variable between the two variants is the $TREATMENT."
+    echo "# The one intended treatment between the two variants is the $TREATMENT."
     echo "# Cursor placement is the verified SEPARATED layout in both."
     echo "# All canonical lines use --instrument=0: no counting is compiled in."
     echo
@@ -1270,16 +1281,21 @@ session_median() {  # $1=impl $2=bytes $3=cap $4=session
     echo "  \"$SESSIONS out of $SESSIONS agreed here\", not \"the effect is proven\"."
     echo "- No CPU pinning or affinity is used or claimed; macOS may migrate threads"
     echo "  mid-run and may place the two processes' threads on different core types."
-    echo "- **This cell shape is strongly bimodal on the development host, and the"
-    echo "  swing between regimes is larger than any plausible treatment effect.** A"
-    echo "  process can settle into a state where the consumer spins on an empty queue"
-    echo "  tens of millions of times instead of blocking on real handoffs, and the"
-    echo "  compiled image's code placement — not the variant being measured — selects"
-    echo "  between those regimes. The \`producer_full_retries\` and"
-    echo "  \`consumer_empty_retries\` columns are preserved in \`summary.csv\` and in"
-    echo "  every raw CSV precisely so the regime of each process is visible. **No"
-    echo "  ratio here should be read as resolving a difference smaller than that"
-    echo "  swing.**"
+    echo "- **This cell shape exhibits strong run-to-run and build-to-build regime"
+    echo "  variation on the development host, and the swing between regimes is larger"
+    echo "  than any plausible treatment effect.** A process can settle into a state"
+    echo "  where the consumer spins on an empty queue tens of millions of times instead"
+    echo "  of blocking on real handoffs. A separate diagnostic suggested code-layout"
+    echo "  sensitivity as **one possible contributor** to that bimodality, but **Phase 3B"
+    echo "  does not isolate its cause** — and no reproducible diagnostic package is"
+    echo "  preserved alongside this dataset. Note also that the two variants are distinct"
+    echo "  template instantiations with different emitted code, and the two legs are"
+    echo "  independent processes that are not guaranteed to share scheduler placement,"
+    echo "  core type, migration history, DVFS, thermal state or background load. The"
+    echo "  \`producer_full_retries\` and \`consumer_empty_retries\` columns are preserved in"
+    echo "  \`summary.csv\` and in every raw CSV precisely so the state of each process is"
+    echo "  visible. **No ratio here should be read as resolving a difference smaller"
+    echo "  than that swing.**"
     echo "- The mechanism leg (\`mechanism/\`, \`MECHANISM.md\`) is a SEPARATE set of"
     echo "  runs at a different instrumentation setting. Its throughput numbers are NOT"
     echo "  the canonical figures and are not used here."
