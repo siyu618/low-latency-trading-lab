@@ -679,7 +679,7 @@ of cursor placement, so the dataset is real and self-validating but cannot suppo
 a cursor-placement attribution. (Phase 3A records object addresses and cursor
 placement; it does not measure the hardware's cache-set indexing function and
 makes no claim about which cache set either offset landed in.)
-The hardened design gives **both** policies a The hardened design gives **both** policies a
+The hardened design gives **both** policies a
 `2 * kAssumedCacheLineSize` footprint: same-line keeps *both* cursors in the first
 block and reserves an inert second block that nothing reads or writes, whose only
 purpose is to equalize the footprint. Both the policy `sizeof` and the queue
