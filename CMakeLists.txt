@@ -139,10 +139,13 @@ set_tests_properties(spsc_false_sharing_tests_exitcode PROPERTIES
 # ---------------------------------------------------------------------------
 # Experiment 02 — Phase 3B: remote cursor caching.
 #
-# Two variants of the SAME separated-layout SPSC ring buffer differing in ONE
-# implementation treatment: how OFTEN each thread reads the opposite thread's
-# cursor. The suite runs the whole Phase-1 correctness protocol twice (once per
-# variant), re-verifies the Phase-3A separated layout AND the Phase-3B
+# Two variants of the SAME separated-layout SPSC ring buffer, differing in ONE
+# intended algorithmic treatment: remote-cursor caching. Reduced remote-load
+# frequency is that treatment's primary mechanism; the treatment also carries
+# cached-state reads, comparisons and branches, plus occasional cached-state
+# writes, so a measured difference here does not isolate the cost of a single
+# remote atomic load. The suite runs the whole Phase-1 correctness protocol twice
+# (once per variant), re-verifies the Phase-3A separated layout AND the Phase-3B
 # cached-state placement at runtime, tests the counter-wrap arithmetic the cached
 # full/empty tests depend on, and tests the refresh mechanism itself as a set of
 # logical properties rather than measured ratios.
@@ -273,11 +276,16 @@ if(BUILD_BENCHMARKS)
 
     # -----------------------------------------------------------------------
     # Experiment 02 — Phase 3B: remote cursor caching benchmark. Compares ONLY
-    # the two Phase-3B variants, which differ in ONE treatment: how often each
-    # thread reads the opposite thread's cursor. `--impl=baseline` is the
-    # Phase-3A separated algorithm; `--impl=cached` adds the thread-owned cached
-    # copy. Same binary, same harness, same layout — so the pair shares both the
-    # compiled code placement and the machine regime.
+    # the two Phase-3B variants, which differ in ONE intended algorithmic
+    # treatment: remote-cursor caching, whose primary mechanism is reduced
+    # remote-load frequency. `--impl=baseline` is the Phase-3A separated
+    # algorithm; `--impl=cached` adds the thread-owned cached copy.
+    #
+    # Both variants come from ONE executable built under the same compiler and
+    # options, which supports build/toolchain comparability. It is NOT a claim
+    # of shared compiled code placement or a shared machine regime: each variant
+    # is a distinct template instantiation with its own emitted machine code,
+    # and each leg runs in an independent process.
     #
     # `--instrument=1` additionally COUNTS the remote cursor refreshes, in
     # thread-owned ordinary counters, for the separate mechanism leg. Canonical

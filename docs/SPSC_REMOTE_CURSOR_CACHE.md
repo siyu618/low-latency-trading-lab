@@ -51,10 +51,16 @@ cells, no instrumentation leak). Canonical dataset:
 `docs/results/spsc-remote-cursor/`.
 
 **Headline result: the mechanism worked and the performance did not follow.**
-Remote cursor loads fell by up to ~44,910× on one side of the transfer, while
-the cached variant was **slower** in six of nine cells — stably, across all four
-balanced sessions, by 1.09×–2.00× — with the remaining three cells inconclusive.
-See §4.3, §4.6 and §5 question 8.
+On the **primary** mechanism metric — remote cursor loads per try attempt — the
+reduction reaches **~65,789× fewer remote loads per attempt** (8 B / 65536
+producer, reached identically at 32 B / 65536 producer). On the **secondary**
+end-to-end metric — remote loads per delivered message — it reaches **~70,102×**
+in the same cell. Note that the larger of the two numbers is the *secondary*
+one, inflated by retry volume (§4.6); ~44,910×, sometimes quoted as the
+headline, is the 64 B / 65536 consumer result and is **not** the global maximum
+on either metric. The cached variant was **slower** in six of nine cells —
+stably, across all four balanced sessions, by 1.09×–2.00× — with the remaining
+three cells inconclusive. See §4.3, §4.6 and §5 question 8.
 
 **The frozen code stays frozen.** `include/spsc_ring_buffer.h` (the unpadded
 Phase-1/2 implementation) and `include/spsc_cursor_layout_ring_buffer.h` (the
@@ -148,6 +154,12 @@ result in this document supports it.
   should be adopted. It reports where the mechanism reduces loads, where it does
   not, and where the wall clock moved — including the cases where those three
   answers disagree.
+* It does not claim that the cached values are **coherence-private**. They are
+  thread-owned, but each shares a cache line with the cursor its owner already
+  holds — and that cursor is read by the *other* thread — so a cached-state write
+  can modify a line the remote thread reads. That is part of the net treatment
+  (§2.5), and it is the reason no result here may be described as isolating the
+  cost of removing a remote atomic load.
 
 ### 1.5 Evidence labels used in this document
 
@@ -378,6 +390,36 @@ already**, and the two cached values are on *different* lines from each other
 create a new line both threads write). The runtime report verifies all of this
 per repetition, on the addresses actually used (§2.7), rather than asserting it
 from the type.
+
+**Thread-owned is not the same as coherence-private.** The paragraph above is a
+statement about *write* sharing, and that is the only thing it establishes.
+Nothing in this layout makes the cached values private to a coherence domain:
+
+* `cached_tail` is **producer-owned** in the C++ memory-model sense — the
+  consumer never names it and there is no synchronization for it — but it shares
+  **line 0** with `head` (offsets 8 and 0, same 128-byte line), and `head` is the
+  cursor the **consumer** reads to decide whether anything is available.
+* `cached_head` is **consumer-owned** by the same argument, but it shares
+  **line 1** with `tail` (offsets 136 and 128, same line), and `tail` is the
+  cursor the **producer** reads to decide whether there is room.
+
+So a **cached-state write can modify a cache line that the remote thread
+legitimately reads for the synchronization cursor.** The producer's write to
+`cached_tail` puts line 0 in a state the consumer's `head` read must then obtain
+coherently, and symmetrically for the consumer's write to `cached_head` and the
+producer's `tail` read. That is a real property of this design and it is **part
+of the net remote-cursor-caching treatment**, not something the treatment avoids.
+
+This is a second, independent reason the experiment **must not** be described as
+isolating the cost of a remote atomic load (§1.4, §6.2). The treatment bundles
+together (a) fewer remote cursor loads, (b) additional local cached-state reads,
+comparisons and branches, and (c) writes into lines the remote thread reads —
+and no measurement here separates them.
+
+Making the cached values genuinely coherence-private is **not** done and is
+**out of scope**: it would require additional cache lines, which would change the
+object footprint and the payload offset, breaking the equal-footprint invariant
+Phase 3A established and turning this into a different experiment (§2.6).
 
 ### 2.6 Equal footprint, unchanged
 
@@ -750,6 +792,17 @@ maximum anywhere in the matrix is 0.996582097.** Caching never made a try
 operation *more* likely to read the remote cursor. That is the treatment doing
 what it was designed to do, and it is directly counted.
 
+**The largest reduction on this metric — the maximum the dataset supports — is
+~65,789× fewer remote loads per try attempt**, at 8 B / 65536 producer
+(1.000000000 → 0.000015200). It is reached identically at 32 B / 65536 producer,
+which has the same attempt count and the same load count (30,000,000 attempts,
+456 loads). **~44,910×, the number most often quoted as the headline, is the
+64 B / 65536 consumer result** (1.000000000 → 0.000022267): large, but not the
+maximum. The two figures are easy to conflate because the largest *end-to-end*
+reduction — **~70,102× fewer loads per delivered message** — does occur in a
+65536-capacity cell (8 B / 65536 producer, 1.065547967 → 0.000015200). The
+secondary table below keeps the two normalizations apart.
+
 **The mechanism the attempt-normalized data exposes:** *the side that can make
 sustained progress reuses its cached remote cursor across many attempts, while
 the side blocked on genuinely-full or genuinely-empty state reaches the
@@ -1089,11 +1142,13 @@ separated by this design.
 
 **The valid one-sentence reading**, following the §6.3 discipline: *remote-cursor
 caching substantially reduced explicit remote cursor observations on the side
-able to make sustained progress — up to ~44,910× in the mechanism leg — but
-produced no stable throughput improvement in this matrix: it was associated with
-a stable end-to-end regression of 1.09×–2.00× in six of nine cells under this
-workload.* Anything stronger — in particular any statement about cache misses or
-coherence traffic — is not supported by this dataset.
+able to make sustained progress — up to ~65,789× fewer remote loads per try
+attempt on the primary metric, and ~70,102× fewer loads per delivered message on
+the secondary one, in the mechanism leg — but produced no stable throughput
+improvement in this matrix: it was associated with a stable end-to-end
+regression of 1.09×–2.00× in six of nine cells under this workload.* Anything
+stronger — in particular any statement about cache misses or coherence
+traffic — is not supported by this dataset.
 
 ---
 
@@ -1207,7 +1262,41 @@ not make their levels directly comparable in the way a single-process
 measurement would. The *paired ratio between the two variants* is the result;
 the *level* is not portable.
 
-### 7.6 Scope of the dataset
+### 7.6 The cached state is thread-owned, not coherence-private
+
+`cached_tail` is producer-owned in the C++ memory-model sense — only the producer
+names it, and no synchronization exists for it — but it shares **one cache line
+with `head`**, which the consumer reads to decide whether a message is available.
+`cached_head` is consumer-owned by the same argument, but shares **one cache line
+with `tail`**, which the producer reads to decide whether there is room. The
+offsets are fixed by `static_assert` (8 and 0 on line 0; 136 and 128 on line 1).
+
+So the cached state is **thread-owned but not necessarily coherence-private**: a
+cached-state write can modify a line the *remote* thread legitimately reads for
+the synchronization cursor. The producer's refresh write to `cached_tail` puts
+line 0 into a state the consumer's `head` read must obtain coherently, and the
+mirror case holds for `cached_head` and the producer's `tail` read.
+
+Two consequences, both of which limit how the result may be read:
+
+* This is **part of the net remote-cursor-caching treatment**, not a confound
+  that was removed. The treatment bundles fewer remote cursor loads, additional
+  local cached-state reads / comparisons / branches, and writes into lines the
+  remote thread reads. No measurement in this dataset separates them, which is a
+  second independent reason **no throughput difference here isolates the cost of
+  a single remote atomic load** (§1.4, §6.2).
+* The design is **not** changed to avoid it. Making the cached values genuinely
+  coherence-private would require additional cache lines, which would change the
+  object footprint and therefore the payload offset — breaking the
+  equal-footprint invariant Phase 3A established and turning this into a
+  different experiment (§2.6). That is out of scope for Phase 3B.
+
+Nothing here is a measurement of coherence traffic: no hardware counter was read
+(§6.1), and the mechanism counters count *program-level* remote cursor loads
+only. The statement above is about the object layout, which is verified at
+runtime (§2.7), not about observed cache behaviour.
+
+### 7.7 Scope of the dataset
 
 Nine cells, one machine, four sessions of one process each per cell per variant,
 one warm-up repetition excluded per process. This is a small sample. `stable`
@@ -1235,9 +1324,10 @@ processes. Canonical dataset: `docs/results/spsc-remote-cursor/`.
 
 **Result in one line.** Remote-cursor caching substantially reduced explicit
 remote cursor observations on the side able to make sustained progress (up to
-~44,910×) but produced **no stable throughput improvement** in this matrix — it
-was **slower** in six of nine cells, stably, by 1.09×–2.00×, with three cells
-inconclusive.
+**~65,789× fewer remote loads per try attempt**, the primary metric; **~70,102×
+fewer loads per delivered message** on the secondary one) but produced **no
+stable throughput improvement** in this matrix — it was **slower** in six of nine
+cells, stably, by 1.09×–2.00×, with three cells inconclusive.
 
 No frozen Phase-1, Phase-2 or Phase-3A result was modified, and Phase 3A was not
 rerun. Phase 4 was not started.

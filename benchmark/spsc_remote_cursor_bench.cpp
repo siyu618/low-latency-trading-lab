@@ -22,9 +22,10 @@
 //                 producer's head and refreshes it only when that copy says the
 //                 queue MAY be empty.
 //
-// The release/acquire publication edge is NOT removed in either variant. What
-// changes is how OFTEN the remote cursor is read, not what the read costs or
-// what it guarantees. See docs/SPSC_REMOTE_CURSOR_CACHE.md.
+// The release/acquire publication edge is NOT removed in either variant. Its
+// FREQUENCY is the treatment's primary mechanism — the cache changes how often
+// the remote cursor is read, not what the read guarantees. See
+// docs/SPSC_REMOTE_CURSOR_CACHE.md.
 //
 // ONE IMPLEMENTATION PER PROCESS, by design. A process times exactly one
 // (impl, message_bytes, capacity) cell, so the two variants' numbers always come
@@ -264,7 +265,8 @@ int verify_cross_variant_footprint(std::size_t reported_line_size,
                      "\nCROSS-VARIANT FOOTPRINT INVARIANT FAILED (bytes=%zu "
                      "capacity=%zu): object size differs (%zu vs %zu).\n"
                      "A measured throughput difference could then be caused by "
-                     "the object layout rather than by remote-load frequency.\n"
+                     "the object layout rather than by the intended treatment, "
+                     "remote-cursor caching.\n"
                      "This is a FAILED EXPERIMENT, not a slow cell. Exiting "
                      "non-zero without timing anything.\n",
                      Msg::kBytes, Capacity, sizeof(Queue), sizeof(Other));
@@ -297,7 +299,8 @@ int verify_cross_variant_footprint(std::size_t reported_line_size,
                      "The two variants do not produce the same object layout: "
                      "object size or payload offset differs, so a measured\n"
                      "throughput difference could be caused by the payload's "
-                     "position rather than by remote-load frequency.\n"
+                     "position rather than by the intended treatment, "
+                     "remote-cursor caching.\n"
                      "This is a FAILED EXPERIMENT, not a slow cell. Exiting "
                      "non-zero without timing anything.\n",
                      Msg::kBytes, Capacity);
@@ -349,8 +352,11 @@ void usage(const char* argv0) {
         "          [--messages=N] [--reps=R] [--warmup=W] [--instrument=0|1]\n"
         "          [--raw-out=FILE] [--summary-out=FILE]\n"
         "\n"
-        "Experiment 02 Phase 3B — remote cursor caching. The ONE implementation\n"
-        "treatment is how OFTEN each thread reads the opposite thread's cursor.\n"
+        "Experiment 02 Phase 3B — remote cursor caching. The ONE intended\n"
+        "algorithmic treatment is remote-cursor caching; reduced remote-load\n"
+        "frequency is its primary mechanism, and the treatment also carries\n"
+        "cached-state reads, comparisons and branches, plus occasional\n"
+        "cached-state writes.\n"
         "Cursor placement stays the verified SEPARATED layout in both variants,\n"
         "and both variants have the same footprint, so the payload keeps the same\n"
         "relative offset. The release/acquire publication edge is present in\n"
@@ -821,9 +827,14 @@ int run_cell(const Config& c, std::size_t reported_line_size) {
                      "per process.\n"
                      "# ns_per_message = END-TO-END elapsed_ns / messages delivered "
                      "(NOT a per-call latency, NOT one-way handoff).\n"
-                     "# The ONE implementation treatment is HOW OFTEN each thread "
-                     "reads the opposite thread's cursor. Cursor placement is the\n"
-                     "# verified SEPARATED layout in BOTH variants, and both "
+                     "# The ONE intended algorithmic treatment is remote-cursor "
+                     "caching, whose primary mechanism is HOW OFTEN each thread "
+                     "reads the opposite thread's cursor; the cached strategy also "
+                     "adds cached-state reads, comparisons and branches, and\n"
+                     "# occasional cached-state writes, so no difference here "
+                     "isolates the cost of one remote atomic load.\n"
+                     "# Cursor placement is the verified SEPARATED layout in "
+                     "BOTH variants, and both "
                      "variants have the same object_size and payload_offset.\n"
                      "# measurement_mode=performance means no hot-path counting was "
                      "compiled in; remote_load columns are 0 and instrumented=0.\n"
@@ -906,12 +917,20 @@ int run_cell(const Config& c, std::size_t reported_line_size) {
 
     std::fprintf(out,
                  "# Experiment 02 Phase 3B — REMOTE CURSOR CACHING.\n"
-                 "# The ONE implementation treatment is the FREQUENCY of remote "
-                 "cursor loads: the baseline performs one acquire\n"
+                 "# The ONE intended algorithmic treatment is remote-cursor caching. "
+                 "Its primary mechanism is the FREQUENCY\n"
+                 "# of remote cursor loads, and that is what the counters below "
+                 "quantify: the baseline performs one acquire\n"
                  "# load of the opposite cursor per try_push / try_pop; the cached "
                  "variant keeps a thread-owned copy and refreshes\n"
                  "# it only when that copy says the queue MAY be full (producer) "
                  "or MAY be empty (consumer).\n"
+                 "# The treatment is MORE than that frequency: the cached variant "
+                 "also performs local cached-state reads,\n"
+                 "# comparisons and branches on the fast path, plus occasional "
+                 "cached-state writes. Those are not counters here,\n"
+                 "# so no measured difference isolates the cost of a single remote "
+                 "atomic load.\n"
                  "# Everything else is identical by construction: same payload "
                  "storage, same object footprint, same SEPARATED\n"
                  "# cursor placement, same capacity, same slot indexing, same "
@@ -919,9 +938,9 @@ int run_cell(const Config& c, std::size_t reported_line_size) {
                  "# same message types. There is no batching, no memory-order "
                  "change, no CAS, no affinity and no NUMA tuning.\n"
                  "# The release/acquire publication edge EXISTS IN BOTH VARIANTS. "
-                 "The cache changes how OFTEN the remote cursor\n"
-                 "# is read, not what reading it guarantees; no memory order was "
-                 "weakened or removed.\n"
+                 "Caching changes how OFTEN the remote cursor\n"
+                 "# is read — its primary mechanism — not what reading it "
+                 "guarantees; no memory order was weakened or removed.\n"
                  "# ns_per_message = elapsed_ns / messages delivered: it INCLUDES "
                  "queue synchronization, payload assignment,\n"
                  "# cache-coherence traffic, harness retry/backpressure and OS "

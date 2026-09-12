@@ -50,11 +50,12 @@ cmake --build build-spsc-remote-cursor --target spsc_remote_cursor_bench -j
 
 ## Post-hoc analysis-hardening notes (Phase 3B.1, 2026-09-12)
 
-Two **analysis and documentation hardening passes** were made over this existing
-dataset — Phase 3B.1 (attempt-normalized mechanism metric and proof/claim
-corrections) and the final documentation-only cleanup that followed it. Neither
-pass took a measurement, edited a raw CSV, reran a benchmark, or changed any
-source that determines queue behaviour, memory ordering, cursor layout, the
+Three **analysis and documentation hardening passes** were made over this
+existing dataset — Phase 3B.1 (attempt-normalized mechanism metric and
+proof/claim corrections), the documentation-only cleanup that followed it, and
+the final documentation / source-comment cleanup recorded below. None of the
+three took a measurement, edited a raw CSV, reran a benchmark, or changed any
+source that determines queue behaviour, memory ordering, object layout, the
 harness or the retry/yield policy.
 
 Consequences for this directory, recorded explicitly:
@@ -80,6 +81,42 @@ edited, but only prose, structure and derived exposition: every canonical ratio,
 count and median in them is byte-identical to what the collection-time pipeline
 produced. The measured numbers live in `raw/`, `summaries/`, `summary.csv` and
 `paired_summary.csv`, and none of those files changed.
+
+### Final cleanup (Phase 3B.2, 2026-09-12)
+
+Documentation and source-COMMENT wording only. Two corrections are worth
+recording here because they change how this dataset should be quoted:
+
+- **The headline maximum was wrong and was corrected.**
+  `max primary mechanism reduction: ~65,789x fewer remote loads per attempt`
+  (8 B / 65536 producer, tied exactly by 32 B / 65536 producer at 30,000,000
+  attempts and 456 loads each). The secondary end-to-end figure is
+  `max secondary loads/message reduction: ~70,102x` for the same cell. The
+  previously repeated "~44,910×" is **not** the overall maximum — it is the
+  64 B / 65536 *consumer* result, and it is retained only where it is presented
+  per-cell. Both corrected figures are recomputable from `mechanism/raw/*.csv`
+  via `mechanism/ATTEMPTS.csv`; no raw value changed.
+- **The cached state is thread-owned but not coherence-private**, and this is
+  stated as a limitation. `cached_tail` (offset 8) shares the producer's cache
+  line with `head` (offset 0), which the consumer reads; `cached_head` (offset
+  136) shares the consumer's line with `tail` (offset 128), which the producer
+  reads. A cached-state write can therefore modify a line the remote thread
+  legitimately reads for the synchronization cursor, so a measured difference
+  here must not be described as isolating the cost of removing a remote atomic
+  load. Nothing was redesigned to make the cached values private: that would add
+  cache lines and change the footprint and payload offset Phase 3A verified.
+
+Stale wording that described the treatment as *only* remote-load frequency —
+where it stood as the complete treatment definition — was replaced in
+`CMakeLists.txt`, `benchmark/spsc_remote_cursor_bench.cpp`,
+`include/spsc_remote_cursor_ring_buffer.h`, `tests/spsc_remote_cursor_tests.cpp`,
+`README.md`, `docs/SPSC_REMOTE_CURSOR_CACHE.md` and
+`docs/SPSC_FALSE_SHARING.md`. Statements that the treatment's **primary
+mechanism** is reduced remote-load frequency were kept, together with the fact
+that the treatment also carries cached-state reads, comparisons and branches,
+plus occasional cached-state writes. Only comments and diagnostic strings
+changed — the permitted check was a normal build plus CTest (6/6 passing); no
+canonical dataset was rerun.
 
 ## What was NOT done
 

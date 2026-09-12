@@ -732,7 +732,7 @@ void t_reference_differential() {
 }
 
 // ---------------------------------------------------------------------------
-// Variant-vs-variant differential. The "only remote-load frequency differs"
+// Variant-vs-variant differential. The "only remote-cursor caching differs"
 // claim, stated as something a test can fail on. An identical deterministic
 // operation sequence is fed to the Phase-3B baseline, the Phase-3B cached
 // variant, the Phase-3A SEPARATED control and a deque model; every return value

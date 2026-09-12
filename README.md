@@ -81,9 +81,13 @@ directories.
 > `docs/results/spsc-remote-cursor/`, and the result is **negative**: the
 > mechanism worked and the performance did not follow. **Per try attempt the
 > cached variant never refreshed the remote cursor more often than the baseline —
-> in any cell, on either side**; end-to-end **loads per message** fell by up to
-> **~44,910×** on one side and *rose* on the other, because the side that was
-> blocked simply attempted more times, not because it refreshed more often. Yet
+> in any cell, on either side.** The headline reductions are **~65,789× fewer
+> remote loads per try attempt** (the primary metric; 8 B/65536 producer, reached
+> identically at 32 B/65536 producer) and **~70,102× fewer loads per delivered
+> message** (the secondary end-to-end metric, same cell). The larger of the two
+> is the *secondary* one, inflated by retry volume — and on that metric the
+> *other* side's loads/message *rose*, because the side that was blocked simply
+> attempted more times, not because it refreshed more often. Yet
 > the cached variant was **slower in 6 of 9 cells, stably across all four balanced
 > sessions, by 1.09×–2.00×**, with 3 cells inconclusive — and how far the loads
 > fell did **not** predict how much throughput suffered (8 B/4096 has a far smaller

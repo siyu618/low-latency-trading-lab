@@ -39,7 +39,9 @@
 //     the same type, and it cannot differ.
 //   * The memory orders are unchanged from the Phase-1/3A baseline: relaxed load
 //     of the caller's OWN cursor, acquire load of the REMOTE cursor, release
-//     store to publish. Phase 3B changes HOW OFTEN the acquire load happens. It
+//     store to publish. The treatment's PRIMARY MECHANISM is that the acquire
+//     load happens less often; the treatment additionally carries cached-state
+//     reads, comparisons and branches, plus occasional cached-state writes. It
 //     does not change what the acquire load guarantees, and it removes nothing.
 //   * The frozen Phase-1 SpscRingBuffer and the Phase-3A
 //     CursorLayoutRingBuffer are NOT touched and NOT subclassed. Phase 3A's file
@@ -238,6 +240,18 @@ inline const char* remote_cursor_mode_name(RemoteCursorMode m) noexcept {
 // hot path would add exactly the cross-thread traffic the experiment is trying
 // to vary, i.e. it would make the instrument the experiment.
 //
+// THREAD-OWNED IS NOT COHERENCE-PRIVATE. The ownership above is a statement
+// about WHO NAMES the data and who synchronizes it. It is not a statement about
+// cache lines: `cached_tail` (offset 8) shares the PRODUCER's line with `head`
+// (offset 0), and the CONSUMER reads `head`; `cached_head` (offset 136) shares
+// the CONSUMER's line with `tail` (offset 128), and the PRODUCER reads `tail`.
+// So a write to a cached value modifies a line the remote thread legitimately
+// reads for the synchronization cursor. That is PART OF THE TREATMENT — one
+// more reason no measurement here may be described as isolating the cost of a
+// remote atomic load. Making the cached values genuinely coherence-private
+// would need extra lines, which would change the footprint and the payload
+// offset Phase 3A verified; it is deliberately NOT done.
+//
 // `head` and `tail` keep the offsets Phase 3A verified (0 and
 // kAssumedCacheLineSize), so nothing about the placement Phase 3A established
 // moves.
@@ -298,7 +312,7 @@ static_assert(sizeof(SeparatedRemoteCursorBlock) == sizeof(SeparatedCursorBlocks
               "the Phase-3B cursor policy must have the same footprint as the "
               "Phase-3A separated policy, so the payload array that follows it "
               "starts at the same object offset; otherwise Phase 3B would "
-              "change object layout as well as remote-load frequency");
+              "change the object layout as well as the treatment under study");
 static_assert(alignof(SeparatedRemoteCursorBlock) ==
               alignof(SeparatedCursorBlocks));
 
@@ -656,8 +670,8 @@ public:
 
     // --- Observers ---------------------------------------------------------
     // ADVISORY only, exactly as in the frozen Phase-1 type and in Phase 3A, and
-    // IDENTICAL in both modes: the treatment does not touch this path, so a
-    // difference here could not be attributed to remote-load frequency.
+    // IDENTICAL in both modes: the remote-cursor-caching treatment does not touch
+    // this path, so a difference here could not be attributed to the treatment.
     bool empty() const noexcept {
         return cursors_.head.load(std::memory_order_relaxed) ==
                cursors_.tail.load(std::memory_order_relaxed);

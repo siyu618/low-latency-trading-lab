@@ -10,8 +10,11 @@
 
 How many times each thread ACTUALLY read the opposite thread's cursor. In
 the baseline this equals the `try_push`/`try_pop` call count by construction.
-In the cached variant it counts real refresh loads — which is
-the mechanism the experiment is about.
+In the cached variant it counts real refresh loads — the **primary mechanism**
+of the remote-cursor-caching treatment, and the quantity this file quantifies.
+It is not the whole treatment: the cached variant also performs cached-state
+reads, comparisons and branches, plus occasional cached-state writes, none of
+which these counters see.
 
 The counters are **ordinary non-atomic members owned by one thread each**,
 incremented on the hot path and read only AFTER both threads have been

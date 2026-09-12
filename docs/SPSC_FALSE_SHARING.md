@@ -1027,8 +1027,9 @@ and scheduler behaviour are all machine-specific; the *method* transfers, the
   `docs/results/spsc-false-sharing-pre3a1-payload-offset-confounded/`.
 - **Experiment 02, Phase 3B — Remote-Cursor Caching: COMPLETE / FROZEN.**
   Collected 2026-09-12 by starting from **these** frozen Phase-3A separated
-  layouts and changing one variable of its own — the frequency of remote cursor
-  loads — so nothing in the Phase-3A dataset above is affected. Canonical
+  layouts and changing one variable of its own — the algorithmic treatment of
+  remote-cursor caching, whose primary mechanism is reduced remote-load
+  frequency — so nothing in the Phase-3A dataset above is affected. Canonical
   dataset: `docs/results/spsc-remote-cursor/`; methodology and analysis:
   `docs/SPSC_REMOTE_CURSOR_CACHE.md`. Its result is negative (the mechanism
   reduced remote loads; the throughput did not follow), which is a statement
