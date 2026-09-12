@@ -137,6 +137,39 @@ set_tests_properties(spsc_false_sharing_tests_exitcode PROPERTIES
                      PASS_REGULAR_EXPRESSION "spsc_false_sharing_tests_exitcode: got expected non-zero exit")
 
 # ---------------------------------------------------------------------------
+# Experiment 02 — Phase 3B: remote cursor caching.
+#
+# Two variants of the SAME separated-layout SPSC ring buffer differing in ONE
+# implementation treatment: how OFTEN each thread reads the opposite thread's
+# cursor. The suite runs the whole Phase-1 correctness protocol twice (once per
+# variant), re-verifies the Phase-3A separated layout AND the Phase-3B
+# cached-state placement at runtime, tests the counter-wrap arithmetic the cached
+# full/empty tests depend on, and tests the refresh mechanism itself as a set of
+# logical properties rather than measured ratios.
+#
+# Phase 3A's suite and benchmark are NOT replaced or modified by this; Phase 3B
+# is a separate type, separate tests and a separate benchmark binary.
+# ---------------------------------------------------------------------------
+add_executable(spsc_remote_cursor_tests tests/spsc_remote_cursor_tests.cpp)
+target_link_libraries(spsc_remote_cursor_tests PRIVATE llob_core Threads::Threads)
+target_compile_options(spsc_remote_cursor_tests PRIVATE -Wall -Wextra)
+# Same hang guard as the Phase-1 and Phase-3A suites: every concurrent stress
+# must terminate. The suite is heavier than Phase 3A's (every single-threaded
+# test runs twice, once per variant) so it gets a larger budget.
+add_test(NAME spsc_remote_cursor_tests COMMAND spsc_remote_cursor_tests)
+set_tests_properties(spsc_remote_cursor_tests PROPERTIES TIMEOUT 600)
+
+# Same exit-code regression guard as the other test runners.
+add_test(NAME spsc_remote_cursor_tests_exitcode
+         COMMAND ${CMAKE_COMMAND}
+                 -DLLDB_SELFTEST_FAIL=1
+                 -DNAME=spsc_remote_cursor_tests_exitcode
+                 -DBINARY=$<TARGET_FILE:spsc_remote_cursor_tests>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/assert_nonzero_exit.cmake)
+set_tests_properties(spsc_remote_cursor_tests_exitcode PROPERTIES
+                     PASS_REGULAR_EXPRESSION "spsc_remote_cursor_tests_exitcode: got expected non-zero exit")
+
+# ---------------------------------------------------------------------------
 # Benchmark (Experiment 01, Phase 2). Deterministic steady-state apply()
 # throughput. The benchmark is only meaningful as a release build: enable it
 # explicitly (default ON), and it is forced to -O3 -DNDEBUG regardless of the
@@ -238,6 +271,53 @@ if(BUILD_BENCHMARKS)
                      --capacity=1024 --messages=20000 --reps=1 --warmup=0)
     set_tests_properties(spsc_false_sharing_bench_smoke_natural PROPERTIES TIMEOUT 300)
 
+    # -----------------------------------------------------------------------
+    # Experiment 02 — Phase 3B: remote cursor caching benchmark. Compares ONLY
+    # the two Phase-3B variants, which differ in ONE treatment: how often each
+    # thread reads the opposite thread's cursor. `--impl=baseline` is the
+    # Phase-3A separated algorithm; `--impl=cached` adds the thread-owned cached
+    # copy. Same binary, same harness, same layout — so the pair shares both the
+    # compiled code placement and the machine regime.
+    #
+    # `--instrument=1` additionally COUNTS the remote cursor refreshes, in
+    # thread-owned ordinary counters, for the separate mechanism leg. Canonical
+    # throughput numbers come only from `--instrument=0` runs.
+    #
+    # Phase-3A tooling and results are untouched: separate binary, separate
+    # result directory, and the Phase-3A same-line cell is not part of this
+    # comparison.
+    # -----------------------------------------------------------------------
+    add_executable(spsc_remote_cursor_bench benchmark/spsc_remote_cursor_bench.cpp)
+    target_link_libraries(spsc_remote_cursor_bench PRIVATE llob_core Threads::Threads)
+    target_compile_options(spsc_remote_cursor_bench PRIVATE -O3 -DNDEBUG)
+
+    # Smoke cells only: short run, one repetition, no warm-up. The canonical
+    # balanced matrix is run by scripts/spsc-remote-cursor.sh, never by ctest.
+    # One smoke test per variant per instrumentation mode, so a broken variant or
+    # a broken counting path cannot hide behind the other's passing run.
+    add_test(NAME spsc_remote_cursor_bench_smoke_baseline
+             COMMAND spsc_remote_cursor_bench --impl=baseline --instrument=0
+                     --message-bytes=8 --capacity=1024 --messages=20000 --reps=1
+                     --warmup=0)
+    set_tests_properties(spsc_remote_cursor_bench_smoke_baseline PROPERTIES TIMEOUT 300)
+    add_test(NAME spsc_remote_cursor_bench_smoke_cached
+             COMMAND spsc_remote_cursor_bench --impl=cached --instrument=0
+                     --message-bytes=8 --capacity=1024 --messages=20000 --reps=1
+                     --warmup=0)
+    set_tests_properties(spsc_remote_cursor_bench_smoke_cached PROPERTIES TIMEOUT 300)
+    add_test(NAME spsc_remote_cursor_bench_smoke_baseline_instrumented
+             COMMAND spsc_remote_cursor_bench --impl=baseline --instrument=1
+                     --message-bytes=8 --capacity=1024 --messages=20000 --reps=1
+                     --warmup=0)
+    set_tests_properties(spsc_remote_cursor_bench_smoke_baseline_instrumented
+                         PROPERTIES TIMEOUT 300)
+    add_test(NAME spsc_remote_cursor_bench_smoke_cached_instrumented
+             COMMAND spsc_remote_cursor_bench --impl=cached --instrument=1
+                     --message-bytes=8 --capacity=1024 --messages=20000 --reps=1
+                     --warmup=0)
+    set_tests_properties(spsc_remote_cursor_bench_smoke_cached_instrumented
+                         PROPERTIES TIMEOUT 300)
+
     set(BENCH_ARCH_FLAGS "" CACHE STRING
         "Extra arch flags for the benchmark target (e.g. -march=native). Empty = compiler default")
     if(NOT BENCH_ARCH_FLAGS STREQUAL "")
@@ -249,6 +329,7 @@ if(BUILD_BENCHMARKS)
             target_compile_options(orderbook_gap_bench PRIVATE ${BENCH_ARCH_FLAGS})
             target_compile_options(spsc_throughput_bench PRIVATE ${BENCH_ARCH_FLAGS})
             target_compile_options(spsc_false_sharing_bench PRIVATE ${BENCH_ARCH_FLAGS})
+            target_compile_options(spsc_remote_cursor_bench PRIVATE ${BENCH_ARCH_FLAGS})
         else()
             message(WARNING "BENCH_ARCH_FLAGS '${BENCH_ARCH_FLAGS}' unsupported by this compiler; "
                             "building the benchmark with the compiler default")
