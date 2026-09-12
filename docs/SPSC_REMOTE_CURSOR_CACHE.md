@@ -290,13 +290,36 @@ exactly the pushes/pops the baseline accepts, up to refresh timing":
 means full, so the actual number of messages in flight must never reach
 `2^N` for an N-bit counter. Phase 1 already established that the counters are
 unsigned and that the difference arithmetic is correct across wrap; Phase 3B
-preserves those assumptions unchanged, and adds no signed arithmetic. The two
-steps above are exact only because every difference stays small: `head` and
-`tail` never differ by more than `Capacity`, and a cached value lags its cursor
-by far less than `2^63`, so no difference aliases into a large wrapped-around
-value. The tests cover this directly — they drive the ordinary API across the
-physical wrap boundary and assert the lemma as a modular difference rather than
-as an ordering (§3.4).
+preserves those assumptions unchanged, and adds no signed arithmetic.
+
+The two steps above are exact because every modular distance the code forms
+stays inside the bounded queue window. That is an **algorithm invariant**, not a
+statement about how far a cached value happens to lag, and it needs no
+"far less than `2^63`" assumption:
+
+- **Producer:** `0 <= modular(head - cached_tail) <= Capacity`.
+  `cached_tail` is only ever assigned from a real `tail`, and `head - tail <=
+  Capacity` always holds, so the distance is non-negative. It cannot exceed
+  `Capacity` either: the producer advances `head` only while
+  `cached_occupancy < Capacity`, and it refreshes `tail` first when that test
+  fails, so `head` never moves past the point where `cached_occupancy ==
+  Capacity`. Between refreshes `cached_tail` is constant, so the distance can
+  grow to `Capacity` and then stops.
+- **Consumer:** `0 <= modular(cached_head - tail) <= Capacity`.
+  Symmetrically, the consumer advances `tail` only while `cached_head - t != 0`,
+  so `tail` never passes `cached_head` and the distance is non-negative; and it
+  cannot exceed `Capacity`, because `cached_head` was a real `head` at a moment
+  when `head - tail <= Capacity`, and `tail` has only advanced since.
+
+Both distances therefore lie in `[0, Capacity]`, far inside the range where
+modular and ordinary arithmetic agree, so no difference aliases into a large
+wrapped-around value — and that follows from the admission tests alone rather
+than from any bounded-lag assumption about the cached copies. Note that this is
+stated in modular distance throughout: ordinary `cached_tail <= tail` /
+`cached_head <= head` ordering is **not** used anywhere and would be invalid
+across the boundary. The tests cover this directly — they drive the ordinary API
+across the physical wrap boundary and assert the lemma as a modular difference
+rather than as an ordering (§3.4).
 
 **Construction.** Both cached values are initialised to `0`, matching the
 initial `head` and `tail`. Construction performs no remote acquire at all: there
@@ -1064,10 +1087,11 @@ one-sided load reduction is the only change the cached variant makes — it also
 adds a comparison and a branch on the fast path (§6.2), and the two are not
 separated by this design.
 
-**The valid one-sentence reading**, following the §6.3 discipline: *the cached
-variant reduced explicit remote cursor observations on one side of the transfer,
-by up to ~44,910× in the mechanism leg, and was associated with a stable
-end-to-end throughput regression of 1.09×–2.00× in six of nine cells under this
+**The valid one-sentence reading**, following the §6.3 discipline: *remote-cursor
+caching substantially reduced explicit remote cursor observations on the side
+able to make sustained progress — up to ~44,910× in the mechanism leg — but
+produced no stable throughput improvement in this matrix: it was associated with
+a stable end-to-end regression of 1.09×–2.00× in six of nine cells under this
 workload.* Anything stronger — in particular any statement about cache misses or
 coherence traffic — is not supported by this dataset.
 
@@ -1157,8 +1181,20 @@ Consequences, all of which shape how this dataset may be read:
 3. **The raw retry counts are preserved per repetition** so the state of every
    measured process is visible in the dataset rather than averaged away.
 4. **No Phase-3B result may be presented as resolving a difference smaller than
-   the regime swing.** Where a cell's ratios are split across sessions, that is
-   reported as SPLIT, not smoothed into a median.
+   the observed run-to-run spread.** That spread is measured — the per-session
+   ratios of a single cell are in `paired_summary.csv` — and it is comparable to
+   or larger than several of the within-phase treatment differences reported
+   here. Where a cell's ratios are split across sessions, that is reported as
+   SPLIT, not smoothed into a median.
+
+**What this limitation does and does not license.** The observed run/build
+variation is large enough that absolute `ns/message` values from independently
+built phases must not be interpreted as treatment effects. It is explicitly
+**not** claimed that the variation is larger than *every* effect of interest:
+that comparison is not measurable from this dataset, because the dataset holds
+one build and one host. What is measurable is the run-to-run spread *within*
+this dataset, and it is that measured spread — not a general statement about
+regime magnitude — that sets the resolution floor in consequence 4 above.
 
 **The absolute `ns_per_message` values in this dataset are not comparable to
 Phase 3A's.** Phase 3A's separated 8 B / 1024 cell measured ≈ 15.6 ns/message
@@ -1197,10 +1233,11 @@ verified; the balanced canonical dataset was collected; and the raw → summary
 verification passed for every one of the 72 canonical and 18 mechanism
 processes. Canonical dataset: `docs/results/spsc-remote-cursor/`.
 
-**Result in one line.** Caching the remote cursor demonstrably reduced remote
-cursor loads on one side of the transfer (up to ~44,910×) and produced no
-throughput improvement in any directionally stable cell — it was **slower** in
-six of nine cells, stably, by 1.09×–2.00×, with three cells inconclusive.
+**Result in one line.** Remote-cursor caching substantially reduced explicit
+remote cursor observations on the side able to make sustained progress (up to
+~44,910×) but produced **no stable throughput improvement** in this matrix — it
+was **slower** in six of nine cells, stably, by 1.09×–2.00×, with three cells
+inconclusive.
 
 No frozen Phase-1, Phase-2 or Phase-3A result was modified, and Phase 3A was not
 rerun. Phase 4 was not started.

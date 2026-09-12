@@ -604,9 +604,11 @@ int run_cell(const Config& c, std::size_t reported_line_size) {
                          "\nLAYOUT INVARIANT FAILED (impl=%s bytes=%zu cap=%zu "
                          "rep=%d).\n"
                          "cursor_ok=%d cached_placement_ok=%d\n"
-                         "Phase 3B changes ONLY the frequency of remote cursor "
-                         "loads, so an unverified cursor placement or an "
-                         "unverified cached-state placement is a FAILED "
+                         "Phase 3B applies one intended algorithmic treatment — "
+                         "remote-cursor caching — and both the separated cursor "
+                         "placement and the cached-state placement are PART OF "
+                         "THAT TREATMENT. An unverified cursor placement or an "
+                         "unverified cached-state placement is therefore a FAILED "
                          "EXPERIMENT, not a slow cell. Exiting non-zero without "
                          "timing anything.\n",
                          impl_name(c.impl), c.message_bytes, Capacity, rep + 1,

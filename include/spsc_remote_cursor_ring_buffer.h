@@ -135,12 +135,30 @@
 //     well. A stale cached_head can only report FALSE EMPTY — never read a
 //     payload that was never published.
 //
-// Both steps are exact only because the differences above stay small: `head` and
-// `tail` never differ by more than Capacity (Phase 1's constraint, unchanged),
-// and a cached value lags its cursor by far less than 2^63, so no difference
-// aliases into a large wrapped-around value. The counter-wrap tests exercise
-// this through the ordinary API across the boundary rather than assuming it; see
-// the TEST-ONLY seed constructor below.
+// Both steps are exact only because every modular distance the code forms stays
+// inside the bounded queue window. That is an ALGORITHM INVARIANT, not a
+// probabilistic statement about how far a cached value happens to lag, and it
+// needs no "far less than 2^63" assumption:
+//
+//   * PRODUCER. 0 <= modular(head - cached_tail) <= Capacity.
+//     cached_tail is only ever assigned from a real `tail`, and `head - tail <=
+//     Capacity` always holds (Phase 1's constraint, unchanged). The producer
+//     cannot advance `head` past the point where cached_occupancy == Capacity,
+//     because the fast path refuses exactly there (`cached_occupancy < Capacity`
+//     is the admission test) and so does the refresh path (`real_occupancy <
+//     Capacity`). Between refreshes cached_tail does not move, so the distance
+//     can only grow to Capacity and then stops.
+//   * CONSUMER. 0 <= modular(cached_head - tail) <= Capacity.
+//     Symmetrically: the consumer cannot advance `tail` past `cached_head` —
+//     once the distance reaches 0 the fast path refuses (it requires a non-zero
+//     distance) and the consumer must refresh `head`, which can only increase
+//     that distance, up to the same Capacity bound.
+//
+// Every distance the operations compute therefore lies in [0, Capacity], far
+// inside the range where modular and ordinary arithmetic agree, so no
+// difference aliases into a large wrapped-around value. The counter-wrap tests
+// exercise this through the ordinary API across the boundary rather than
+// assuming it; see the TEST-ONLY seed constructor below.
 //
 // Correctness still rests on the acquire loads, unchanged:
 //   * the producer's refresh `cached_tail = tail_.load(acquire)` is what orders

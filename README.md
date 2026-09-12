@@ -95,10 +95,12 @@ directories.
 >
 > **Phase 3B's absolute `ns/message` values are NOT comparable to Phase 3A's.**
 > This cell shape exhibits **strong run-to-run and build-to-build regime variation
-> on the development host**, and the swing between regimes is larger than any
-> plausible treatment effect: Phase 3A's separated 8 B/1024 cell measured
-> ~15.6 ns/message from its own binary while the Phase-3B `baseline` variant of the
-> same cell measures ~46 ns/message, with ~10× the consumer spinning. A separate
+> on the development host**. The observed variation is large enough that absolute
+> `ns/message` values from independently built phases must not be interpreted as
+> treatment effects: Phase 3A's separated 8 B/1024 cell measured ~15.6 ns/message
+> from its own binary while the Phase-3B `baseline` variant of the same cell
+> measures ~46 ns/message, with ~10× the consumer spinning — a gap of that order
+> between two builds of the *same* algorithm. A separate
 > diagnostic, run outside this dataset, suggested code-layout sensitivity as **one
 > possible contributor** to that variation, but **Phase 3B does not isolate its
 > cause** and no reproducible diagnostic package is preserved alongside the data.
@@ -871,10 +873,11 @@ payload offset across the two variants in all 9 cells).** The result is
 | 64 B, capacities 1024 / 4096 / 65536 | baseline faster **4/4** each (1.270 / 1.406 / 1.569) |
 | 32 B, all three capacities | **inconclusive** — direction flipped between sessions (3–1, 3–1, 2–2) |
 
-So **6 of 9 cells hold one direction across all four balanced sessions — all six
-baseline-faster — and 3 are inconclusive**; across all 36 paired observations,
-32 favour the baseline and 4 favour the cached variant. **No cell is stably
-cached-faster.**
+So the counts are **baseline faster 6 / 9, cached faster 0 / 9, inconclusive
+3 / 9**: six cells hold one direction across all four balanced sessions — all six
+baseline-faster — and the three 32 B cells are inconclusive. Across all 36 paired
+observations, 32 favour the baseline and 4 favour the cached variant. **No cell
+is stably cached-faster.**
 
 The mechanism, by contrast, did exactly what it was designed to do. The primary
 mechanism metric is **remote loads per try attempt** — `remote_loads /
@@ -932,11 +935,15 @@ consequence of the slowdown rather than a cause of it, and the instrumented leg
 is a different instantiation whose regime can differ from the canonical leg's —
 so no "loads saved per nanosecond" arithmetic is performed anywhere. Second, as
 in Phase 3A, **this cell shape exhibits strong run-to-run and build-to-build
-regime variation on the development host**, and the swing between regimes is
-larger than any plausible treatment effect. A separate diagnostic, run outside
-this dataset, suggested code-layout sensitivity as **one possible contributor**
-to that variation, but **Phase 3B does not isolate its cause**, and no
-reproducible diagnostic package is preserved alongside the data. Both Phase-3B
+regime variation on the development host**. The observed variation is large
+enough that absolute `ns/message` values from independently built phases must not
+be interpreted as treatment effects, and it is **comparable to or larger than
+several of the within-phase treatment differences reported above** — which is why
+the direction calls here rest on the balanced paired design and its per-session
+agreement, never on a difference in absolute level. A separate diagnostic, run
+outside this dataset, suggested code-layout sensitivity as **one possible
+contributor** to that variation, but **Phase 3B does not isolate its cause**, and
+no reproducible diagnostic package is preserved alongside the data. Both Phase-3B
 variants do come from **one executable built under the same compiler and the same
 options**, which supports build/toolchain comparability — but each variant is a
 **distinct template instantiation with its own emitted machine code**, and each

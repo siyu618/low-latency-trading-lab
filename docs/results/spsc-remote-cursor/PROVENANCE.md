@@ -48,32 +48,37 @@ cmake -S . -B build-spsc-remote-cursor -DCMAKE_BUILD_TYPE=Release -DBENCH_ARCH_F
 cmake --build build-spsc-remote-cursor --target spsc_remote_cursor_bench -j
 ```
 
-## Post-hoc analysis-hardening note (Phase 3B.1, 2026-09-12)
+## Post-hoc analysis-hardening notes (Phase 3B.1, 2026-09-12)
 
-Phase 3B.1 was an **analysis and documentation hardening pass over this existing
-dataset**. No measurement was taken, no raw CSV was edited, no benchmark was
-rerun, and no source file that determines queue behaviour, memory ordering,
-cursor layout, the harness or the retry/yield policy was changed.
+Two **analysis and documentation hardening passes** were made over this existing
+dataset — Phase 3B.1 (attempt-normalized mechanism metric and proof/claim
+corrections) and the final documentation-only cleanup that followed it. Neither
+pass took a measurement, edited a raw CSV, reran a benchmark, or changed any
+source that determines queue behaviour, memory ordering, cursor layout, the
+harness or the retry/yield policy.
 
-Two consequences for this directory are worth recording explicitly:
+Consequences for this directory, recorded explicitly:
 
-- **`command.txt` and `run_order.txt` are unchanged** and remain the verbatim
-  record of what the collection-time script emitted at repo HEAD `6ff0b57`.
-  Their comment headers therefore still carry the pre-hardening wording (e.g.
-  `command.txt` line 17 describes the treatment as "the ONLY variable ... the
-  frequency of remote cursor loads"). That sentence was corrected in the script
-  itself, so a future re-run would emit the hardened wording. The committed
-  record was deliberately **not** rewritten: it is a record of a past run, not
-  a description of the algorithm, and editing it would falsify the record.
-- **`mechanism/ATTEMPTS.csv` was added** by Phase 3B.1. It is *derived*, not
-  measured, and is labelled as such in its own header and in
-  `RESULTS_METADATA.md`. Every value in it is recomputable from
-  `mechanism/raw/*.csv`, which is untouched.
+- **`run_order.txt` is unchanged** and remains the verbatim record of what the
+  collection-time script emitted at repo HEAD `6ff0b57`.
+- **`command.txt` is unchanged in every command line.** The only edit is an
+  added `#` comment block (16 lines, zero deletions) immediately after the
+  original header sentence that describes the treatment as "the ONLY variable
+  ... the frequency of remote cursor loads". That sentence states the treatment
+  too narrowly — the intended treatment is remote-cursor caching, with reduced
+  remote-load frequency as its primary *mechanism* — so a clarification was
+  added beside it. The original sentence was deliberately **left in place**:
+  this file is a record of a past run, not a description of the algorithm, and
+  rewriting the record would falsify it. The script itself carries the corrected
+  wording, so a future run would emit the narrowed-free sentence.
+- **`mechanism/ATTEMPTS.csv` was added.** It is *derived*, not measured, and is
+  labelled as such in its own header and in `RESULTS_METADATA.md`. Every value
+  in it is recomputable from `mechanism/raw/*.csv`, which is untouched.
 
-`PAIRED_COMPARISON.md` and `MECHANISM.md` were edited, but only prose,
-structure and derived exposition: every canonical ratio, count and median in
-them is byte-identical to what the collection-time pipeline produced. The
-measured numbers live in `raw/`, `summaries/`, `summary.csv` and
+`PAIRED_COMPARISON.md`, `MECHANISM.md`, `RESULTS_METADATA.md` and this file were
+edited, but only prose, structure and derived exposition: every canonical ratio,
+count and median in them is byte-identical to what the collection-time pipeline
+produced. The measured numbers live in `raw/`, `summaries/`, `summary.csv` and
 `paired_summary.csv`, and none of those files changed.
 
 ## What was NOT done

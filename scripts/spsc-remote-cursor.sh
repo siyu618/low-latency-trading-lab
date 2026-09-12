@@ -101,7 +101,10 @@
 # producer_full_retries / consumer_empty_retries columns are preserved and
 # reported: the regime of every measured process is visible in the dataset rather
 # than averaged away. No Phase-3B result may be read as resolving a difference
-# smaller than that swing.
+# smaller than the OBSERVED run-to-run spread, which is measured and visible in
+# the per-session ratios. That spread is comparable to or larger than several of
+# the treatment differences reported here; it is NOT claimed to be larger than
+# every effect of interest, which this dataset cannot measure.
 #
 # MEASUREMENT DISCIPLINE
 #   * Release build, -O3 -DNDEBUG, forced by the CMake target itself.
@@ -179,8 +182,10 @@ EXPECTED_MECH_PROCESSES=18
 # The two Phase-3B variants, in forward traversal order.
 IMPLS=(baseline cached)
 
-# The single treatment under study, named once so every message is consistent.
-TREATMENT="frequency of remote cursor loads"
+# The single intended treatment under study, named once so every message is
+# consistent. It is remote-cursor caching; reduced remote-load frequency is its
+# primary MECHANISM, not the treatment itself.
+TREATMENT="remote-cursor caching"
 
 if [[ "$REPS" -lt 1 ]]; then
     echo "FATAL: REPS must be >= 1 (got $REPS)" >&2
@@ -311,7 +316,11 @@ echo "    messages=$MESSAGES reps=$REPS warmup=$WARMUP (warm-up excluded from al
     echo "# time order."
     echo "#"
     echo "# Each line below is a SEPARATE process with exactly ONE variant."
-    echo "# The one intended treatment between the two variants is the $TREATMENT."
+    echo "# The one intended treatment between the two variants is $TREATMENT."
+    echo "# Reduced remote-load frequency is its primary MECHANISM; the treatment"
+    echo "# also carries its own local fast-path bookkeeping (a cached-value read,"
+    echo "# a comparison and a branch), so a measured difference here does not"
+    echo "# isolate the cost of a single remote atomic load."
     echo "# Cursor placement is the verified SEPARATED layout in both."
     echo "# All canonical lines use --instrument=0: no counting is compiled in."
     echo
@@ -1182,13 +1191,22 @@ session_median() {  # $1=impl $2=bytes $3=cap $4=session
     echo
     echo "## What is being compared"
     echo
-    echo "The **only** difference between the two implementations compared here is"
-    echo "the **$TREATMENT**. Both come from one algorithm body parameterised by a"
-    echo "compile-time mode, so the payload storage, the payload offset, the object"
-    echo "size, the SEPARATED cursor placement, the capacity, the slot indexing, the"
-    echo "publication protocol, the retry/yield harness and the message types are"
-    echo "identical by construction. There is no batching, no changed memory ordering,"
-    echo "no CAS, no MPSC/MPMC, no affinity and no NUMA tuning in either variant."
+    echo "The two implementations compared here differ in **one intended algorithmic"
+    echo "treatment: remote-cursor caching**. Both come from one algorithm body"
+    echo "parameterised by a compile-time mode, so the payload storage, the payload"
+    echo "offset, the object size, the SEPARATED cursor placement, the capacity, the"
+    echo "slot indexing, the publication protocol, the retry/yield harness and the"
+    echo "message types are identical by construction. There is no batching, no"
+    echo "changed memory ordering, no CAS, no MPSC/MPMC, no affinity and no NUMA"
+    echo "tuning in either variant."
+    echo
+    echo "**Reduced remote-load frequency is the primary mechanism of that treatment,"
+    echo "but the treatment also carries its local fast-path bookkeeping cost** — a"
+    echo "thread-owned cached-cursor read, a comparison and a branch, plus occasional"
+    echo "cached-value updates. The two are not separated by this design, so **no"
+    echo "throughput difference here isolates the cost of a single remote atomic"
+    echo "load.** Nor are the variants the same machine code: they are distinct"
+    echo "template instantiations with different emitted instruction sequences."
     echo
     echo "**The release/acquire publication edge exists in BOTH variants and was not"
     echo "weakened.** The producer still publishes with a release store to \`head\` and"
@@ -1282,20 +1300,24 @@ session_median() {  # $1=impl $2=bytes $3=cap $4=session
     echo "- No CPU pinning or affinity is used or claimed; macOS may migrate threads"
     echo "  mid-run and may place the two processes' threads on different core types."
     echo "- **This cell shape exhibits strong run-to-run and build-to-build regime"
-    echo "  variation on the development host, and the swing between regimes is larger"
-    echo "  than any plausible treatment effect.** A process can settle into a state"
-    echo "  where the consumer spins on an empty queue tens of millions of times instead"
-    echo "  of blocking on real handoffs. A separate diagnostic suggested code-layout"
-    echo "  sensitivity as **one possible contributor** to that bimodality, but **Phase 3B"
-    echo "  does not isolate its cause** — and no reproducible diagnostic package is"
-    echo "  preserved alongside this dataset. Note also that the two variants are distinct"
-    echo "  template instantiations with different emitted code, and the two legs are"
-    echo "  independent processes that are not guaranteed to share scheduler placement,"
-    echo "  core type, migration history, DVFS, thermal state or background load. The"
-    echo "  \`producer_full_retries\` and \`consumer_empty_retries\` columns are preserved in"
-    echo "  \`summary.csv\` and in every raw CSV precisely so the state of each process is"
-    echo "  visible. **No ratio here should be read as resolving a difference smaller"
-    echo "  than that swing.**"
+    echo "  variation on the development host.** A process can settle into a state where"
+    echo "  the consumer spins on an empty queue tens of millions of times instead of"
+    echo "  blocking on real handoffs. The observed variation is large enough that absolute"
+    echo "  \`ns/message\` values from independently built phases must not be interpreted as"
+    echo "  treatment effects, and it is **comparable to or larger than several of the"
+    echo "  within-phase treatment differences reported here** — which is precisely why the"
+    echo "  direction calls above rest on per-session agreement across the balanced paired"
+    echo "  design, and never on a difference in absolute level. A separate diagnostic"
+    echo "  suggested code-layout sensitivity as **one possible contributor** to that"
+    echo "  variation, but **Phase 3B does not isolate its cause** — and no reproducible"
+    echo "  diagnostic package is preserved alongside this dataset. Note also that the two"
+    echo "  variants are distinct template instantiations with different emitted code, and"
+    echo "  the two legs are independent processes that are not guaranteed to share"
+    echo "  scheduler placement, core type, migration history, DVFS, thermal state or"
+    echo "  background load. The \`producer_full_retries\` and \`consumer_empty_retries\`"
+    echo "  columns are preserved in \`summary.csv\` and in every raw CSV precisely so the"
+    echo "  state of each process is visible. **This is also why no ratio here should be"
+    echo "  read as resolving a difference smaller than the observed run-to-run spread.**"
     echo "- The mechanism leg (\`mechanism/\`, \`MECHANISM.md\`) is a SEPARATE set of"
     echo "  runs at a different instrumentation setting. Its throughput numbers are NOT"
     echo "  the canonical figures and are not used here."

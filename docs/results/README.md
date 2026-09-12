@@ -162,10 +162,13 @@ measurement family. Transient raw runs land in repo-root `results/`
   cache-miss, coherence-transaction or cache-line-transfer count was measured, and
   none is claimed. **These `ns/msg` levels are NOT comparable to Phase 3A's**:
   this cell shape exhibits strong run-to-run and build-to-build regime variation
-  on this host and the swing between regimes exceeds any plausible treatment
-  effect. A separate diagnostic suggested code-layout sensitivity as one possible
-  contributor, but Phase 3B does not isolate the cause and no reproducible
-  diagnostic package is preserved. Both variants come from one executable built
+  on this host. The observed variation is large enough that absolute `ns/msg`
+  values from independently built phases must not be interpreted as treatment
+  effects, and it is comparable to or larger than several of the within-phase
+  treatment differences reported here. A separate diagnostic suggested
+  code-layout sensitivity as one possible contributor, but Phase 3B does not
+  isolate the cause and no reproducible diagnostic package is preserved. Both
+  variants come from one executable built
   under the same compiler and options — which supports build/toolchain
   comparability — but each is a distinct template instantiation with its own
   emitted machine code, and each leg is an independent process not guaranteed to

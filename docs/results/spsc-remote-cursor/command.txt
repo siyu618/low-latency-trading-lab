@@ -15,6 +15,22 @@
 #
 # Each line below is a SEPARATE process with exactly ONE variant.
 # The ONLY variable between the two variants is the frequency of remote cursor loads.
+#
+# POST-ANALYSIS CLARIFICATION — added during the Phase-3B.1 analysis-hardening
+# pass, some time after this run. The command lines below are the VERBATIM
+# HISTORICAL RECORD and are unchanged; this note corrects only the sentence
+# immediately above.
+#
+# That sentence states the treatment too narrowly. Phase 3B applies ONE INTENDED
+# ALGORITHMIC TREATMENT: remote-cursor caching. Reduced remote-load frequency is
+# the PRIMARY MECHANISM of that treatment, not the treatment itself — the cached
+# strategy also performs local cached-state reads, comparisons and branches, and
+# occasional cached-value updates on the fast path. It is therefore not a pure
+# "fewer remote atomic loads" manipulation, and no throughput difference measured
+# from this dataset isolates the cost of a single remote atomic load.
+#
+# This record is preserved as-run rather than rewritten. The script itself has
+# been corrected, so a future run would emit the narrowed-free wording.
 # Cursor placement is the verified SEPARATED layout in both.
 # All canonical lines use --instrument=0: no counting is compiled in.
 

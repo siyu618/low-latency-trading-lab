@@ -131,20 +131,24 @@ descriptive criterion, not a significance test.
 - No CPU pinning or affinity is used or claimed; macOS may migrate threads
   mid-run and may place the two processes' threads on different core types.
 - **This cell shape exhibits strong run-to-run and build-to-build regime
-  variation on the development host, and the swing between regimes is larger
-  than any plausible treatment effect.** A process can settle into a state
-  where the consumer spins on an empty queue tens of millions of times instead
-  of blocking on real handoffs. A separate diagnostic suggested code-layout
-  sensitivity as **one possible contributor** to that bimodality, but **Phase 3B
-  does not isolate its cause** — and no reproducible diagnostic package is
-  preserved alongside this dataset. Note also that the two variants are distinct
-  template instantiations with different emitted code, and the two legs are
-  independent processes that are not guaranteed to share scheduler placement,
-  core type, migration history, DVFS, thermal state or background load. The
-  `producer_full_retries` and `consumer_empty_retries` columns are preserved in
-  `summary.csv` and in every raw CSV precisely so the state of each process is
-  visible. **No ratio here should be read as resolving a difference smaller
-  than that swing.**
+  variation on the development host.** A process can settle into a state where
+  the consumer spins on an empty queue tens of millions of times instead of
+  blocking on real handoffs. The observed variation is large enough that absolute
+  `ns/message` values from independently built phases must not be interpreted as
+  treatment effects, and it is **comparable to or larger than several of the
+  within-phase treatment differences reported here** — which is precisely why the
+  direction calls above rest on per-session agreement across the balanced paired
+  design, and never on a difference in absolute level. A separate diagnostic
+  suggested code-layout sensitivity as **one possible contributor** to that
+  variation, but **Phase 3B does not isolate its cause** — and no reproducible
+  diagnostic package is preserved alongside this dataset. Note also that the two
+  variants are distinct template instantiations with different emitted code, and
+  the two legs are independent processes that are not guaranteed to share
+  scheduler placement, core type, migration history, DVFS, thermal state or
+  background load. The `producer_full_retries` and `consumer_empty_retries`
+  columns are preserved in `summary.csv` and in every raw CSV precisely so the
+  state of each process is visible. **This is also why no ratio here should be
+  read as resolving a difference smaller than the observed run-to-run spread.**
 - The mechanism leg (`mechanism/`, `MECHANISM.md`) is a SEPARATE set of
   runs at a different instrumentation setting. Its throughput numbers are NOT
   the canonical figures and are not used here.
