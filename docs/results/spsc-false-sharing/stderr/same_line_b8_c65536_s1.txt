@@ -1,0 +1,13 @@
+[host] cache_line_size_reported=128 cache_line_size_assumed=128
+[layout rep 1/6] layout=same_line alignment=128 reported_cache_line_size=128 head_addr=0x130008000 tail_addr=0x130008008 head_line=39846144 tail_line=39846144 same_line=yes cursor_shares_payload_line=no line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
+[warmup 1/1] impl=same_line bytes=8 cap=65536 elapsed=404254208ns correct=yes (excluded from reported data)
+[layout rep 2/6] layout=same_line alignment=128 reported_cache_line_size=128 head_addr=0x120008000 tail_addr=0x120008008 head_line=37748992 tail_line=37748992 same_line=yes cursor_shares_payload_line=no line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
+[rep 1/5] impl=same_line bytes=8 cap=65536 elapsed=431138500ns ns_per_message=43.113850 full_retries=21099258 empty_retries=66 correct=yes
+[layout rep 3/6] layout=same_line alignment=128 reported_cache_line_size=128 head_addr=0x110008000 tail_addr=0x110008008 head_line=35651840 tail_line=35651840 same_line=yes cursor_shares_payload_line=no line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
+[rep 2/5] impl=same_line bytes=8 cap=65536 elapsed=426076458ns ns_per_message=42.607646 full_retries=17824831 empty_retries=1599 correct=yes
+[layout rep 4/6] layout=same_line alignment=128 reported_cache_line_size=128 head_addr=0x110008000 tail_addr=0x110008008 head_line=35651840 tail_line=35651840 same_line=yes cursor_shares_payload_line=no line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
+[rep 3/5] impl=same_line bytes=8 cap=65536 elapsed=356667708ns ns_per_message=35.666771 full_retries=14967714 empty_retries=137706 correct=yes
+[layout rep 5/6] layout=same_line alignment=128 reported_cache_line_size=128 head_addr=0x110008000 tail_addr=0x110008008 head_line=35651840 tail_line=35651840 same_line=yes cursor_shares_payload_line=no line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
+[rep 4/5] impl=same_line bytes=8 cap=65536 elapsed=356710416ns ns_per_message=35.671042 full_retries=11786584 empty_retries=105844 correct=yes
+[layout rep 6/6] layout=same_line alignment=128 reported_cache_line_size=128 head_addr=0x138008000 tail_addr=0x138008008 head_line=40894720 tail_line=40894720 same_line=yes cursor_shares_payload_line=no line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
+[rep 5/5] impl=same_line bytes=8 cap=65536 elapsed=358223959ns ns_per_message=35.822396 full_retries=12692846 empty_retries=14946 correct=yes

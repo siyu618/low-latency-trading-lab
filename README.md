@@ -51,16 +51,23 @@ directories.
 > `docs/results/spsc-throughput/`, with methodology and analysis in
 > `docs/SPSC_THROUGHPUT.md`. The result is **not a clean win for either queue**:
 > 6 of 9 cells hold one direction across all four balanced sessions (3 each way)
-> and 3 cells are inconclusive. Phase 3 (false sharing + cursor caching) and
-> Phase 4 (tail latency) are NOT STARTED, and **no Phase-2 number is attributed
-> to false sharing**.
+> and 3 cells are inconclusive. Phase 3A then re-ran the same algorithm with the
+> cursors forced into one cache line versus distinct cache lines — layout
+> **verified at runtime on every measured repetition** — in
+> `docs/results/spsc-false-sharing/`: **7 of 9 cells hold one direction across all
+> four balanced sessions, but not the same one** (5 separated-faster, 2
+> same-line-faster) and 2 are inconclusive, so the result is a cell-dependent
+> effect rather than a general win for padding. Phase 3B (remote-cursor
+> caching) and Phase 4 (tail latency) are NOT STARTED, and **no Phase-2 number is
+> attributed to false sharing** — Phase 2 verified no cursor addresses, so it
+> cannot be cited for or against the frozen layout's line placement.
 
 ## Experiments
 
 | # | Experiment | Status |
 |---|------------|--------|
 | 01 | L2 Order Book: `std::map` vs Flat Representation | Phase 1, 2, 4 COMPLETE / FROZEN; Phase 3M tooling COMPLETE + recordings COLLECTED (attribution analysis deferred); Phase 3L tooling READY (native Linux measurement deferred) |
-| 02 | SPSC Ring Buffer / Concurrency | Phase 1 (Correctness / Memory Model) COMPLETE / FROZEN; Phase 2 (Throughput Baseline) COMPLETE / FROZEN; Phase 3, 4 NOT STARTED |
+| 02 | SPSC Ring Buffer / Concurrency | Phase 1 (Correctness / Memory Model) COMPLETE / FROZEN; Phase 2 (Throughput Baseline) COMPLETE / FROZEN; Phase 3A (Controlled False Sharing) COMPLETE / FROZEN; Phase 3B, 4 NOT STARTED |
 
 ## Layout
 
@@ -76,16 +83,24 @@ low-latency-trading-lab/
 │   │                                       #   flat book + transition-aware
 │   │                                       #   positive path, NO bitmap
 │   ├── mutex_bounded_queue.h  # Exp 02 reference: mutex-guarded bounded FIFO
-│   └── spsc_ring_buffer.h     # Exp 02 candidate: SPSC ring buffer; lock-free
-│                              #   cursor protocol where atomic<size_t> is
-│                              #   always lock-free (static_assert, no fallback)
+│   ├── spsc_ring_buffer.h     # Exp 02 candidate: SPSC ring buffer; lock-free
+│   │                          #   cursor protocol where atomic<size_t> is
+│   │                          #   always lock-free (static_assert, no fallback)
+│   ├── cache_line.h           # Exp 02 Phase 3A: runtime host cache-line query
+│   │                          #   + the guards that fail rather than mis-measure
+│   └── spsc_cursor_layout_ring_buffer.h  # Exp 02 Phase 3A: the two cursor-layout
+│                              #   controls over ONE algorithm body (same-line vs
+│                              #   separated) + runtime layout report
 ├── tests/
 │   ├── order_book_tests.cpp # every scenario run against BOTH books
 │   ├── bitset_order_book_tests.cpp  # Optimization Study: four-way differential
 │   │                                 #   (map/flat/tuned/bitset) correctness suite
 │   ├── phase4_stats_tests.cpp  # Phase 4 distribution/percentile regression tests
-│   └── spsc_ring_buffer_tests.cpp  # Exp 02: semantics + SPSC stress +
-│                                   #   differential vs the mutex queue
+│   ├── spsc_ring_buffer_tests.cpp  # Exp 02: semantics + SPSC stress +
+│   │                               #   differential vs the mutex queue
+│   └── spsc_false_sharing_tests.cpp  # Exp 02 Phase 3A: the same protocol against
+│                                   #   BOTH layouts + runtime layout evidence
+│                                   #   (incl. a negative control on the guard)
 ├── benchmark/
 │   ├── stream_gen.h            # single source of truth for the A/B/C/D/E op streams
 │   ├── order_book_bench.cpp    # Phase 2 steady-state apply() throughput benchmark
@@ -95,12 +110,16 @@ low-latency-trading-lab/
 │   ├── order_book_tail_bench.cpp  # Phase 4 fixed-batch tail-latency sampler
 │   ├── spsc_throughput_bench.cpp  # Exp 02 Phase 2: two-thread end-to-end SPSC vs
 │   │                              #   mutex transfer throughput (-O3 -DNDEBUG forced)
+│   ├── spsc_false_sharing_bench.cpp  # Exp 02 Phase 3A: same-line vs separated
+│   │                                 #   cursor placement (--impl=...; one impl per process)
 │   └── tail_stats.h            # Phase 4 distribution metrics / percentile definitions
 ├── scripts/
 │   ├── bench.sh                # Phase 2 canonical per-process run
 │   ├── tail-bench.sh           # Phase 4 canonical matrix runner (one invocation per cell)
 │   ├── spsc-throughput.sh      # Exp 02 Phase 2 canonical matrix runner
 │   │                           #   (18 cells x 4 balanced AB/BA sessions, one impl per process)
+│   ├── spsc-false-sharing.sh   # Exp 02 Phase 3A canonical matrix runner
+│   │                           #   (2 layouts x 18 cells x 4 balanced AB/BA sessions)
 │   ├── verify-tail-summary.sh  # Phase 4 raw<->summary verification
 │   ├── perf-profile.sh         # Linux perf profiling harness (Phase 3L, per-cell)
 │   ├── phase3m-instruments.sh  # Phase 3M xctrace/Instruments recorder (needs full Xcode)
@@ -113,11 +132,14 @@ low-latency-trading-lab/
 │   │   │                    #   orderbook-bitmap-optimization/ study, and
 │   │   │                    #   spsc-throughput/ canonical Exp 02 Phase 2 + its
 │   │   │                    #   two superseded passes (fixed-order,
-│   │   │                    #   single-session); see README.md)
+│   │   │                    #   single-session), and spsc-false-sharing/
+│   │   │                    #   canonical Exp 02 Phase 3A; see README.md)
 │   │   └── README.md        # layout + honesty rule
 │   ├── ORDERBOOK_BITMAP_OPTIMIZATION.md  # Optimization Study analysis (item 12)
 │   ├── SPSC_MEMORY_MODEL.md  # Exp 02: happens-before + memory-order argument
 │   ├── SPSC_THROUGHPUT.md    # Exp 02 Phase 2: throughput methodology + analysis
+│   ├── SPSC_FALSE_SHARING.md # Exp 02 Phase 3A: controlled false-sharing methodology
+│   │                         #   + analysis (false vs true sharing; runtime layout proof)
 │   └── profiling/           # Phase 3 guides (README.md, MACOS_INSTRUMENTS.md) + Phase 4
 │                            #   tail-latency methodology (PHASE4_TAIL_LATENCY.md)
 ├── CMakeLists.txt
@@ -392,7 +414,10 @@ reserved for sparse best-delete-gap regimes. See
 ## Experiment 02 — SPSC Ring Buffer
 
 **Status: Phase 1 — Correctness / Memory Model: COMPLETE / FROZEN.
-Phase 2 — Throughput Baseline: COMPLETE / FROZEN.**
+Phase 2 — Throughput Baseline: COMPLETE / FROZEN.
+Phase 3A — Controlled False Sharing: COMPLETE / FROZEN.
+Phase 3B — Remote-Cursor Caching: NOT STARTED. Phase 4 — Tail Latency: NOT
+STARTED.**
 A bounded, single-producer / single-consumer message queue with no mutex and no
 CAS, modeling `Feed / Decoder → SPSC → OrderBook / Strategy`. Two header-only
 types in `lltl`:
@@ -460,9 +485,12 @@ runners.
 Phase 1 is correctness only — no false-sharing padding and no remote-cursor
 cache are present (both are deliberately deferred to Phase 3 as controlled
 optimizations), and Phase 1 itself reported no throughput numbers. The unpadded
-`head_`/`tail_` layout *permits and is likely to exhibit* false sharing; Phase 3
-will verify the actual cursor addresses / cache-line placement for a packed
-same-line control and a separated/padded control rather than assume it.
+`head_`/`tail_` layout *permits and is likely to exhibit* false sharing; **Phase
+3A later built a packed same-line control and a separated control and verified
+their actual cursor addresses / cache-line placement rather than assuming it
+(§ Phase 3A below) — it did not re-use this frozen type as a control, because
+adjacency is not proof of same-line placement and no addresses were recorded
+here.**
 
 ### Phase 2 — Throughput Baseline (COMPLETE / FROZEN)
 
@@ -537,10 +565,115 @@ with run order) in `docs/results/spsc-throughput-superseded-fixed-order/`, and
 the single-session pass in
 `docs/results/spsc-throughput-superseded-single-session/`.
 
+### Phase 3A — Controlled False Sharing (COMPLETE / FROZEN)
+
+**Research question:** *how much of the SPSC's throughput behaviour changes when
+the producer-owned `head` cursor and the consumer-owned `tail` cursor are forced
+to share one cache line, compared with the same cursors on distinct cache lines,
+holding the algorithm, the payload, the memory orders, the harness and the
+machine constant?* — asked and answered by measurement, with no answer assumed
+in advance.
+
+`include/spsc_cursor_layout_ring_buffer.h` defines the two Phase-3A controls as
+aliases over **one** algorithm body, `CursorLayoutRingBuffer<T, Capacity,
+CursorLayoutPolicy>`:
+
+- `SpscSameLineRingBuffer` — both cursors in **one** interference block.
+- `SpscSeparatedCursorRingBuffer` — each cursor in its **own** interference
+  block.
+
+The single-algorithm-body structure is the point, not an implementation detail.
+"Only cursor placement differs" is easy to state and easy to break, and a
+copy-pasted second implementation drifts invisibly — both copies still compile
+and both still pass their correctness tests. So the claim is made structural:
+the layout policy contributes **storage and nothing else**, with no callable
+members, so it cannot alter control flow even by accident. The algorithm,
+payload storage and indexing, full/empty semantics, memory orders, `noexcept`
+specifications, retry policy and message types are identical by construction, and
+a 200,000-operation differential test drives both layouts through identical input
+and requires observation-for-observation agreement.
+
+**Layout is guaranteed by construction and then verified at runtime.** Each
+policy's block size and alignment are `static_assert`ed against
+`kAssumedCacheLineSize`, so "both cursors are in one block" is a property of the
+type rather than of a lucky allocation. Static layout only guarantees the
+*assumed* line size, though, so **every measured repetition** measures the actual
+cursor addresses on the queue object it is about to time — outside the timed
+interval — and records the reported cache-line size, both addresses, their line
+indices, and a `layout_ok` verdict. A `same_line` row that did not measure
+same-line, or a `separated` row that did not measure separated, fails the run
+rather than being published: an unverified layout is not evidence about layout.
+
+**The cache line is 128 bytes on the canonical host, not 64.** This matters more
+than it looks. Assuming 64 would put the "separated" blocks inside one real line,
+silently turning the separated control into a same-line control and reporting the
+**opposite** of the truth with no assertion firing anywhere. The benchmark
+therefore queries the host at runtime (`sysctlbyname("hw.cachelinesize")`) and, if
+the reported size exceeds the compile-time assumption, exits non-zero **before
+timing anything** — there is no warn-and-continue path, and no cell is published.
+
+`benchmark/spsc_false_sharing_bench.cpp` reuses the proven Phase-2 harness
+(one producer, one consumer, fixed-size messages, timing outside thread creation,
+correctness/checksum gating, consecutive-miss yield policy, raw repetitions
+preserved, one implementation per process), and
+`scripts/spsc-false-sharing.sh` runs the canonical matrix: 2 layouts × 3 message
+sizes × 3 capacities = 18 cells per session, 4 sessions, 72 processes. The design
+is **balanced AB/BA** — the two layouts of a pair run as adjacent processes, with
+both layout order and traversal direction balanced so every cell gets 2
+same-line-first and 2 separated-first comparisons, and the balance is **verified**
+by parsing the execution order back out of `command.txt`, not asserted from the
+design constants.
+
+The primary figure is the paired per-session ratio (**separated median ÷
+same_line median**; `< 1` means separated was faster).
+
+**Measured (Apple M3 Max, 2026-09-12; 72 processes, 360 measured repetitions,
+3.6 billion message transfers, all `correctness=PASS`, every row's cursor
+placement verified at runtime under the host's 128-byte cache line).** The
+direction is **not uniform**, and the headline result is *not* "padding is
+faster":
+
+| region | result |
+|---|---|
+| 8 B, capacities 1024 / 4096 / 65536 | separated faster **4/4 sessions** each; 3.1×–4.0× (median ratios 0.250 / 0.320 / 0.319) |
+| 64 B, capacities 4096 / 65536 | separated faster **4/4**; ~20–23% (0.796 / 0.770) |
+| 64 B, capacity 1024 | **same-line faster 4/4**; ~15% (1.154) |
+| 32 B, capacity 4096 | **same-line faster 4/4**; ~61% (1.614) |
+| 32 B, capacities 1024 / 65536 | **inconclusive** — direction flipped between sessions (2–2, 1–3) |
+
+So **7 of 9 cells hold one direction across all four balanced sessions (5
+separated, 2 same-line) and 2 are inconclusive**; across all 36 paired
+observations, 23 favour separated and 13 favour same-line. The balanced AB/BA
+order is what makes this readable: within each stable cell the ratios from
+same-line-first and separated-first sessions agree to a few percent while the
+layout effect is far larger, so the effect tracks the layout rather than the
+run position. Under the Phase-3A attribution rule a false-sharing explanation is
+therefore **permitted for the 5 separated-faster cells** (the 3.1×–4.0× at 8 B
+is the textbook signature), **contradicted in sign for the 2 same-line-faster
+cells** — which are real, reproducible results that the false-sharing mechanism
+does not predict — and **unavailable for the 2 inconclusive cells**. Phase 3A
+does **not** identify what drives the reversals; one uncontrolled difference
+that could contribute to the smaller-magnitude cells (the payload array starts
+at a different offset, hence a different cache set, in the two variants) is
+documented as a limitation rather than papered over.
+
+Full methodology, the derivation and the limitations are in
+`docs/SPSC_FALSE_SHARING.md`; the canonical data — raw repetitions, per-process
+summaries, runtime layout verification for every measured repetition, and the
+invariant report — is in `docs/results/spsc-false-sharing/`.
+
+**Phase 3A changes exactly one variable.** No cached `head`/`tail`, no batching,
+no memory-order change, no CAS, no affinity — those are Phase 3B and later, and
+combining any of them here would destroy the attribution this dataset exists to
+support. The frozen Phase-1 `SpscRingBuffer` was not modified and is **not** one
+of the two controls: it is unpadded, but adjacency is not proof of same-line
+placement and Phase 2 recorded no cursor addresses, so it can make no cache-line
+claim. It is available as `--impl=natural` for observational use only.
+
 Phases NOT STARTED:
 
-- **Phase 3** — False sharing (`head_`/`tail_` packed vs separated/padded) and
-  remote-cursor caching, as controlled experiments.
+- **Phase 3B** — Remote-cursor caching (`cached_head` / `cached_tail`). Must not
+  be combined with the Phase 3A layout change.
 - **Phase 4** — Tail latency / jitter under load.
 
 ## Next phases
@@ -548,6 +681,5 @@ Phases NOT STARTED:
 Experiment 01: Phase 3M per-function call-tree symbolization (an Instruments GUI
 pass over the six committed recordings); Phase 3L (Linux `perf` measurement)
 when a Linux host is available; Phase 5 (engineering write-up).
-Experiment 02: Phase 3 (false sharing + cursor caching), Phase 4 (tail latency)
-— see the Experiment 02 section above. Phase 2 (throughput baseline) is
-COMPLETE / FROZEN.
+Experiment 02: Phase 3B (remote-cursor caching), Phase 4 (tail latency) — see
+the Experiment 02 section above. Phases 1, 2 and 3A are COMPLETE / FROZEN.

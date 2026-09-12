@@ -289,7 +289,10 @@ deliberately controlled.
 adjacent processes.** For each `message_bytes + capacity` pair, the mutex
 process and the SPSC process are launched back to back, so the two legs of a
 comparison are neighbours in time rather than separated by the rest of the
-matrix.
+matrix. **This reduces temporal drift between the two legs; it does not
+eliminate it.** The two legs are still two separate processes, each of which can
+be placed on a different core, migrated, frequency-scaled or preempted
+independently, and the design measures no signal that would reveal it (§3.3).
 
 **Implementation order is balanced AB/BA across four sessions.**
 
@@ -418,17 +421,19 @@ Files: `docs/results/spsc-throughput/paired_summary.csv` and
 
 **This is the primary implementation comparison**, and it is deliberately *not*
 a pooled one. Within each session, the mutex process and the SPSC process of a
-cell ran adjacently, under the same 8-minute window of the same machine state,
-with the order balanced AB/BA. The paired ratio
+cell ran adjacently, within the same few-tens-of-seconds window, with the order
+balanced AB/BA. The paired ratio
 
 ```
 ratio_session = (SPSC session median ns/msg) / (mutex session median ns/msg)
 ```
 
-compares two processes that were close neighbours in time, so drift in
-placement, DVFS, thermal state and background load is largely shared between the
-two legs instead of being loaded onto one of them. **`ratio < 1` means SPSC
-completed a message faster in that session.**
+compares two processes that were close neighbours in time. **Adjacent execution
+reduces temporal drift between the two legs but cannot guarantee identical
+scheduler, DVFS, thermal, or background-system state** — the two processes are
+still separated by a full benchmark run, and each leg can be placed, migrated or
+frequency-scaled independently. The pairing narrows the gap; it does not close
+it. **`ratio < 1` means SPSC completed a message faster in that session.**
 
 | bytes | cap | median ratio | min | max | sessions SPSC faster | sessions mutex faster | direction |
 |---|---|---|---|---|---|---|---|
@@ -523,9 +528,10 @@ caveat that the pooled samples are not independent.
   implementations are equivalent, equally fast, or "effectively tied"; they mean
   this dataset does not distinguish them. **No equivalence is claimed for any
   overlapping cell.**
-- For `spsc 8 / 1024` the pooled `max` of 34706.40 ns/msg is not a throughput
-  measurement at all — it is one externally interrupted repetition (§4.6). That
-  single value is why the range is reported as spanning four orders of magnitude.
+- For `spsc 8 / 1024` the pooled `max` of 34706.40 ns/msg does not describe
+  throughput at all — it is one repetition whose wall-clock interval was
+  interrupted (§4.6). That single value is why the range is reported as spanning
+  four orders of magnitude.
 
 This criterion is reported for completeness and continuity. The **paired-session
 analysis in §4.2 is what this document uses for direction**, because it compares
@@ -583,9 +589,12 @@ index 2 — recorded `elapsed_ns = 347,063,971,125`, i.e. **347 seconds** for
 every other repetition of the cell, and recorded 5,533,585 full-queue and
 55,119,743 empty-queue retries — *lower* than three of its four siblings in the
 same process. The producer and consumer were therefore not stuck retrying
-against the queue; the process was simply not running for roughly 346 seconds.
-The elapsed-time column of a wall-clock interval cannot distinguish "slow code"
-from "process suspended", and this value is the latter.
+against the queue: work did not stall on queue state. **The observation is
+consistent with a long external descheduling or suspension event, but wall-clock
+timing alone cannot identify its cause.** The elapsed-time column of a wall-clock
+interval cannot distinguish "slow code" from "process not scheduled"; it records
+that roughly 346 seconds passed without the measured transfer progressing, not
+why.
 
 **How it is handled:** nothing is deleted or edited. The repetition stays in
 `raw/` and remains in the pooled `min`/`max` (§4.3, §4.4) where it is visible.
@@ -595,7 +604,8 @@ from "process suspended", and this value is the latter.
 This is a concrete reason the paired-session analysis is primary and the pooled
 range criterion is secondary.
 
-**LIMITATION:** Phase 2 does not control or detect machine suspension, so the
+**LIMITATION:** Phase 2 does not control or detect external descheduling or
+suspension, and this harness records no signal that would identify one, so the
 possibility of a smaller interruption in another repetition cannot be excluded
 from any cell.
 
@@ -665,7 +675,7 @@ time axis.
 - Between processes (session medians): **mutex 0.6%–14.9%**, **SPSC 10.1%–107.5%**
   (§4.7).
 - Between repetitions (pooled spread): **mutex 7.8%–36.5%**, **SPSC 33.4%–138.5%**
-  plus one cell distorted by a documented external interruption (§4.6).
+  plus one cell containing a documented unexplained wall-clock anomaly (§4.6).
 - The largest single movement observed anywhere in the canonical dataset is
   `spsc 8 / 1024`: session medians of 25.706, 32.659, 37.475 and 53.334 ns/msg —
   a factor of **2.07** between two sessions of the same implementation on the

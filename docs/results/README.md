@@ -57,6 +57,34 @@ measurement family. Transient raw runs land in repo-root `results/`
   medians (`PAIRED_COMPARISON.md`, `paired_summary.csv`); the pooled matrix is
   secondary. See its `RESULTS_METADATA.md` and `docs/SPSC_THROUGHPUT.md`. **No
   number in it is attributed to false sharing** (Phase 3).
+- `spsc-false-sharing/` — the **canonical Experiment 02 Phase 3A controlled
+  false-sharing dataset**: the same SPSC algorithm with cursors forced into
+  **one** cache line (`same_line`) versus **distinct** cache lines
+  (`separated`), 18 cells (2 layouts × 3 message sizes × 3 capacities), 10M
+  messages per repetition, 5 measured repetitions per process, 4 sessions per
+  cell in a **balanced AB/BA** order (2 same-line-first + 2 separated-first),
+  72 processes, one implementation per process. **Cursor cache-line placement is
+  the only variable** — no cached remote cursor, no batching, no memory-order
+  change, no CAS, no affinity. Layout is established by construction
+  (`static_assert` on block size and alignment) **and verified at runtime on
+  every measured repetition**: the raw CSVs carry the measured cursor addresses,
+  their line indices under the host's *reported* line size, and a `layout_ok`
+  verdict. The host reported **128** bytes, not the 64 that is usually assumed —
+  a 64-byte assumption would have placed the "separated" blocks in one real line
+  and inverted the experiment's meaning, so the benchmark fails the run rather
+  than publishing if the host's line size exceeds the compile-time assumption.
+  `ns/msg` is END-TO-END elapsed / messages delivered. Direction is taken from
+  the **paired per-session** median ratio (`separated ÷ same_line`, `< 1` means
+  separated is faster) in `PAIRED_COMPARISON.md`; the pooled matrix is secondary.
+  **Result: the direction is cell-dependent, not uniform** — 7 of 9 cells hold
+  one direction across all four balanced sessions (5 separated-faster, the
+  largest being 4.0× at 8 B / 1024; 2 same-line-faster, the largest 1.61× at
+  32 B / 4096) and 2 cells are inconclusive. No general "padding is faster"
+  claim is supported by this dataset.
+  See its `RESULTS_METADATA.md`, `LAYOUT_VERIFICATION.md`, `invariants.txt` and
+  `docs/SPSC_FALSE_SHARING.md`. The frozen
+  `spsc-throughput/` dataset is unchanged and is **not** a Phase-3A control —
+  Phase 2 verified no cursor addresses, so it cannot be one.
 - `spsc-throughput-superseded-fixed-order/` — the second Phase-2 pass,
   **SUPERSEDED, not canonical**. Real and self-validating (all 54 processes
   `PASS`), but every session ran all nine mutex cells before all nine SPSC

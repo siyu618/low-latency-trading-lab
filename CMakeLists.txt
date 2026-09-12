@@ -109,6 +109,34 @@ set_tests_properties(spsc_ring_buffer_tests_exitcode PROPERTIES
                      PASS_REGULAR_EXPRESSION "spsc_ring_buffer_tests_exitcode: got expected non-zero exit")
 
 # ---------------------------------------------------------------------------
+# Experiment 02 — SPSC Ring Buffer / Concurrency (Phase 3A: cursor cache-line
+# placement). spsc_false_sharing_tests runs the SAME Phase-1 correctness
+# protocol against BOTH Phase-3A layouts from one templated body, and adds the
+# runtime layout evidence the experiment's attribution depends on: measured
+# cursor addresses converted to line indices under the host's reported line
+# size, a negative control on the line-size guard, and a variant-vs-variant
+# differential proving the two layouts behave identically on identical input.
+# The frozen Phase-1 SpscRingBuffer is included (read-only) and remains the
+# natural/unpadded baseline; it is NOT one of the two Phase-3A controls.
+# ---------------------------------------------------------------------------
+add_executable(spsc_false_sharing_tests tests/spsc_false_sharing_tests.cpp)
+target_link_libraries(spsc_false_sharing_tests PRIVATE llob_core Threads::Threads)
+target_compile_options(spsc_false_sharing_tests PRIVATE -Wall -Wextra)
+# Same hang guard as the Phase-1 suite: the concurrent stress must terminate.
+add_test(NAME spsc_false_sharing_tests COMMAND spsc_false_sharing_tests)
+set_tests_properties(spsc_false_sharing_tests PROPERTIES TIMEOUT 300)
+
+# Same exit-code regression guard as the other test runners.
+add_test(NAME spsc_false_sharing_tests_exitcode
+         COMMAND ${CMAKE_COMMAND}
+                 -DLLDB_SELFTEST_FAIL=1
+                 -DNAME=spsc_false_sharing_tests_exitcode
+                 -DBINARY=$<TARGET_FILE:spsc_false_sharing_tests>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/assert_nonzero_exit.cmake)
+set_tests_properties(spsc_false_sharing_tests_exitcode PROPERTIES
+                     PASS_REGULAR_EXPRESSION "spsc_false_sharing_tests_exitcode: got expected non-zero exit")
+
+# ---------------------------------------------------------------------------
 # Benchmark (Experiment 01, Phase 2). Deterministic steady-state apply()
 # throughput. The benchmark is only meaningful as a release build: enable it
 # explicitly (default ON), and it is forced to -O3 -DNDEBUG regardless of the
@@ -180,6 +208,36 @@ if(BUILD_BENCHMARKS)
                      --capacity=1024 --messages=20000 --reps=1 --warmup=0)
     set_tests_properties(spsc_throughput_bench_smoke_mutex PROPERTIES TIMEOUT 300)
 
+    # -----------------------------------------------------------------------
+    # Experiment 02 — Phase 3A: controlled false-sharing benchmark. Compares
+    # ONLY the two Phase-3A cursor layouts (same-line vs separated) on the
+    # proven Phase-2 harness; `--impl=natural` runs the frozen Phase-2 SPSC as
+    # an OBSERVATIONAL extra, never as part of a causal claim. Phase-2 tooling
+    # is untouched — this is a separate binary with its own result directory.
+    # -----------------------------------------------------------------------
+    add_executable(spsc_false_sharing_bench benchmark/spsc_false_sharing_bench.cpp)
+    target_link_libraries(spsc_false_sharing_bench PRIVATE llob_core Threads::Threads)
+    target_compile_options(spsc_false_sharing_bench PRIVATE -O3 -DNDEBUG)
+
+    # Smoke cells only: short run, one repetition, no warm-up. The canonical
+    # balanced matrix is run by scripts/spsc-false-sharing.sh, never by ctest.
+    # One smoke test per Phase-3A layout, so a broken layout cannot hide behind
+    # the other's passing run.
+    add_test(NAME spsc_false_sharing_bench_smoke_same_line
+             COMMAND spsc_false_sharing_bench --impl=same_line --message-bytes=8
+                     --capacity=1024 --messages=20000 --reps=1 --warmup=0)
+    set_tests_properties(spsc_false_sharing_bench_smoke_same_line PROPERTIES TIMEOUT 300)
+    add_test(NAME spsc_false_sharing_bench_smoke_separated
+             COMMAND spsc_false_sharing_bench --impl=separated --message-bytes=8
+                     --capacity=1024 --messages=20000 --reps=1 --warmup=0)
+    set_tests_properties(spsc_false_sharing_bench_smoke_separated PROPERTIES TIMEOUT 300)
+    # Observational natural-baseline smoke: proves the third row still builds
+    # and validates, without making it part of the canonical comparison.
+    add_test(NAME spsc_false_sharing_bench_smoke_natural
+             COMMAND spsc_false_sharing_bench --impl=natural --message-bytes=8
+                     --capacity=1024 --messages=20000 --reps=1 --warmup=0)
+    set_tests_properties(spsc_false_sharing_bench_smoke_natural PROPERTIES TIMEOUT 300)
+
     set(BENCH_ARCH_FLAGS "" CACHE STRING
         "Extra arch flags for the benchmark target (e.g. -march=native). Empty = compiler default")
     if(NOT BENCH_ARCH_FLAGS STREQUAL "")
@@ -190,6 +248,7 @@ if(BUILD_BENCHMARKS)
             target_compile_options(orderbook_bitmap_bench PRIVATE ${BENCH_ARCH_FLAGS})
             target_compile_options(orderbook_gap_bench PRIVATE ${BENCH_ARCH_FLAGS})
             target_compile_options(spsc_throughput_bench PRIVATE ${BENCH_ARCH_FLAGS})
+            target_compile_options(spsc_false_sharing_bench PRIVATE ${BENCH_ARCH_FLAGS})
         else()
             message(WARNING "BENCH_ARCH_FLAGS '${BENCH_ARCH_FLAGS}' unsupported by this compiler; "
                             "building the benchmark with the compiler default")

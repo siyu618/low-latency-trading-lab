@@ -1,0 +1,46 @@
+# Experiment 02 Phase 3A — CONTROLLED false-sharing experiment.
+# ns_per_message = elapsed_ns / messages delivered: it INCLUDES queue synchronization,
+# payload assignment, cache-coherence traffic, harness retry/backpressure and OS scheduling.
+# It is NOT a per-try_push latency, NOT a per-try_pop latency, and NOT a one-way handoff time.
+# ONE implementation per process: the other implementations were NOT timed here.
+# This summary describes THIS PROCESS ONLY. It is not a canonical
+# result on its own; the canonical dataset pools repetitions across
+# balanced processes. See docs/SPSC_FALSE_SHARING.md.
+# exact invocation (argv as received):
+#   argv[0]=build-spsc-false-sharing/spsc_false_sharing_bench
+#   argv[1]=--impl=same_line
+#   argv[2]=--message-bytes=32
+#   argv[3]=--capacity=65536
+#   argv[4]=--messages=10000000
+#   argv[5]=--reps=5
+#   argv[6]=--warmup=1
+#   argv[7]=--raw-out=docs/results/spsc-false-sharing/raw/same_line_b32_c65536_s3.csv
+#   argv[8]=--summary-out=docs/results/spsc-false-sharing/summaries/same_line_b32_c65536_s3.txt
+impl=same_line
+message_bytes=32
+capacity=65536
+message_count=10000000
+measured_reps=5
+warmup_reps=1
+median_ns_per_message=22.106987
+min_ns_per_message=21.405217
+max_ns_per_message=25.583662
+spread_pct=19.521
+median_messages_per_second=45234566.673
+producer_full_retries_total=3694999
+consumer_empty_retries_total=4933635
+checksum=15742678983221721015
+expected_checksum=15742678983221721015
+correctness=PASS
+layout_evidence=VERIFIED_PER_REPETITION
+cache_line_size_reported=128
+cache_line_size_assumed=128
+layout_invariant=PASS
+layout_first_measured_rep=layout=same_line alignment=128 reported_cache_line_size=128 head_addr=0x120008000 tail_addr=0x120008008 head_line=37748992 tail_line=37748992 same_line=yes cursor_shares_payload_line=no line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
+# per-repetition detail — every measured repetition, none discarded:
+rep,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum,head_line,tail_line,cursors_same_line
+0,255836625,25.583662,39087444.966,634475,1196771,15742678983221721015,37748992,37748992,yes
+1,221069875,22.106987,45234566.673,778783,605880,15742678983221721015,35651840,35651840,yes
+2,214052167,21.405217,46717583.569,562285,866080,15742678983221721015,36700416,36700416,yes
+3,220890000,22.089000,45271402.055,1078970,553815,15742678983221721015,40894720,40894720,yes
+4,230032834,23.003283,43472054.950,640486,1711089,15742678983221721015,39846144,39846144,yes

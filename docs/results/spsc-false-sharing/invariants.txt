@@ -1,0 +1,21 @@
+# Experiment 02 Phase 3A — dataset invariants (all must hold)
+# checked: 2026-09-12T02:13:35Z
+expected_processes=72
+recorded_processes=72
+expected_raw_files=72
+raw_files=72
+measured_reps_per_process=5
+sessions_per_cell=4
+cursor_layouts=2 (same_line, separated)
+layout_first_per_cell=2 each
+balanced_layout_order=PASS
+host_reported_cache_line_size=128
+compile_time_layout_assumption=128
+runtime_layout_verified_every_measured_rep=PASS
+same_line_rows_measured_same_line=PASS
+separated_rows_measured_separated=PASS
+cursor_payload_line_disjoint=PASS
+every_row_correctness=PASS
+checksum_stable_within_cell=PASS
+summary_matches_raw=PASS
+all_invariants=PASS
