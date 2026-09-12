@@ -1025,7 +1025,14 @@ and scheduler behaviour are all machine-specific; the *method* transfers, the
   cell. Canonical dataset: `docs/results/spsc-false-sharing/`. Superseded
   pre-3A.1 dataset, retained unedited and **not to be cited**:
   `docs/results/spsc-false-sharing-pre3a1-payload-offset-confounded/`.
-- **Experiment 02, Phase 3B — Remote-Cursor Caching: NOT STARTED.**
+- **Experiment 02, Phase 3B — Remote-Cursor Caching: COMPLETE / FROZEN.**
+  Collected 2026-09-12 by starting from **these** frozen Phase-3A separated
+  layouts and changing one variable of its own — the frequency of remote cursor
+  loads — so nothing in the Phase-3A dataset above is affected. Canonical
+  dataset: `docs/results/spsc-remote-cursor/`; methodology and analysis:
+  `docs/SPSC_REMOTE_CURSOR_CACHE.md`. Its result is negative (the mechanism
+  reduced remote loads; the throughput did not follow), which is a statement
+  about Phase 3B and not about cursor placement.
 - **Experiment 02, Phase 4 — Tail Latency: NOT STARTED.**
 
 **Phase 3B must not be combined with Phase 3A.** Remote-cursor caching
