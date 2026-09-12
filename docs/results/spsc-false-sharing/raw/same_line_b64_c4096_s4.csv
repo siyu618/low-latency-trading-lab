@@ -2,10 +2,13 @@
 # ns_per_message = END-TO-END elapsed_ns / messages delivered (NOT a per-call latency, NOT one-way handoff).
 # The cursor addresses/line indices below were measured on the SAME object this repetition timed,
 # OUTSIDE the timed interval. layout_ok=PASS means the measured placement matched the claim.
+# object_addr/object_size/payload_offset/payload_begin_addr are that same object's footprint evidence:
+# the two cursor policies must agree on object_size and on payload_offset so the payload does not
+# move between cache sets when cursor placement changes.
 # All 5 measured repetitions are present; 1 warm-up repetition(s) are excluded from every published figure.
-rep,impl,message_bytes,capacity,message_count,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum,correctness,reported_cache_line_size,head_addr,tail_addr,head_line,tail_line,cursors_same_line,layout_ok
-0,same_line,64,4096,10000000,235325541,23.532554,42494324.915,1508727,1521725,8986780111068692703,PASS,128,4563435520,4563435528,35651840,35651840,yes,PASS
-1,same_line,64,4096,10000000,206682125,20.668212,48383477.768,1471600,3432,8986780111068692703,PASS,128,4966088704,4966088712,38797568,38797568,yes,PASS
-2,same_line,64,4096,10000000,232856958,23.285696,42944819.368,996035,612835,8986780111068692703,PASS,128,4831870976,4831870984,37748992,37748992,yes,PASS
-3,same_line,64,4096,10000000,224422250,22.442225,44558861.699,1361556,15606,8986780111068692703,PASS,128,4966088704,4966088712,38797568,38797568,yes,PASS
-4,same_line,64,4096,10000000,244444917,24.444492,40909011.825,1566894,536051,8986780111068692703,PASS,128,4966088704,4966088712,38797568,38797568,yes,PASS
+rep,impl,message_bytes,capacity,message_count,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum,correctness,reported_cache_line_size,head_addr,tail_addr,head_line,tail_line,cursors_same_line,layout_ok,object_addr,object_size,payload_offset,payload_begin_addr
+0,same_line,64,4096,10000000,220899042,22.089904,45269548.973,680841,1560883,8986780111068692703,PASS,128,5100306432,5100306440,39846144,39846144,yes,PASS,5100306432,262400,256,5100306688
+1,same_line,64,4096,10000000,272576500,27.257650,36686948.435,1073960,155794,8986780111068692703,PASS,128,4831870976,4831870984,37748992,37748992,yes,PASS,4831870976,262400,256,4831871232
+2,same_line,64,4096,10000000,276598542,27.659854,36153480.520,1814965,781717,8986780111068692703,PASS,128,4831870976,4831870984,37748992,37748992,yes,PASS,4831870976,262400,256,4831871232
+3,same_line,64,4096,10000000,245169667,24.516967,40788080.036,1722107,56832,8986780111068692703,PASS,128,4831870976,4831870984,37748992,37748992,yes,PASS,4831870976,262400,256,4831871232
+4,same_line,64,4096,10000000,237210125,23.721013,42156716.540,1440475,36997,8986780111068692703,PASS,128,4831870976,4831870984,37748992,37748992,yes,PASS,4831870976,262400,256,4831871232

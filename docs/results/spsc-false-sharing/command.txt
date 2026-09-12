@@ -1,7 +1,7 @@
 # Experiment 02 Phase 3A canonical run — exact effective invocations, IN ORDER
-# UTC:       2026-09-12T02:11:31Z
-# local:     2026-09-12T10:11:31+0800
-# repo HEAD: 5f485fe6b5a4dceb41dac22c88a12a7d0aac1f0e
+# UTC:       2026-09-12T03:11:47Z
+# local:     2026-09-12T11:11:47+0800
+# repo HEAD: 6916a804a5a98421cb8ce2f6ada00f2adc7e8685
 # messages=10000000 reps=5 warmup=1 sessions=4
 #
 # BALANCED AB/BA DESIGN (fixed, deterministic, never randomized):

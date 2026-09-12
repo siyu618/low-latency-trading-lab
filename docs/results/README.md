@@ -58,33 +58,61 @@ measurement family. Transient raw runs land in repo-root `results/`
   secondary. See its `RESULTS_METADATA.md` and `docs/SPSC_THROUGHPUT.md`. **No
   number in it is attributed to false sharing** (Phase 3).
 - `spsc-false-sharing/` — the **canonical Experiment 02 Phase 3A controlled
-  false-sharing dataset**: the same SPSC algorithm with cursors forced into
+  cursor-placement dataset** (measured 2026-09-12 under the Phase-3A.1
+  equal-footprint design): the same SPSC algorithm with cursors forced into
   **one** cache line (`same_line`) versus **distinct** cache lines
   (`separated`), 18 cells (2 layouts × 3 message sizes × 3 capacities), 10M
   messages per repetition, 5 measured repetitions per process, 4 sessions per
   cell in a **balanced AB/BA** order (2 same-line-first + 2 separated-first),
   72 processes, one implementation per process. **Cursor cache-line placement is
   the only variable** — no cached remote cursor, no batching, no memory-order
-  change, no CAS, no affinity. Layout is established by construction
-  (`static_assert` on block size and alignment) **and verified at runtime on
-  every measured repetition**: the raw CSVs carry the measured cursor addresses,
-  their line indices under the host's *reported* line size, and a `layout_ok`
-  verdict. The host reported **128** bytes, not the 64 that is usually assumed —
-  a 64-byte assumption would have placed the "separated" blocks in one real line
-  and inverted the experiment's meaning, so the benchmark fails the run rather
-  than publishing if the host's line size exceeds the compile-time assumption.
-  `ns/msg` is END-TO-END elapsed / messages delivered. Direction is taken from
-  the **paired per-session** median ratio (`separated ÷ same_line`, `< 1` means
-  separated is faster) in `PAIRED_COMPARISON.md`; the pooled matrix is secondary.
-  **Result: the direction is cell-dependent, not uniform** — 7 of 9 cells hold
-  one direction across all four balanced sessions (5 separated-faster, the
-  largest being 4.0× at 8 B / 1024; 2 same-line-faster, the largest 1.61× at
-  32 B / 4096) and 2 cells are inconclusive. No general "padding is faster"
-  claim is supported by this dataset.
-  See its `RESULTS_METADATA.md`, `LAYOUT_VERIFICATION.md`, `invariants.txt` and
-  `docs/SPSC_FALSE_SHARING.md`. The frozen
+  change, no CAS, no affinity — **and, since Phase 3A.1, both cursor policies
+  have the same `2 × 128 = 256`-byte footprint**, so the payload array begins at
+  the same offset within the object (and therefore in the same cache set) in both
+  variants. Same-line keeps *both* cursors in the first block and reserves an
+  inert second block whose only purpose is to equalize the footprint; the earlier
+  128-vs-256-byte design moved the payload from object offset 128 to 256 along
+  with the cursor placement, which is why its dataset was superseded. Layout is
+  established by construction (`static_assert` on policy size, alignment and
+  cursor offset) **and verified at runtime**: a pre-timing gate aborts the process
+  if the two variants' `object_size` / `payload_offset_from_object_base` disagree,
+  and **every measured repetition** records the measured cursor addresses, their
+  line indices under the host's *reported* line size, the object address/size and
+  payload offset, and a `layout_ok` verdict. The host reported **128** bytes, not
+  the 64 that is usually assumed — a 64-byte assumption would have placed the
+  "separated" blocks in one real line and inverted the experiment's meaning, so
+  the benchmark fails the run rather than publishing if the host's line size
+  exceeds the compile-time assumption. `ns/msg` is END-TO-END elapsed / messages
+  delivered. Direction is taken from the **paired per-session** median ratio
+  (`separated ÷ same_line`, `< 1` means separated is faster) in
+  `PAIRED_COMPARISON.md`; the pooled matrix is secondary.
+  **Result: the direction is cell-dependent, not uniform** — 6 of 9 cells hold
+  one direction across all four balanced sessions (**5 separated-faster**, the
+  largest being ~4.0× at 8 B / 1024 and ~1.6× at 64 B / 4096 and 64 B / 65536;
+  **1 same-line-faster**, 1.43× at 32 B / 4096) and 3 cells are inconclusive
+  (32 B / 1024, 32 B / 65536, 64 B / 1024). No general "padding is faster" claim
+  is supported by this dataset, and separated-faster cells are described as
+  *consistent with* reduced false-sharing interference, never as proof that false
+  sharing caused the whole measured difference. Verified: 72 processes, 360
+  measured repetitions, `correctness=PASS` and `layout_ok=PASS` on every row,
+  equal `object_size` and equal `payload_offset` across the two layouts in all 9
+  cells, `all_invariants=PASS`.
+  See its `RESULTS_METADATA.md`, `LAYOUT_VERIFICATION.md`, `invariants.txt`,
+  `PROVENANCE.md` and `docs/SPSC_FALSE_SHARING.md`. The frozen
   `spsc-throughput/` dataset is unchanged and is **not** a Phase-3A control —
   Phase 2 verified no cursor addresses, so it cannot be one.
+- `spsc-false-sharing-pre3a1-payload-offset-confounded/` — the **first
+  Phase-3A pass, SUPERSEDED, not canonical**. Real and self-validating: 72
+  processes, 360 measured repetitions, all `correctness=PASS`, every row's cursor
+  placement verified at runtime under the host's 128-byte line. It is superseded
+  because it changed **two** variables at once — the cursor policy footprints
+  were 128 bytes (`same_line`) and 256 bytes (`separated`), and since the payload
+  array follows the cursors in the object, the payload began at object offset 128
+  in one variant and 256 in the other, i.e. in a different cache set. Its numbers
+  therefore cannot be attributed to cursor placement, and it must **not** be cited
+  for causal cursor-placement claims. Nothing in it was edited or deleted; see its
+  `SUPERSEDED.md` for why, and for the one comparison that is still legitimate
+  (a secondary methodology observation against the new equal-footprint dataset).
 - `spsc-throughput-superseded-fixed-order/` — the second Phase-2 pass,
   **SUPERSEDED, not canonical**. Real and self-validating (all 54 processes
   `PASS`), but every session ran all nine mutex cells before all nine SPSC

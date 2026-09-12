@@ -7,14 +7,14 @@
 # DESCRIPTIVE paired analysis — NOT a significance test. Four paired
 # observations per cell cannot establish formal statistical significance.
 # message_count=10000000 reps_per_process=5 sessions=4
-# UTC: 2026-09-12T02:13:36Z
+# UTC: 2026-09-12T03:13:48Z
 message_bytes,capacity,first_impl_s1,ratio_s1,first_impl_s2,ratio_s2,first_impl_s3,ratio_s3,first_impl_s4,ratio_s4,median_paired_ratio,min_paired_ratio,max_paired_ratio,sessions_separated_faster,sessions_same_line_faster
-8,1024,same_line,0.252059,separated,0.246915,separated,0.269522,same_line,0.244685,0.249487,0.244685,0.269522,4,0
-8,4096,same_line,0.388668,separated,0.336505,separated,0.304155,same_line,0.299156,0.320330,0.299156,0.388668,4,0
-8,65536,same_line,0.315740,separated,0.366118,separated,0.320094,same_line,0.318122,0.319108,0.315740,0.366118,4,0
-32,1024,same_line,1.020682,separated,0.833897,separated,1.158950,same_line,0.926382,0.973532,0.833897,1.158950,2,2
-32,4096,same_line,1.606041,separated,1.621254,separated,1.574696,same_line,1.699208,1.613647,1.574696,1.699208,0,4
-32,65536,same_line,1.240478,separated,0.962836,separated,1.657903,same_line,1.536115,1.388297,0.962836,1.657903,1,3
-64,1024,same_line,1.263070,separated,1.178242,separated,1.130344,same_line,1.085089,1.154293,1.085089,1.263070,0,4
-64,4096,same_line,0.857591,separated,0.836020,separated,0.738747,same_line,0.755936,0.795978,0.738747,0.857591,4,0
-64,65536,same_line,0.655682,separated,0.745678,separated,0.833642,same_line,0.795088,0.770383,0.655682,0.833642,4,0
+8,1024,same_line,0.327814,separated,0.235017,separated,0.261137,same_line,0.213649,0.248077,0.213649,0.327814,4,0
+8,4096,same_line,0.283937,separated,0.309138,separated,0.348204,same_line,0.393232,0.328671,0.283937,0.393232,4,0
+8,65536,same_line,0.421505,separated,0.373591,separated,0.331613,same_line,0.305854,0.352602,0.305854,0.421505,4,0
+32,1024,same_line,0.897125,separated,1.071856,separated,0.801245,same_line,0.829431,0.863278,0.801245,1.071856,3,1
+32,4096,same_line,1.540817,separated,1.160165,separated,1.443758,same_line,1.407687,1.425723,1.160165,1.540817,0,4
+32,65536,same_line,0.939189,separated,2.085568,separated,1.407424,same_line,0.829253,1.173307,0.829253,2.085568,2,2
+64,1024,same_line,0.878350,separated,1.015126,separated,0.828968,same_line,0.951973,0.915161,0.828968,1.015126,3,1
+64,4096,same_line,0.587627,separated,0.893199,separated,0.536940,same_line,0.641493,0.614560,0.536940,0.893199,4,0
+64,65536,same_line,0.559753,separated,0.558472,separated,0.617117,same_line,0.644702,0.588435,0.558472,0.644702,4,0

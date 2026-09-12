@@ -26,6 +26,16 @@
 //         is 64, 32 or 16 bytes. That is what makes the 128-byte compile-time
 //         value a conservative choice rather than a lucky one.
 //
+// (3) EQUAL FOOTPRINT (Phase 3A.1). Cursor placement must be the ONLY thing
+//     that differs. If the two cursor policies were different sizes, the payload
+//     array declared after them would start at a different offset in each
+//     variant — a second changed variable, and one that moves the payload into a
+//     different cache set. So these tests require, for every T/Capacity the
+//     experiment uses: identical cursor-policy size and alignment, identical
+//     queue object size, and an identical payload offset from the object base.
+//     The header asserts this at compile time as well; it is tested here so that
+//     the requirement is visible where the experiment's claims are checked.
+//
 //     Plus a variant-vs-variant differential: identical operation sequences fed
 //     to both layouts must produce identical return values and identical
 //     payload values, which is the "only cursor layout differs" claim stated as
@@ -44,6 +54,7 @@
 #include "spsc_ring_buffer.h"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -770,6 +781,101 @@ void test_payload_layout_is_equivalent_across_variants() {
     CHECK(rp.payload_disjoint);
 }
 
+// ---------------------------------------------------------------------------
+// Phase 3A.1 — equal footprint. The payload offset must not move between the
+// two variants, or the experiment changes cursor placement AND payload layout at
+// once. This is a build-time invariant in the header; it is asserted here too so
+// that a reader checking the experiment's controls finds it, and it is checked
+// again on live objects below.
+// ---------------------------------------------------------------------------
+void test_cursor_policy_footprints_are_equal() {
+    CHECK(sizeof(SameLineCursorBlock) == sizeof(SeparatedCursorBlocks));
+    CHECK(alignof(SameLineCursorBlock) == alignof(SeparatedCursorBlocks));
+    CHECK(sizeof(SameLineCursorBlock) == 2 * lltl::kAssumedCacheLineSize);
+    CHECK(sizeof(SeparatedCursorBlocks) == 2 * lltl::kAssumedCacheLineSize);
+
+    // The treatment, stated as offsets rather than as prose: same-line keeps
+    // BOTH cursors in the first assumed block; separated puts tail in the
+    // second; head is at the same offset in both.
+    CHECK(offsetof(SameLineCursorBlock, head) == 0);
+    CHECK(offsetof(SameLineCursorBlock, tail) < lltl::kAssumedCacheLineSize);
+    CHECK(offsetof(SeparatedCursorBlocks, head) == 0);
+    CHECK(offsetof(SeparatedCursorBlocks, tail) >= lltl::kAssumedCacheLineSize);
+
+    // The same-line block's padding is inert storage, not a place a cursor
+    // could be moved into without the assertion above firing.
+    CHECK(offsetof(SameLineCursorBlock, reserved) >=
+          lltl::kAssumedCacheLineSize);
+}
+
+// Runtime equal-footprint check for one T/Capacity: the objects are the same
+// size and the payload begins at the same offset from the object base, so the
+// only thing that changed between the variants is what the cursor policy
+// contributes.
+template <typename T, std::size_t Capacity>
+void check_footprint_agreement(const char* label) {
+    const std::size_t line = lltl::reported_cache_line_size();
+
+    auto same = std::make_unique<SpscSameLineRingBuffer<T, Capacity>>();
+    auto sep  = std::make_unique<SpscSeparatedCursorRingBuffer<T, Capacity>>();
+
+    CHECK(sizeof(SpscSameLineRingBuffer<T, Capacity>) ==
+          sizeof(SpscSeparatedCursorRingBuffer<T, Capacity>));
+
+    const auto rs = same->cursor_layout_report(line);
+    const auto rp = sep->cursor_layout_report(line);
+
+    CHECK(rs.object_size == rp.object_size);
+    CHECK(rs.payload_offset_from_object_base ==
+          rp.payload_offset_from_object_base);
+    CHECK(lltl::footprints_agree(rs, rp));
+
+    // The reported values must describe the object that was actually measured,
+    // not a recomputed constant.
+    CHECK(rs.object_address == reinterpret_cast<std::uintptr_t>(same.get()));
+    CHECK(rp.object_address == reinterpret_cast<std::uintptr_t>(sep.get()));
+    CHECK(rs.object_size == sizeof(*same));
+    CHECK(rp.object_size == sizeof(*sep));
+    CHECK(rs.payload_offset_from_object_base ==
+          rs.payload_begin - rs.object_address);
+    CHECK(rs.payload_offset_from_object_base >= sizeof(SameLineCursorBlock));
+    CHECK(rs.payload_offset_from_object_base < rs.object_size);
+
+    std::printf("  footprint %-28s same_line: size=%zu payload_offset=%zu | "
+                "separated: size=%zu payload_offset=%zu\n",
+                label, rs.object_size, rs.payload_offset_from_object_base,
+                rp.object_size, rp.payload_offset_from_object_base);
+}
+
+// Trivially copyable payloads with the benchmark's exact sizes, so the shapes
+// the canonical matrix runs are covered here too (the benchmark's own
+// cross-variant gate is the runtime guard; this is the test-side statement).
+struct Msg8Bytes {
+    std::uint64_t seq = 0;
+};
+struct Msg64Bytes {
+    std::uint64_t w[8] = {};
+};
+static_assert(sizeof(Msg8Bytes) == 8);
+static_assert(sizeof(Msg64Bytes) == 64);
+
+// Every (T, Capacity) shape the Phase-3A benchmark actually runs, plus the small
+// shapes the tests use. A single shape with a mismatched payload offset would be
+// enough to make that cell's result uninterpretable.
+void test_object_footprint_and_payload_offset_are_equal() {
+    check_footprint_agreement<Msg8Bytes, 1024>("8B/1024");
+    check_footprint_agreement<Msg8Bytes, 4096>("8B/4096");
+    check_footprint_agreement<Msg8Bytes, 65536>("8B/65536");
+    check_footprint_agreement<MarketMessage, 1024>("32B/1024");
+    check_footprint_agreement<MarketMessage, 4096>("32B/4096");
+    check_footprint_agreement<MarketMessage, 65536>("32B/65536");
+    check_footprint_agreement<Msg64Bytes, 1024>("64B/1024");
+    check_footprint_agreement<Msg64Bytes, 4096>("64B/4096");
+    check_footprint_agreement<Msg64Bytes, 65536>("64B/65536");
+    check_footprint_agreement<std::uint64_t, 8>("u64/8");
+    check_footprint_agreement<Message, 8>("Message/8");
+}
+
 // The frozen Phase-1 type is still the natural/unpadded baseline and is NOT one
 // of the two Phase-3A controls. This asserts only that it is intact and usable;
 // Phase 3A makes no causal claim from it.
@@ -822,6 +928,12 @@ int main() {
 
     test_payload_layout_is_equivalent_across_variants();
     total += summary("layout: payload equivalent across variants");
+
+    test_cursor_policy_footprints_are_equal();
+    total += summary("layout: cursor policy footprints equal");
+
+    test_object_footprint_and_payload_offset_are_equal();
+    total += summary("layout: object size / payload offset equal per T+cap");
 
     test_variants_agree_under_identical_operation_sequence();
     total += summary("differential: variants agree on identical ops");

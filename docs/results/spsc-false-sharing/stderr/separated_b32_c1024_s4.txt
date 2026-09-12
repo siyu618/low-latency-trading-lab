@@ -1,13 +1,17 @@
 [host] cache_line_size_reported=128 cache_line_size_assumed=128
-[layout rep 1/6] layout=separated alignment=128 reported_cache_line_size=128 head_addr=0x128008000 tail_addr=0x128008080 head_line=38797568 tail_line=38797569 same_line=no cursor_shares_payload_line=no line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
-[warmup 1/1] impl=separated bytes=32 cap=1024 elapsed=276171625ns correct=yes (excluded from reported data)
-[layout rep 2/6] layout=separated alignment=128 reported_cache_line_size=128 head_addr=0x118008000 tail_addr=0x118008080 head_line=36700416 tail_line=36700417 same_line=no cursor_shares_payload_line=no line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
-[rep 1/5] impl=separated bytes=32 cap=1024 elapsed=280463917ns ns_per_message=28.046392 full_retries=151686 empty_retries=22569853 correct=yes
-[layout rep 3/6] layout=separated alignment=128 reported_cache_line_size=128 head_addr=0x118008000 tail_addr=0x118008080 head_line=36700416 tail_line=36700417 same_line=no cursor_shares_payload_line=no line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
-[rep 2/5] impl=separated bytes=32 cap=1024 elapsed=304596458ns ns_per_message=30.459646 full_retries=128116 empty_retries=26485089 correct=yes
-[layout rep 4/6] layout=separated alignment=128 reported_cache_line_size=128 head_addr=0x108008000 tail_addr=0x108008080 head_line=34603264 tail_line=34603265 same_line=no cursor_shares_payload_line=no line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
-[rep 3/5] impl=separated bytes=32 cap=1024 elapsed=298336125ns ns_per_message=29.833613 full_retries=120921 empty_retries=25682266 correct=yes
-[layout rep 5/6] layout=separated alignment=128 reported_cache_line_size=128 head_addr=0x108008000 tail_addr=0x108008080 head_line=34603264 tail_line=34603265 same_line=no cursor_shares_payload_line=no line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
-[rep 4/5] impl=separated bytes=32 cap=1024 elapsed=336021500ns ns_per_message=33.602150 full_retries=792615 empty_retries=29729462 correct=yes
-[layout rep 6/6] layout=separated alignment=128 reported_cache_line_size=128 head_addr=0x110008000 tail_addr=0x110008080 head_line=35651840 tail_line=35651841 same_line=no cursor_shares_payload_line=no line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
-[rep 5/5] impl=separated bytes=32 cap=1024 elapsed=316352500ns ns_per_message=31.635250 full_retries=136600 empty_retries=26405742 correct=yes
+[footprint] bytes=32 capacity=1024
+  separated object_size=33024 payload_offset=256 cursor_policy_size=256
+  same_line object_size=33024 payload_offset=256 cursor_policy_size=256
+  cross_variant_footprint=PASS
+[layout rep 1/6] layout=separated alignment=128 reported_cache_line_size=128 head_addr=0x150008000 tail_addr=0x150008080 head_line=44040448 tail_line=44040449 same_line=no cursor_shares_payload_line=no object_addr=0x150008000 object_size=33024 payload_offset=256 line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
+[warmup 1/1] impl=separated bytes=32 cap=1024 elapsed=297501208ns correct=yes (excluded from reported data)
+[layout rep 2/6] layout=separated alignment=128 reported_cache_line_size=128 head_addr=0x140008000 tail_addr=0x140008080 head_line=41943296 tail_line=41943297 same_line=no cursor_shares_payload_line=no object_addr=0x140008000 object_size=33024 payload_offset=256 line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
+[rep 1/5] impl=separated bytes=32 cap=1024 elapsed=318496417ns ns_per_message=31.849642 full_retries=380546 empty_retries=26012753 correct=yes
+[layout rep 3/6] layout=separated alignment=128 reported_cache_line_size=128 head_addr=0x150008000 tail_addr=0x150008080 head_line=44040448 tail_line=44040449 same_line=no cursor_shares_payload_line=no object_addr=0x150008000 object_size=33024 payload_offset=256 line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
+[rep 2/5] impl=separated bytes=32 cap=1024 elapsed=329572916ns ns_per_message=32.957292 full_retries=1827877 empty_retries=26979885 correct=yes
+[layout rep 4/6] layout=separated alignment=128 reported_cache_line_size=128 head_addr=0x130008000 tail_addr=0x130008080 head_line=39846144 tail_line=39846145 same_line=no cursor_shares_payload_line=no object_addr=0x130008000 object_size=33024 payload_offset=256 line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
+[rep 3/5] impl=separated bytes=32 cap=1024 elapsed=301086958ns ns_per_message=30.108696 full_retries=290833 empty_retries=31431422 correct=yes
+[layout rep 5/6] layout=separated alignment=128 reported_cache_line_size=128 head_addr=0x120008000 tail_addr=0x120008080 head_line=37748992 tail_line=37748993 same_line=no cursor_shares_payload_line=no object_addr=0x120008000 object_size=33024 payload_offset=256 line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
+[rep 4/5] impl=separated bytes=32 cap=1024 elapsed=294928875ns ns_per_message=29.492887 full_retries=119469 empty_retries=24999969 correct=yes
+[layout rep 6/6] layout=separated alignment=128 reported_cache_line_size=128 head_addr=0x128008000 tail_addr=0x128008080 head_line=38797568 tail_line=38797569 same_line=no cursor_shares_payload_line=no object_addr=0x128008000 object_size=33024 payload_offset=256 line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
+[rep 5/5] impl=separated bytes=32 cap=1024 elapsed=328186875ns ns_per_message=32.818688 full_retries=266463 empty_retries=36813675 correct=yes

@@ -1,0 +1,11 @@
+# Experiment 02 Phase 3A raw repetitions — ONE implementation per process.
+# ns_per_message = END-TO-END elapsed_ns / messages delivered (NOT a per-call latency, NOT one-way handoff).
+# The cursor addresses/line indices below were measured on the SAME object this repetition timed,
+# OUTSIDE the timed interval. layout_ok=PASS means the measured placement matched the claim.
+# All 5 measured repetitions are present; 1 warm-up repetition(s) are excluded from every published figure.
+rep,impl,message_bytes,capacity,message_count,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum,correctness,reported_cache_line_size,head_addr,tail_addr,head_line,tail_line,cursors_same_line,layout_ok
+0,separated,32,1024,10000000,245677125,24.567712,40703830.281,62888,17451787,15742678983221721015,PASS,128,5100306432,5100306560,39846144,39846145,no,PASS
+1,separated,32,1024,10000000,292964250,29.296425,34133857.629,143495,24143048,15742678983221721015,PASS,128,5368741888,5368742016,41943296,41943297,no,PASS
+2,separated,32,1024,10000000,265781833,26.578183,37624843.982,75036,21046806,15742678983221721015,PASS,128,4831870976,4831871104,37748992,37748993,no,PASS
+3,separated,32,1024,10000000,349694792,34.969479,28596365.256,251230,47116178,15742678983221721015,PASS,128,5368741888,5368742016,41943296,41943297,no,PASS
+4,separated,32,1024,10000000,295325958,29.532596,33860890.752,116629,23478103,15742678983221721015,PASS,128,4563435520,4563435648,35651840,35651841,no,PASS

@@ -1,7 +1,11 @@
-# Experiment 02 Phase 3A — CONTROLLED false-sharing experiment.
+# Experiment 02 Phase 3A — CONTROLLED cursor-placement (coherence-layout) experiment.
+# The ONE variable is the cache-line placement of the two SPSC cursors; both cursor policies have the
+# same footprint, so the payload array starts at the same object offset in both variants.
 # ns_per_message = elapsed_ns / messages delivered: it INCLUDES queue synchronization,
 # payload assignment, cache-coherence traffic, harness retry/backpressure and OS scheduling.
 # It is NOT a per-try_push latency, NOT a per-try_pop latency, and NOT a one-way handoff time.
+# The cursors also carry REQUIRED true sharing (each side reads the other's cursor), so a same-line vs
+# separated difference measures cursor placement, not 'pure false-sharing cost'.
 # ONE implementation per process: the other implementations were NOT timed here.
 # This summary describes THIS PROCESS ONLY. It is not a canonical
 # result on its own; the canonical dataset pools repetitions across
@@ -22,13 +26,13 @@ capacity=1024
 message_count=10000000
 measured_reps=5
 warmup_reps=1
-median_ns_per_message=25.224967
-min_ns_per_message=23.016504
-max_ns_per_message=32.353729
-spread_pct=40.568
-median_messages_per_second=39643263.591
-producer_full_retries_total=436339
-consumer_empty_retries_total=100142824
+median_ns_per_message=29.259421
+min_ns_per_message=28.449396
+max_ns_per_message=34.704412
+spread_pct=21.986
+median_messages_per_second=34177026.381
+producer_full_retries_total=3814624
+consumer_empty_retries_total=131173110
 checksum=15742678983221721015
 expected_checksum=15742678983221721015
 correctness=PASS
@@ -36,11 +40,18 @@ layout_evidence=VERIFIED_PER_REPETITION
 cache_line_size_reported=128
 cache_line_size_assumed=128
 layout_invariant=PASS
-layout_first_measured_rep=layout=separated alignment=128 reported_cache_line_size=128 head_addr=0x118008000 tail_addr=0x118008080 head_line=36700416 tail_line=36700417 same_line=no cursor_shares_payload_line=no line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
+layout_first_measured_rep=layout=separated alignment=128 reported_cache_line_size=128 head_addr=0x138008000 tail_addr=0x138008080 head_line=40894720 tail_line=40894721 same_line=no cursor_shares_payload_line=no object_addr=0x138008000 object_size=33024 payload_offset=256 line_size_supported=yes same_line_invariant=PASS payload_disjoint=PASS layout_ok=PASS
+cursor_policy_size=256
+object_size=33024
+payload_offset_from_object_base=256
+cursor_layouts_measured=separated
+# object_size and payload_offset_from_object_base must be identical for the same-line and
+# separated processes of this cell; the canonical runner compares them across the pair and
+# refuses to publish if they differ (Phase 3A.1).
 # per-repetition detail — every measured repetition, none discarded:
 rep,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum,head_line,tail_line,cursors_same_line
-0,233057584,23.305758,42907850.619,22691,17904187,15742678983221721015,36700416,36700417,no
-1,265079958,26.507996,37724466.517,146141,22883284,15742678983221721015,34603264,34603265,no
-2,252249666,25.224967,39643263.591,86295,19279104,15742678983221721015,35651840,35651841,no
-3,323537292,32.353729,30908338.072,165245,27109892,15742678983221721015,35651840,35651841,no
-4,230165042,23.016504,43447084.375,15967,12966357,15742678983221721015,39846144,39846145,no
+0,284493959,28.449396,35150131.255,29973,22760061,15742678983221721015,40894720,40894721,no
+1,292594209,29.259421,34177026.381,143198,22449285,15742678983221721015,38797568,38797569,no
+2,347044125,34.704412,28814779.677,1883305,40023230,15742678983221721015,36700416,36700417,no
+3,290904708,29.090471,34375517.910,74971,22072845,15742678983221721015,34603264,34603265,no
+4,306406375,30.640638,32636396.681,1683177,23867689,15742678983221721015,44040448,44040449,no

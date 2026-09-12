@@ -1,19 +1,41 @@
 // ---------------------------------------------------------------------------
 // Experiment 02 — SPSC Ring Buffer / Concurrency, Phase 3A: the CONTROLLED
-// FALSE-SHARING experiment.
+// CURSOR-PLACEMENT (coherence-layout) experiment.
 //
 // RESEARCH QUESTION
-//   How much of the SPSC ring buffer's two-thread throughput behaviour changes
-//   when the producer-owned head cursor and the consumer-owned tail cursor are
-//   FORCED to share one cache line, versus being placed in distinct cache lines?
+//   Holding the algorithm, the payload storage and indexing, the full/empty
+//   semantics, the memory orders, the retry policy and the message types fixed,
+//   how does two-thread end-to-end throughput change when the producer-owned
+//   head cursor and the consumer-owned tail cursor are FORCED to share one cache
+//   line, versus being placed in distinct cache lines?
 //
-//   Exactly ONE variable is changed: cursor cache-line placement. The algorithm,
-//   the payload storage and indexing, the full/empty semantics, the memory
-//   orders, the retry policy and the message types are identical between the two
-//   variants by construction (one algorithm body, two layout policies — see
-//   include/spsc_cursor_layout_ring_buffer.h). No cached remote cursor, no
+//   Exactly ONE variable is changed: cursor cache-line placement. Both cursor
+//   policies have the SAME footprint, so the payload array that follows them
+//   starts at the SAME object offset in both variants and the payload does not
+//   move between cache sets (see EQUAL FOOTPRINT below). The two variants are
+//   one algorithm body with two layout policies — see
+//   include/spsc_cursor_layout_ring_buffer.h. No cached remote cursor, no
 //   batching, no CAS, no affinity, no memory-order change: those are Phase 3B and
 //   later, and combining any of them here would destroy the attribution.
+//
+// WHAT THE MEASURED DIFFERENCE DOES AND DOES NOT ISOLATE
+//   The two cursors are not purely independent write-only state. The producer
+//   writes head and READS tail (acquire) at the reuse gate; the consumer writes
+//   tail and READS head (acquire) at the availability gate. Those reads are
+//   required for correctness and are present in BOTH variants.
+//
+//   So cursor placement moves two things at once, by construction:
+//     A. line-granularity interference between the two INDEPENDENT own-cursor
+//        WRITES (the false-sharing component), which separating removes; and
+//     B. whether the two legitimately shared cursor values sit on one coherence
+//        line (which may reduce the coherence working set) or on two.
+//
+//   A wall-clock same-line vs separated difference therefore measures CONTROLLED
+//   CURSOR PLACEMENT, not "pure false-sharing cost". A separated-faster result
+//   is consistent with reduced false-sharing interference; it does not by itself
+//   prove that false sharing caused the whole measured gap. This tool has no
+//   hardware counters, so it cannot decompose the two. See
+//   docs/SPSC_FALSE_SHARING.md.
 //
 // WHAT IS MEASURED (and what is not)
 //   Identical to Phase 2: `ns_per_message` is the END-TO-END elapsed wall time
@@ -32,25 +54,40 @@
 //   cursors is not by itself evidence of same-line placement (Phase 2 had no
 //   address verification at all).
 //
+// EQUAL FOOTPRINT — the Phase 3A.1 controlled-variable requirement
+//   In the original Phase-3A design the same-line policy was 128 bytes and the
+//   separated policy 256, so the payload array declared after them began at
+//   object offset 128 in one variant and 256 in the other — a second changed
+//   variable that also moved the payload into a different cache set. Both
+//   policies are now 2 * kAssumedCacheLineSize bytes: the same-line variant keeps
+//   BOTH cursors in the first line and reserves an inert second line purely to
+//   match the footprint. This tool refuses to publish unless, for the exact
+//   message type and capacity being timed, the two variants agree on object size
+//   and on payload offset from the object base.
+//
 // THE LAYOUT EVIDENCE IS PART OF THE MEASUREMENT
-//   A false-sharing experiment that does not verify the sharing it claims is
-//   worthless, so this tool refuses to publish without it:
+//   An experiment that does not verify the layout it claims is worthless, so this
+//   tool refuses to publish without it:
 //
 //     * the host's cache-line size is QUERIED AT RUNTIME (sysctlbyname on
 //       Apple, sysconf on Linux). The canonical host reports 128 bytes, not the
 //       64 most code assumes;
 //     * if the host reports a line LARGER than the compile-time layout
-//       assumption, the process FAILS before timing anything (a separated
-//       control whose blocks share a real line would report the opposite of the
-//       truth);
+//       assumption, the process FAILS before timing anything (the separated
+//       control's blocks could fall inside one real line and the experiment would
+//       report the opposite of the truth);
+//     * the CROSS-VARIANT FOOTPRINT GATE runs before timing: both policies are
+//       instantiated for this message type and capacity and must agree on object
+//       size and payload offset, on real objects, not merely by construction;
 //     * for every repetition, the actual cursor addresses of the queue object
 //       that is about to be measured are converted to line indices under that
 //       reported size, and the layout invariant (same-line: indices EQUAL;
 //       separated: indices DIFFERENT) must hold, as must cursor/payload line
 //       disjointness. A repetition whose invariant is false terminates the
 //       process non-zero and the cell is not publishable;
-//     * all of this happens OUTSIDE the timed interval, and the addresses are
-//       recorded per repetition in the raw CSV.
+//     * all of this happens OUTSIDE the timed interval, and the addresses, the
+//       object size and the payload offset are recorded per repetition in the raw
+//       CSV.
 //
 // ONE IMPLEMENTATION PER PROCESS
 //   --impl=same_line, --impl=separated and --impl=natural are separate
@@ -77,6 +114,11 @@
 //   kYieldAfterMisses CONSECUTIVE failures, and the consecutive-miss counter is
 //   reset by every success. Neither queue ever waits on queue state internally.
 //   The retry counters are observable backpressure metrics, not failures.
+//   Note for interpretation: because a failed attempt feeds straight back into
+//   the next attempt, and a yield eventually follows a long enough miss run, a
+//   small difference in the underlying handoff cost can be amplified into a much
+//   larger end-to-end throughput difference. This tool measures the end-to-end
+//   result; it does not decompose it.
 //
 // MESSAGE CONSTRUCTION AND VALIDATION
 //   The Phase-2 message types (8/32/64 bytes, trivially copyable, nothrow,
@@ -269,6 +311,82 @@ struct has_layout_report<
            std::size_t{}))>> : std::true_type {};
 
 // ---------------------------------------------------------------------------
+// Cross-variant footprint gate (Phase 3A.1).
+//
+// The equal-footprint requirement is asserted at compile time in the header, but
+// the thing the experiment actually needs is that the payload does not move —
+// and that is a property of real objects. So both policies are instantiated here
+// for the SAME message type and capacity, and their measured object size and
+// payload offset must agree. A cell that fails this is not publishable: it would
+// change cursor placement AND payload layout at once, which is exactly the flaw
+// Phase 3A.1 exists to remove.
+//
+// Nothing here is timed. Both probe objects are destroyed before run_cell
+// allocates anything, so the measured repetitions are unaffected.
+// ---------------------------------------------------------------------------
+template <typename Q, typename = void>
+struct has_opposite_variant : std::false_type {};
+
+template <typename Q>
+struct has_opposite_variant<
+    Q, std::void_t<typename lltl::opposite_variant<Q>::type>>
+    : std::true_type {};
+
+template <typename Msg, std::size_t Capacity, typename Queue>
+int verify_cross_variant_footprint(std::size_t reported_line_size) {
+    if constexpr (!has_opposite_variant<Queue>::value) {
+        return 0; // the frozen natural baseline is not one of the two controls
+    } else {
+        using Other = lltl::opposite_variant_t<Queue>;
+
+        static_assert(sizeof(Queue) == sizeof(Other),
+                      "the two Phase-3A cursor policies must produce queue "
+                      "objects of identical size, or the payload offset moves "
+                      "between the variants and the experiment changes two "
+                      "variables at once");
+
+        auto mine  = std::make_unique<Queue>();
+        auto other = std::make_unique<Other>();
+
+        const auto r_mine  = mine->cursor_layout_report(reported_line_size);
+        const auto r_other = other->cursor_layout_report(reported_line_size);
+
+        const bool agree = lltl::footprints_agree(r_mine, r_other);
+
+        std::fprintf(stderr,
+                     "[footprint] bytes=%zu capacity=%zu\n"
+                     "  %-9s object_size=%zu payload_offset=%zu "
+                     "cursor_policy_size=%zu\n"
+                     "  %-9s object_size=%zu payload_offset=%zu "
+                     "cursor_policy_size=%zu\n"
+                     "  cross_variant_footprint=%s\n",
+                     Msg::kBytes, Capacity,
+                     lltl::cursor_layout_name(r_mine.layout), r_mine.object_size,
+                     r_mine.payload_offset_from_object_base,
+                     Queue::cursor_policy_size(),
+                     lltl::cursor_layout_name(r_other.layout), r_other.object_size,
+                     r_other.payload_offset_from_object_base,
+                     Other::cursor_policy_size(),
+                     agree ? "PASS" : "FAIL");
+
+        if (!agree) {
+            std::fprintf(stderr,
+                         "\nCROSS-VARIANT FOOTPRINT INVARIANT FAILED "
+                         "(bytes=%zu capacity=%zu).\n"
+                         "The two cursor policies do not produce the same object "
+                         "layout: object size or payload offset differs, so a "
+                         "measured throughput difference could be caused by the "
+                         "payload's position rather than by cursor placement. "
+                         "This is a FAILED\nEXPERIMENT, not a slow cell. Exiting "
+                         "non-zero without timing anything.\n",
+                         Msg::kBytes, Capacity);
+            return 3;
+        }
+        return 0;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
@@ -304,8 +422,9 @@ void usage(const char* argv0) {
         "          [--messages=N] [--reps=R] [--warmup=W]\n"
         "          [--raw-out=FILE] [--summary-out=FILE]\n"
         "\n"
-        "Experiment 02 Phase 3A — controlled false-sharing experiment: the ONE\n"
-        "variable is the cache-line placement of the two SPSC cursors.\n"
+        "Experiment 02 Phase 3A — controlled cursor-placement experiment: the ONE\n"
+        "variable is the cache-line placement of the two SPSC cursors, whose two\n"
+        "policies have the same footprint so the payload does not move.\n"
         "ONE implementation per process: run each --impl as a separate invocation\n"
         "(scripts/spsc-false-sharing.sh does this, balanced AB/BA).\n"
         "\n"
@@ -325,9 +444,12 @@ void usage(const char* argv0) {
         "  --raw-out        write raw per-repetition CSV here (source of truth)\n"
         "  --summary-out    write the derived summary here (default stdout)\n"
         "\n"
-        "The host's cache-line size is queried at runtime. If it exceeds the\n"
-        "compile-time layout assumption, this program exits non-zero WITHOUT\n"
-        "timing anything, because the separated control would not be separated.\n",
+        "The host's cache-line size is queried at runtime, and the ACTUAL cursor\n"
+        "and payload addresses of every measured object are checked against it.\n"
+        "If the host reports a line larger than the compile-time layout\n"
+        "assumption, or if the two cursor policies do not produce the same object\n"
+        "size and payload offset, this program exits non-zero WITHOUT timing\n"
+        "anything rather than publishing data whose controls are unverified.\n",
         argv0, kDefaultMessages, kDefaultReps, kDefaultWarmup);
 }
 
@@ -723,13 +845,19 @@ int run_cell(const Config& c, std::size_t reported_line_size) {
                      "SAME object this repetition timed,\n"
                      "# OUTSIDE the timed interval. layout_ok=PASS means the "
                      "measured placement matched the claim.\n"
+                     "# object_addr/object_size/payload_offset/payload_begin_addr "
+                     "are that same object's footprint evidence:\n"
+                     "# the two cursor policies must agree on object_size and on "
+                     "payload_offset so the payload does not\n"
+                     "# move between cache sets when cursor placement changes.\n"
                      "# All %d measured repetitions are present; %d warm-up "
                      "repetition(s) are excluded from every published figure.\n"
                      "rep,impl,message_bytes,capacity,message_count,elapsed_ns,"
                      "ns_per_message,messages_per_second,producer_full_retries,"
                      "consumer_empty_retries,checksum,correctness,"
                      "reported_cache_line_size,head_addr,tail_addr,head_line,"
-                     "tail_line,cursors_same_line,layout_ok\n",
+                     "tail_line,cursors_same_line,layout_ok,object_addr,"
+                     "object_size,payload_offset,payload_begin_addr\n",
                      c.reps, c.warmup);
         for (std::size_t i = 0; i < measured.size(); ++i) {
             const RepResult& r = measured[i];
@@ -737,7 +865,8 @@ int run_cell(const Config& c, std::size_t reported_line_size) {
                 std::fprintf(f,
                              "%zu,%s,%zu,%zu,%" PRIu64 ",%" PRIu64 ",%.6f,%.3f,%" PRIu64
                              ",%" PRIu64 ",%" PRIu64 ",PASS,"
-                             "%zu,%" PRIuPTR ",%" PRIuPTR ",%zu,%zu,%s,%s\n",
+                             "%zu,%" PRIuPTR ",%" PRIuPTR ",%zu,%zu,%s,%s,"
+                             "%" PRIuPTR ",%zu,%zu,%" PRIuPTR "\n",
                              i, impl_name(c.impl), c.message_bytes, Capacity, n,
                              r.elapsed_ns, r.ns_per_message, r.messages_per_second,
                              r.producer_full_retries, r.consumer_empty_retries,
@@ -746,12 +875,17 @@ int run_cell(const Config& c, std::size_t reported_line_size) {
                              static_cast<std::uintptr_t>(r.layout.tail_address),
                              r.layout.head_line_index, r.layout.tail_line_index,
                              r.layout.cursors_same_line ? "yes" : "no",
-                             r.layout.ok() ? "PASS" : "FAIL");
+                             r.layout.ok() ? "PASS" : "FAIL",
+                             static_cast<std::uintptr_t>(r.layout.object_address),
+                             r.layout.object_size,
+                             r.layout.payload_offset_from_object_base,
+                             static_cast<std::uintptr_t>(r.layout.payload_begin));
             } else {
                 std::fprintf(f,
                              "%zu,%s,%zu,%zu,%" PRIu64 ",%" PRIu64 ",%.6f,%.3f,%" PRIu64
                              ",%" PRIu64 ",%" PRIu64 ",PASS,"
-                             "NA,NA,NA,NA,NA,NA,NOT_VERIFIED\n",
+                             "NA,NA,NA,NA,NA,NA,NOT_VERIFIED,"
+                             "NA,NA,NA,NA\n",
                              i, impl_name(c.impl), c.message_bytes, Capacity, n,
                              r.elapsed_ns, r.ns_per_message, r.messages_per_second,
                              r.producer_full_retries, r.consumer_empty_retries,
@@ -776,13 +910,22 @@ int run_cell(const Config& c, std::size_t reported_line_size) {
     }
 
     std::fprintf(out,
-                 "# Experiment 02 Phase 3A — CONTROLLED false-sharing experiment.\n"
+                 "# Experiment 02 Phase 3A — CONTROLLED cursor-placement "
+                 "(coherence-layout) experiment.\n"
+                 "# The ONE variable is the cache-line placement of the two SPSC "
+                 "cursors; both cursor policies have the\n"
+                 "# same footprint, so the payload array starts at the same object "
+                 "offset in both variants.\n"
                  "# ns_per_message = elapsed_ns / messages delivered: it INCLUDES "
                  "queue synchronization,\n"
                  "# payload assignment, cache-coherence traffic, harness "
                  "retry/backpressure and OS scheduling.\n"
                  "# It is NOT a per-try_push latency, NOT a per-try_pop latency, and "
                  "NOT a one-way handoff time.\n"
+                 "# The cursors also carry REQUIRED true sharing (each side reads the "
+                 "other's cursor), so a same-line vs\n"
+                 "# separated difference measures cursor placement, not "
+                 "'pure false-sharing cost'.\n"
                  "# ONE implementation per process: the other implementations were "
                  "NOT timed here.\n"
                  "# This summary describes THIS PROCESS ONLY. It is not a canonical\n"
@@ -818,13 +961,27 @@ int run_cell(const Config& c, std::size_t reported_line_size) {
                  expected_checksum,
                  layout_available ? "VERIFIED_PER_REPETITION" : "UNAVAILABLE",
                  reported_line_size, lltl::kAssumedCacheLineSize);
-    if (layout_available) {
+    if constexpr (has_layout_report<Queue>::value) {
         std::fprintf(out,
                      "layout_invariant=%s\n"
-                     "layout_first_measured_rep=%s\n",
+                     "layout_first_measured_rep=%s\n"
+                     "cursor_policy_size=%zu\n"
+                     "object_size=%zu\n"
+                     "payload_offset_from_object_base=%zu\n"
+                     "cursor_layouts_measured=%s\n"
+                     "# object_size and payload_offset_from_object_base must be "
+                     "identical for the same-line and\n"
+                     "# separated processes of this cell; the canonical runner "
+                     "compares them across the pair and\n"
+                     "# refuses to publish if they differ (Phase 3A.1).\n",
                      measured.front().layout.ok() ? "PASS" : "FAIL",
-                     measured.front().layout.summary_line().c_str());
-    } else {
+                     measured.front().layout.summary_line().c_str(),
+                     Queue::cursor_policy_size(),
+                     measured.front().layout.object_size,
+                     measured.front().layout.payload_offset_from_object_base,
+                     lltl::cursor_layout_name(measured.front().layout.layout));
+    }
+    if (!layout_available) {
         std::fprintf(out,
                      "layout_invariant=NOT_VERIFIED\n"
                      "layout_first_measured_rep=NA\n"
@@ -874,16 +1031,29 @@ int run_cell(const Config& c, std::size_t reported_line_size) {
 // Compile-time dispatch — explicit small switches, no runtime-capacity storage.
 // ---------------------------------------------------------------------------
 
+// A Phase-3A control cell: the cross-variant footprint gate runs FIRST, before
+// anything is timed, so a cell whose payload offset moved between the variants
+// can never reach the point of producing numbers.
+template <typename Msg, std::size_t Capacity, typename Queue>
+int run_control_cell(const Config& c, std::size_t line) {
+    const int footprint = verify_cross_variant_footprint<Msg, Capacity, Queue>(line);
+    if (footprint != 0) {
+        return footprint;
+    }
+    return run_cell<Msg, Capacity, Queue>(c, line);
+}
+
 template <typename Msg, std::size_t Capacity>
 int dispatch_impl(const Config& c, std::size_t line) {
     switch (c.impl) {
     case Impl::SameLine:
-        return run_cell<Msg, Capacity,
-                        lltl::SpscSameLineRingBuffer<Msg, Capacity>>(c, line);
+        return run_control_cell<Msg, Capacity,
+                                lltl::SpscSameLineRingBuffer<Msg, Capacity>>(
+            c, line);
     case Impl::Separated:
-        return run_cell<Msg, Capacity,
-                        lltl::SpscSeparatedCursorRingBuffer<Msg, Capacity>>(c,
-                                                                           line);
+        return run_control_cell<
+            Msg, Capacity,
+            lltl::SpscSeparatedCursorRingBuffer<Msg, Capacity>>(c, line);
     case Impl::Natural:
         return run_cell<Msg, Capacity, lltl::SpscRingBuffer<Msg, Capacity>>(c,
                                                                             line);
@@ -933,10 +1103,14 @@ int main(int argc, char** argv) {
     // -----------------------------------------------------------------------
     // The experiment's own precondition, checked BEFORE anything is timed.
     //
-    // The layout was built for lltl::kAssumedCacheLineSize. If the host reports
-    // a LARGER real interference block, the "separated" control's two blocks can
-    // fall inside one real line and the experiment would report the opposite of
-    // the truth. There is no safe way to continue: FAIL, and publish nothing.
+    // The compile-time alignment creates the INTENDED candidate layout; the
+    // per-object address check in each repetition is what is authoritative. This
+    // early guard rejects a host whose reported interference block is larger than
+    // the layout was built for, because there the compile-time alignment can no
+    // longer guarantee that the separated control's cursor blocks land in
+    // distinct real blocks — and a control that is not what it claims would make
+    // the experiment report the opposite of the truth. There is no safe way to
+    // continue on such a host: FAIL, and publish nothing.
     // -----------------------------------------------------------------------
     const std::size_t reported_line = lltl::reported_cache_line_size();
     std::fprintf(stderr,
@@ -949,9 +1123,10 @@ int main(int argc, char** argv) {
                      "assumption of %zu bytes.\n"
                      "Phase 3A changes ONLY cursor cache-line placement, so a host "
                      "whose real line size exceeds this\n"
-                     "assumption would invalidate the same-line and/or separated "
-                     "control. Refusing to measure; exiting\n"
-                     "non-zero rather than publishing invalid data.\n",
+                     "assumption cannot be relied on to keep the same-line and "
+                     "separated controls distinct.\nRefusing to measure; exiting "
+                     "non-zero rather than publishing data whose layout is "
+                     "unverified.\n",
                      reported_line, lltl::kAssumedCacheLineSize);
         return 3;
     }

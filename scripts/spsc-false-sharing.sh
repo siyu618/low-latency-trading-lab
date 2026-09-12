@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Experiment 02 Phase 3A — canonical CONTROLLED FALSE-SHARING runner.
+# Experiment 02 Phase 3A — canonical CONTROLLED CURSOR-PLACEMENT runner.
 #
 # Runs the complete 2 x 3 x 3 matrix of the Phase-3A cursor-placement benchmark:
 #
@@ -11,14 +11,36 @@
 # spsc_false_sharing_bench choosing exactly one --impl; no two layouts are ever
 # timed inside one interval, one address space, or one warmed-up process state.
 #
-# THE ONE VARIABLE. Phase 3A isolates cursor cache-line placement and nothing
-# else. The two variants come from ONE algorithm body parameterised by a cursor
-# layout policy (include/spsc_cursor_layout_ring_buffer.h), so the algorithm, the
-# payload storage and indexing, the full/empty semantics, the memory orders, the
-# retry policy and the message types are identical by construction. There is no
-# cached remote cursor, no batching, no CAS and no affinity anywhere in this run.
-# Those are Phase 3B and later, and combining any of them here would destroy the
+# THE ONE VARIABLE. Phase 3A holds the algorithm fixed and varies cursor
+# cache-line placement and nothing else. The two variants come from ONE algorithm
+# body parameterised by a cursor layout policy
+# (include/spsc_cursor_layout_ring_buffer.h), so the algorithm, the payload
+# storage and indexing, the full/empty semantics, the memory orders, the retry
+# policy and the message types are identical by construction. There is no cached
+# remote cursor, no batching, no CAS and no affinity anywhere in this run. Those
+# are Phase 3B and later, and combining any of them here would destroy the
 # attribution this dataset exists to support.
+#
+# THE ONE VARIABLE ALSO REQUIRES AN EQUAL FOOTPRINT (Phase 3A.1). The two cursor
+# policies both occupy 2 x 128 = 256 bytes, so the payload array declared after
+# them starts at the SAME object offset in both variants. Earlier, the same-line
+# policy was 128 bytes and the separated policy 256, which moved the payload
+# between cache sets as well as moving the cursors — two changed variables at
+# once. `same_line` keeps BOTH cursors in the first line and reserves an inert
+# second line purely to match the footprint. The benchmark refuses to time a cell
+# whose two variants disagree on object size or payload offset, and leg 3
+# re-checks the recorded footprint columns of every raw row.
+#
+# WHAT A SAME-LINE vs SEPARATED DIFFERENCE MEASURES. The cursors are not purely
+# independent write-only state: the producer also READS tail and the consumer
+# also READS head, at the two gates. That required true sharing is present in
+# both variants. Separating the cursors removes the unwanted line-granularity
+# interference between the two independent own-cursor WRITES, but also gives up
+# any benefit of keeping the two shared cursor values on one line. A measured
+# difference is therefore CONTROLLED CURSOR PLACEMENT, not "pure false-sharing
+# cost"; a separated-faster result is consistent with reduced false-sharing
+# interference and does not prove that false sharing caused the whole gap. This
+# script has no hardware counters and cannot decompose the two.
 #
 # THE FROZEN NATURAL BASELINE IS NOT A CONTROL HERE. The frozen Phase-1/2
 # `SpscRingBuffer` (unpadded, adjacent cursors) is the historical natural
@@ -30,16 +52,25 @@
 # clearly-labelled extra row; even then it is NOT part of the causal comparison.
 #
 # RUNTIME LAYOUT VERIFICATION IS MANDATORY, NOT DECORATIVE
-#   The whole conclusion rests on the same-line variant really being same-line
-#   and the separated variant really being separated ON THE OBJECT THAT RAN.
+#   The whole comparison rests on the same-line variant really being same-line
+#   and the separated variant really being separated ON THE OBJECT THAT RAN, and
+#   on the payload starting at the same offset in both.
 #   * The benchmark queries the host's cache-line size at runtime. The canonical
 #     M3 Max reports 128 bytes — not the 64 most code assumes.
+#   * That reported size and the compile-time alignment produce the intended
+#     CANDIDATE layout; the MEASURED addresses of the cursors and payload of the
+#     object that actually ran are what decide whether the controls hold.
 #   * If the reported size exceeds the compile-time layout assumption, the
-#     benchmark exits non-zero BEFORE timing anything, and this script stops.
+#     benchmark exits non-zero BEFORE timing anything, and this script stops:
+#     beyond that size the compile-time alignment can no longer keep the
+#     separated control's blocks in distinct real blocks.
 #   * For every repetition it measures the actual cursor addresses, converts them
 #     to line indices under the reported size, and requires the layout invariant
 #     (same-line: equal; separated: different) plus cursor/payload line
 #     disjointness. A violation aborts the process and nothing is published.
+#   * Before timing, it also instantiates BOTH policies for the cell's message
+#     type and capacity and requires their object size and payload offset to
+#     agree.
 #   * This script independently re-checks those recorded columns in every raw
 #     CSV before any summary is derived (leg 3 below).
 #
@@ -165,6 +196,13 @@ case "$OUT" in
         echo "FATAL: refusing to write into the frozen results directory $OUT" >&2
         exit 1
         ;;
+    *spsc-false-sharing-pre3a1*)
+        # The pre-3A.1 dataset is retained evidence for the payload-offset
+        # confound. It is real data, it is superseded, and it must never be
+        # overwritten by a rerun.
+        echo "FATAL: refusing to write into the archived superseded dataset $OUT" >&2
+        exit 1
+        ;;
 esac
 
 mkdir -p "$OUT/raw" "$OUT/summaries" "$OUT/stderr"
@@ -174,7 +212,12 @@ mkdir -p "$OUT/raw" "$OUT/summaries" "$OUT/stderr"
 # ---------------------------------------------------------------------------
 echo "==> Configuring (Release, fresh $BUILDDIR)"
 rm -rf "$BUILDDIR"
-cmake -S . -B "$BUILDDIR" -DCMAKE_BUILD_TYPE=Release -DBENCH_ARCH_FLAGS= >/dev/null
+# The exact flags are captured below and recorded in PROVENANCE.md: BENCH_ARCH_FLAGS
+# is deliberately EMPTY for the canonical run, so the toolchain's own -O3 must be
+# the only optimization setting in play.
+BUILD_TYPE="Release"
+ARCH_FLAGS=""
+cmake -S . -B "$BUILDDIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -DBENCH_ARCH_FLAGS="$ARCH_FLAGS" >/dev/null
 
 echo "==> Building $BIN_NAME"
 cmake --build "$BUILDDIR" --target "$BIN_NAME" -j >/dev/null
@@ -585,6 +628,120 @@ awk -F, -v reps="$REPS" -v messages="$MESSAGES" '
     }
 ' "$OUT"/raw/*.csv || invariant_fail "raw dataset does not satisfy the Phase-3A invariants"
 
+# (d2) Phase 3A.1 EQUAL FOOTPRINT. The two cursor policies must produce queue
+#     objects of the same size with the payload at the same offset, for the same
+#     message size and capacity, or the run changes cursor placement AND payload
+#     layout at once. Checked here from the raw columns the benchmark wrote on
+#     the objects it ACTUALLY measured — per row, and across the two layouts of
+#     every cell. The benchmark refuses to time a cell that fails this, so a
+#     failure here means the workspace was tampered with, not that the run was
+#     subtly wrong.
+FOOTPRINTS="$(awk -F, -v messages="$MESSAGES" '
+    /^#/ || /^rep,/ || NF == 0 { next }
+    $1 !~ /^[0-9]+$/ { next }
+    {
+        # Columns: 20 object_addr, 21 object_size, 22 payload_offset,
+        #          23 payload_begin_addr
+        if ($20 == "" || $20 == "NA" || $21 == "" || $21 == "NA" ||
+            $22 == "" || $22 == "NA" || $23 == "" || $23 == "NA") {
+            printf "FATAL: %s row %s has no footprint evidence (object_addr/object_size/payload_offset/payload_begin_addr)\n",
+                   FILENAME, $1 > "/dev/stderr"
+            bad = 1
+            next
+        }
+        if ($21 + 0 <= 0) {
+            printf "FATAL: %s row %s has object_size=%s\n", FILENAME, $1, $21 > "/dev/stderr"
+            bad = 1
+        }
+        if ($22 + 0 <= 0) {
+            printf "FATAL: %s row %s has payload_offset=%s\n", FILENAME, $1, $22 > "/dev/stderr"
+            bad = 1
+        }
+        # The reported offset must be the real one: payload start minus object base.
+        if ($23 + 0 - ($20 + 0) != $22 + 0) {
+            printf "FATAL: %s row %s payload_begin_addr - object_addr = %d but payload_offset says %s\n",
+                   FILENAME, $1, $23 - $20, $22 > "/dev/stderr"
+            bad = 1
+        }
+        # object = cursor policy + payload, exactly. This is what makes the
+        # offset the ONLY thing that could differ between the variants.
+        if ($21 + 0 - ($22 + 0) != $3 * $4) {
+            printf "FATAL: %s row %s object_size - payload_offset = %d but payload is %d bytes\n",
+                   FILENAME, $1, $21 - $22, $3 * $4 > "/dev/stderr"
+            bad = 1
+        }
+        # Every row must agree with every other row of the same layout for the
+        # same cell: the layout is a property of the type, so a varying value
+        # would mean the wrong object was reported.
+        k = $3 "_" $4 SUBSEP $2
+        if (k in seen) {
+            if (osize[k] != $21 || poff[k] != $22) {
+                printf "FATAL: %s row %s footprint disagrees with other %s rows of the same cell\n",
+                       FILENAME, $1, $2 > "/dev/stderr"
+                bad = 1
+            }
+        } else {
+            seen[k] = 1; osize[k] = $21; poff[k] = $22
+        }
+        cell[$3 "_" $4] = 1
+    }
+    END {
+        # Across the two layouts of a cell: identical object size, identical
+        # payload offset. This is the Phase-3A.1 invariant stated directly.
+        n = 0
+        for (c in cell) {
+            n++
+            ks = c SUBSEP "same_line"
+            kp = c SUBSEP "separated"
+            if (!(ks in seen) || !(kp in seen)) {
+                printf "FATAL: cell %s is missing a layout in the footprint evidence\n", c > "/dev/stderr"
+                bad = 1
+                continue
+            }
+            if (osize[ks] != osize[kp]) {
+                printf "FATAL: cell %s object_size differs: same_line=%s separated=%s\n",
+                       c, osize[ks], osize[kp] > "/dev/stderr"
+                bad = 1
+            }
+            if (poff[ks] != poff[kp]) {
+                printf "FATAL: cell %s payload_offset differs: same_line=%s separated=%s\n",
+                       c, poff[ks], poff[kp] > "/dev/stderr"
+                bad = 1
+            }
+        }
+        if (n != 9) {
+            printf "FATAL: footprint evidence covers %d cells, expected 9\n", n > "/dev/stderr"
+            bad = 1
+        }
+        if (bad) exit 1
+        print (n == 9 ? "PASS" : "FAIL")
+    }
+' "$OUT"/raw/*.csv)" || invariant_fail "raw dataset does not satisfy the Phase-3A.1 equal-footprint invariants"
+[[ "$FOOTPRINTS" == "PASS" ]] || invariant_fail "equal-footprint invariant not satisfied"
+
+# The per-cell footprint table, for LAYOUT_VERIFICATION.md and the metadata.
+# Iterated in the canonical forward order rather than sorted, because macOS awk
+# (BWK) has no asorti and the matrix is a fixed, known 3x3.
+FOOTPRINT_TABLE="$(awk -F, '
+    /^#/ || /^rep,/ || NF == 0 { next }
+    $1 !~ /^[0-9]+$/ { next }
+    { k = $3 SUBSEP $4; if (!(k in o)) { o[k] = $21; p[k] = $22 } }
+    END {
+        nb = split("8 32 64", bytes, " ")
+        nc = split("1024 4096 65536", caps, " ")
+        for (i = 1; i <= nb; i++) {
+            for (j = 1; j <= nc; j++) {
+                k = bytes[i] SUBSEP caps[j]
+                if (k in o) {
+                    printf "%s %s %s %s\n", bytes[i], caps[j], o[k], p[k]
+                } else {
+                    printf "%s %s MISSING MISSING\n", bytes[i], caps[j]
+                }
+            }
+        }
+    }
+' "$OUT"/raw/*.csv)"
+
 # (e) the balanced AB/BA order, checked from the RECORDED execution order: every
 #     cell must appear in every session, and each layout must run FIRST exactly
 #     half the time. This is a property of what ran, not of the design constants.
@@ -658,7 +815,17 @@ HOST_LINE="$(awk -F, '
     echo "every_row_correctness=PASS"
     echo "checksum_stable_within_cell=PASS"
     echo "summary_matches_raw=PASS"
+    echo "cursor_policies_equal_footprint=PASS"
+    echo "same_line_and_separated_object_size_equal=PASS"
+    echo "same_line_and_separated_payload_offset_equal=PASS"
+    echo "payload_offset_equals_object_size_minus_payload=PASS"
     echo "all_invariants=PASS"
+    echo "#"
+    echo "# Phase 3A.1 equal-footprint evidence, per cell (the two layouts must"
+    echo "# agree on both columns, or the payload moved when cursor placement"
+    echo "# changed and the comparison changes two variables at once):"
+    echo "# message_bytes capacity object_size payload_offset_from_object_base"
+    printf '%s\n' "$FOOTPRINT_TABLE" | while read -r line; do echo "# $line"; done
 } >"$OUT/invariants.txt"
 
 echo "    $EXPECTED_RAW_FILES raw files, $REPS measured rows each, all PASS"
@@ -821,11 +988,38 @@ LAYOUT_MD="$OUT/LAYOUT_VERIFICATION.md"
     echo "- \`same_line\` rows MUST show \`head_line == tail_line\`"
     echo "- \`separated\` rows MUST show \`head_line != tail_line\`"
     echo
-    echo "If the host had reported a line size larger than the compile-time"
-    echo "assumption, the benchmark would have exited non-zero **before timing"
-    echo "anything** and this file would not exist: on such a host the \`separated\`"
-    echo "control's two blocks could fall inside one real line and the experiment"
-    echo "would report the opposite of the truth."
+    echo "The compile-time alignment creates the intended CANDIDATE layout. What"
+    echo "decides whether the controls hold is the MEASURED address relationship"
+    echo "below, read against the host's reported line size. If the host had"
+    echo "reported a line size larger than the compile-time assumption the benchmark"
+    echo "would have exited non-zero **before timing anything** and this file would"
+    echo "not exist: past that size the compile-time alignment can no longer keep"
+    echo "the \`separated\` control's two blocks in distinct real blocks, so the"
+    echo "control could not be justified by construction."
+    echo
+    echo "## Equal footprint (Phase 3A.1)"
+    echo
+    echo "Cursor placement is the ONLY variable, so the payload array must start at"
+    echo "the same offset from the object base in both variants — otherwise the"
+    echo "payload moves between cache sets too and the comparison changes two things"
+    echo "at once. Each row below lists the object size and payload offset the two"
+    echo "layouts' processes reported, measured on the objects they actually ran."
+    echo "They MUST agree. The benchmark refuses to time a cell that fails this, so"
+    echo "these columns are a re-check of already-gated evidence."
+    echo
+    echo "| message bytes | capacity | object size | payload offset |"
+    echo "|---|---|---|---|"
+    printf '%s\n' "$FOOTPRINT_TABLE" | while read -r fb fc fsize foff; do
+        echo "| $fb | $fc | $fsize | $foff |"
+    done
+    echo
+    echo "Both cursor policies occupy \`2 * 128 = 256\` bytes, asserted at compile"
+    echo "time in \`include/spsc_cursor_layout_ring_buffer.h\`. The \`same_line\` policy"
+    echo "keeps BOTH cursors in the FIRST line and reserves an inert second line"
+    echo "purely to match that footprint; the reserved line is never read or written"
+    echo "by \`try_push\`/\`try_pop\`/\`empty\`."
+    echo
+    echo "## Per-repetition measured addresses"
     echo
     echo "| cell | session | rep | head addr | tail addr | head line | tail line | same line | layout ok |"
     echo "|---|---|---|---|---|---|---|---|---|"
@@ -1027,9 +1221,12 @@ if [[ -x scripts/collect-macos-profile-metadata.sh ]]; then
         echo
         echo "**Cache-line size.** The host reports its cache-line size at runtime;"
         echo "this run recorded **$HOST_LINE bytes**. The compile-time layout"
-        echo "assumption is 128 bytes. If the reported size had exceeded that"
+        echo "assumption is 128 bytes, and it is the measured addresses of the actual"
+        echo "cursor and payload objects — not the assumption — that decide whether"
+        echo "the controls are what they claim. If the reported size had exceeded the"
         echo "assumption the benchmark would have exited non-zero before timing"
-        echo "anything, because the separated control could then share a real line."
+        echo "anything, since beyond that size the compile-time alignment can no"
+        echo "longer keep the separated control's blocks in distinct real blocks."
         echo
         echo "**Scheduling limitation:** this is Apple Silicon/macOS. No hard CPU"
         echo "pinning or affinity is implemented or claimed; scheduler placement,"
@@ -1050,12 +1247,111 @@ else
     } >"$OUT/HOST.md"
 fi
 
+# ---- provenance (Phase 3A.1) ----------------------------------------------
+#
+# The tree is EXPECTED to be dirty when this runs: the hardened sources are the
+# thing being measured and they are not necessarily committed yet. HEAD alone
+# would then identify the WRONG code, so the exact bytes that produced the
+# dataset are recorded as content hashes, and the dirty state is recorded
+# verbatim rather than assumed clean.
+PROVENANCE_MD="$OUT/PROVENANCE.md"
+hash_file() {  # $1=path -> "sha256  path", or a NOT_PRESENT line
+    if [[ -f "$1" ]]; then
+        printf '%s  %s\n' "$(shasum -a 256 "$1" | awk '{print $1}')" "$1"
+    else
+        printf 'NOT_PRESENT  %s\n' "$1"
+    fi
+}
+{
+    echo "# Experiment 02 Phase 3A — provenance of this dataset"
+    echo
+    echo "Recorded so that the exact code which produced these numbers can be"
+    echo "identified later, even if the working tree was not committed when the run"
+    echo "happened."
+    echo
+    echo "## Revision"
+    echo
+    echo '```'
+    echo "git HEAD            : $(git rev-parse HEAD 2>/dev/null || echo 'not a git repository')"
+    echo "git describe        : $(git describe --always --dirty 2>/dev/null || echo 'unavailable')"
+    echo "working tree        : $(if git rev-parse --git-dir >/dev/null 2>&1; then if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then echo 'DIRTY (uncommitted changes present)'; else echo 'clean'; fi; else echo 'not a git repository'; fi)"
+    echo "run started (UTC)   : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo '```'
+    echo
+    echo "### \`git status --porcelain\` as recorded"
+    echo
+    if git rev-parse --git-dir >/dev/null 2>&1; then
+        echo "\`\`\`"
+        git status --porcelain 2>/dev/null || echo "(git status failed)"
+        echo "\`\`\`"
+        echo
+        echo "The same output with entries under the archived pre-3A.1 dataset"
+        echo "removed, so the entries that identify the CODE are visible:"
+        echo
+        echo '```'
+        git status --porcelain 2>/dev/null \
+            | grep -v 'spsc-false-sharing-pre3a1-payload-offset-confounded' \
+            || echo "(no changes outside the archived dataset directory)"
+        echo '```'
+    else
+        echo '```'
+        echo "not a git repository"
+        echo '```'
+    fi
+    echo
+    echo "If this run happened with a non-empty status, HEAD does **not** identify"
+    echo "the code that produced this dataset. The hashes below do."
+    echo
+    echo "## SHA-256 of the artefacts that produced the data"
+    echo
+    echo '```'
+    hash_file "$BENCH"
+    hash_file "include/cache_line.h"
+    hash_file "include/spsc_cursor_layout_ring_buffer.h"
+    hash_file "benchmark/spsc_false_sharing_bench.cpp"
+    hash_file "scripts/spsc-false-sharing.sh"
+    echo '```'
+    echo
+    echo "The benchmark executable hash covers the whole translation unit as"
+    echo "compiled, so it changes if any header it includes changes, not only if the"
+    echo "\`.cpp\` does."
+    echo
+    echo "## Build"
+    echo
+    echo '```'
+    echo "build system        : CMake, fresh build directory ($BUILDDIR, removed first)"
+    echo "CMAKE_BUILD_TYPE    : $BUILD_TYPE"
+    echo "BENCH_ARCH_FLAGS    : '${ARCH_FLAGS}' (empty for the canonical run)"
+    echo "target              : $BIN_NAME"
+    echo "configure           : cmake -S . -B $BUILDDIR -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DBENCH_ARCH_FLAGS=$ARCH_FLAGS"
+    echo "build               : cmake --build $BUILDDIR --target $BIN_NAME -j"
+    echo "compiler            : $(c++ --version 2>/dev/null | head -1 || echo 'unknown')"
+    echo '```'
+    echo
+    echo "## Command order"
+    echo
+    echo "The exact effective invocations, in execution order, are in"
+    echo "\`command.txt\`; the parsed execution order with the per-cell first layout"
+    echo "is in \`run_order.txt\`."
+    echo
+    echo "## Host and reported cache-line size"
+    echo
+    echo "- host-reported cache-line size: **$HOST_LINE bytes**, taken from the"
+    echo "  \`reported_cache_line_size\` column of the raw data itself."
+    echo "- compile-time layout assumption: 128 bytes."
+    echo "- full host/toolchain metadata: \`HOST.md\`."
+    echo
+    echo "Analysis, methodology and limitations: \`docs/SPSC_FALSE_SHARING.md\`."
+} >"$PROVENANCE_MD"
+
 # ---- reproducibility metadata ---------------------------------------------
 {
     echo "# Experiment 02 Phase 3A — results metadata"
     echo
-    echo "CONTROLLED false-sharing experiment. ONE variable: the cache-line"
-    echo "placement of the two SPSC cursors."
+    echo "CONTROLLED cursor-placement (coherence-layout) experiment. ONE variable:"
+    echo "the cache-line placement of the two SPSC cursors, whose policies have the"
+    echo "SAME footprint so the payload array starts at the same object offset in"
+    echo "both variants."
     echo
     echo "| item | value |"
     echo "|---|---|"
@@ -1068,7 +1364,10 @@ fi
     echo "| implementations per process | exactly 1 |"
     echo "| host-reported cache-line size | $HOST_LINE bytes |"
     echo "| compile-time layout assumption | 128 bytes |"
+    echo "| cursor policy footprint | 256 bytes each, identical across the two layouts |"
+    echo "| payload offset | identical across the two layouts, every cell (\`invariants.txt\`) |"
     echo "| runtime layout verification | every measured repetition, every process |"
+    echo "| cross-variant footprint gate | before timing, in every control process |"
     echo "| observational natural rows | $OBSERVATIONAL_NATURAL (1 = present, excluded from \`summary.csv\`) |"
     echo "| UTC | $(date -u +%Y-%m-%dT%H:%M:%SZ) |"
     echo
@@ -1078,6 +1377,12 @@ fi
     echo "guards live in \`include/cache_line.h\`. The frozen Phase-1"
     echo "\`include/spsc_ring_buffer.h\` was NOT modified and is NOT one of the two"
     echo "controls."
+    echo
+    echo "**Provenance:** \`PROVENANCE.md\` records the git revision, the"
+    echo "\`git status --porcelain\` output, the exact build flags and the SHA-256 of"
+    echo "the benchmark executable and of the four key Phase-3A source files. This"
+    echo "directory's data was produced by those bytes, whether or not they were"
+    echo "committed at the time."
     echo
     echo "Analysis, methodology and limitations: \`docs/SPSC_FALSE_SHARING.md\`."
 } >"$OUT/RESULTS_METADATA.md"
@@ -1097,6 +1402,7 @@ echo "    paired comparison (csv) : $PAIRED_CSV"
 echo "    paired comparison (md)  : $PAIRED_MD"
 echo "    exact commands          : $OUT/command.txt"
 echo "    host/toolchain          : $OUT/HOST.md"
+echo "    provenance (hashes)     : $OUT/PROVENANCE.md"
 echo "    results metadata        : $OUT/RESULTS_METADATA.md"
 echo
 echo "    Interpretation belongs in docs/SPSC_FALSE_SHARING.md — not in this script."

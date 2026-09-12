@@ -1,5 +1,5 @@
 # Experiment 02 Phase 3A — dataset invariants (all must hold)
-# checked: 2026-09-12T02:13:35Z
+# checked: 2026-09-12T03:13:48Z
 expected_processes=72
 recorded_processes=72
 expected_raw_files=72
@@ -18,4 +18,22 @@ cursor_payload_line_disjoint=PASS
 every_row_correctness=PASS
 checksum_stable_within_cell=PASS
 summary_matches_raw=PASS
+cursor_policies_equal_footprint=PASS
+same_line_and_separated_object_size_equal=PASS
+same_line_and_separated_payload_offset_equal=PASS
+payload_offset_equals_object_size_minus_payload=PASS
 all_invariants=PASS
+#
+# Phase 3A.1 equal-footprint evidence, per cell (the two layouts must
+# agree on both columns, or the payload moved when cursor placement
+# changed and the comparison changes two variables at once):
+# message_bytes capacity object_size payload_offset_from_object_base
+# 8 1024 8448 256
+# 8 4096 33024 256
+# 8 65536 524544 256
+# 32 1024 33024 256
+# 32 4096 131328 256
+# 32 65536 2097408 256
+# 64 1024 65792 256
+# 64 4096 262400 256
+# 64 65536 4194560 256
