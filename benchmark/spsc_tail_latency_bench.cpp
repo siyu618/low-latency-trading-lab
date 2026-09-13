@@ -43,15 +43,24 @@
 // queue's release/acquire synchronization, the payload copy, the consumer's own
 // empty-retry loop, and both clock reads. It is also NOT a per-call queue cost.
 //
-// HOW THE TIMESTAMP CROSSES THE THREAD BOUNDARY. The stamp is written to a
-// `Capacity`-entry array indexed by `s & (Capacity - 1)`, BEFORE the push that
-// publishes the message. The consumer reads that entry only after a successful
-// pop, i.e. after an acquire observation of `head`. The release store to `head`
-// that publishes the payload therefore also publishes the stamp, so the consumer
-// cannot read a stamp that was not yet written. Slot reuse is bounded by ring
-// semantics: the producer cannot rewrite slot k until the consumer has advanced
-// past it. The array is allocated BEFORE the timed transfer and never resized.
-// It is measurement scaffolding, not part of the queue.
+// HOW THE TIMESTAMP CROSSES THE THREAD BOUNDARY. It crosses INSIDE the message.
+// The producer writes the stamp into the sampled message's own `ready_ticks`
+// field and then pushes that message through the normal queue, so the stamp
+// reaches the consumer by exactly the same path as the rest of the payload:
+//
+//     producer -> SPSC message -> consumer
+//
+// There is NO timestamp side array, no map and no shared metadata structure.
+// This matters for more than tidiness. A side array is a second, independently
+// addressed memory working set whose footprint scales with capacity, which would
+// contaminate the capacity comparison this phase exists to make; it also costs a
+// write and a read per message. Carrying the stamp in the payload costs neither,
+// and the ordering is the queue's own: the same release store that publishes the
+// message publishes its stamp, and the consumer's acquire observation of that
+// publication makes the stamp visible before it reads it. An earlier revision of
+// this benchmark did use a `ready_ticks[2 * Capacity]` array; its reasoning and
+// its failure mode are recorded in the superseded dataset's `SUPERSEDED.md`, and
+// that design is NOT part of the final Phase-4 benchmark.
 //
 // ONE CLOCK DOMAIN. std::chrono::steady_clock only. std::chrono::system_clock is
 // NEVER used, not even for labelling: it is not monotonic, and a single backward

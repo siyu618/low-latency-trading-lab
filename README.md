@@ -106,16 +106,27 @@ directories.
 > every capacity) and three — all 64 B — at 30.0 µs / 120.4 µs / 1.95 ms, stable
 > to 1.05–1.09× across sessions. The fast band is **timer-resolution-limited**:
 > 125 ns is three 41.7 ns clock quanta, and 92–95% of those cells' samples lie
-> within four quanta of zero. The two groups differ in **which thread waits** —
-> consumer-starved in the fast cells, producer-blocked in the 64 B cells — and
-> within the slow band a larger capacity means fewer producer stalls but a
-> *longer* measured latency, 94–97% of one full ring's drain time. Percentiles
-> are reported at the **session-blocked** level (repetition → median of 5 →
-> median of 4 session medians) as PRIMARY; the all-20 median is a labelled
-> diagnostic only, since the two are not mathematically identical. **No causal
-> attribution of any kind is made** — nothing was profiled, and "the latency is
-> the timer, not the queue" is explicitly **not** claimed: the queue does real
-> work at a scale this clock bounds but does not resolve. Extreme maxima are
+> within four quanta of zero. The two groups differ in **which thread waits**,
+> and the waiting side is the held-up one, so the *other* side is pace-limiting:
+> the fast cells are consumer-starved (producer pace-limiting, ring essentially
+> empty), the 64 B cells are producer-blocked (consumer pace-limiting, ring
+> full). Within the slow band a larger capacity means fewer producer stalls but a
+> *longer* measured latency, **≈ 0.95 of one full ring's drain time**, which is
+> consistent with a consumer-limited drain model but does not confirm it.
+> Percentiles are reported at the **session-blocked** level (repetition → median
+> of 5 → median of 4 session medians) as PRIMARY; the all-20 median is a labelled
+> diagnostic only — two different estimands under two different aggregation
+> rules, which need not be equal. Session blocking is a **process/time**
+> grouping: one process and address-space lifetime, one binary, a short temporal
+> block — and **not** a verified fixed thread placement, since no affinity is set
+> anywhere. The 16/32/64 B axis is a **message shape**, not a pure payload byte
+> count — size and per-message construction/validation work are one bundled
+> workload dimension — so what is claimed is that the 64-byte message shape
+> consistently produced the consumer-limited regime, never that payload size
+> *causes* it. **No causal attribution of any kind is made** — nothing was
+> profiled, and "the latency is the timer, not the queue" is explicitly **not**
+> claimed: the queue does real work at a scale this clock bounds but does not
+> resolve. Extreme maxima are
 > isolated in seven of nine cells; 32 B / 65536 is the exception (7 of 20
 > repetitions above 5× the cell's median maximum), named as a contamination
 > *candidate* and left uncensored. **No Phase-2
@@ -557,10 +568,13 @@ and it opens no new optimization. **Result: a stable bimodality** — six cells
 (all 16 B and 32 B) have a session-blocked **P50 of exactly 125 ns in all 120 of
 their repetitions**, and the three 64 B cells sit at 30.0 µs / 120.4 µs /
 1.95 ms, stable to 1.05–1.09× across sessions; the two groups differ in which
-thread waits, and within the slow band a larger capacity means a *longer*
-measured latency (94–97% of one full ring's drain time). The fast band is
-**timer-resolution-limited** (125 ns is three 41.7 ns quanta; 92–95% of its
-samples are within four quanta of zero) — not "the timer, not the queue". See
+thread waits — consumer-starved/producer-limited in the fast cells,
+producer-blocked/consumer-limited in the 64 B cells — and within the slow band a
+larger capacity means a *longer* measured latency (≈ 0.95 of one full ring's
+drain time, a hypothesis the numbers are consistent with rather than a proven
+mechanism). The fast band is **timer-resolution-limited** (125 ns is three
+41.7 ns quanta; 92–95% of its samples are within four quanta of zero) — not
+"the timer, not the queue". See
 `docs/SPSC_TAIL_LATENCY.md` and `docs/results/spsc-tail-latency/`.
 A bounded, single-producer / single-consumer message queue with no mutex and no
 CAS, modeling `Feed / Decoder → SPSC → OrderBook / Strategy`. Two header-only
@@ -1071,9 +1085,19 @@ optimization**. Every number in it is attributable to a single configuration.
 - **Aggregation is nested, and the PRIMARY figure is session-blocked**:
   repetition → median of a session's 5 repetitions → **median of the 4 session
   medians**. The median across all 20 repetition-level statistics is kept as a
-  **labelled diagnostic only** — a median of medians is not a median of all
-  values, and the two must never be presented as one number. `CELL_SESSION_BLOCKED.csv`
-  carries both plus the min/max session median each blocked value sits inside.
+  **labelled diagnostic only**. These are **two different estimands computed by
+  two different aggregation rules** — a median of four session medians against a
+  median of twenty repetition-level statistics — so they **need not be equal**,
+  and neither is a weighted median of the other's inputs. They must never be
+  presented as one number. `CELL_SESSION_BLOCKED.csv` carries both plus the
+  min/max session median each blocked value sits inside.
+- **Session blocking is a process/time grouping, not a thread-placement
+  claim.** The five measured repetitions inside one session share one process and
+  address-space lifetime, one binary/build and a short temporal block; they do
+  **not** share a verified fixed CPU or thread placement. Each repetition
+  launches a fresh producer/consumer thread pair, **no affinity is set anywhere**
+  in this experiment, and the OS may migrate either thread mid-run. Sessions
+  collapse process-and-time clustering; they do not pin cores.
 - **Result — a stable bimodality, not an unstable mode.** The nine cells split
   cleanly. Six (all 16 B and 32 B, every capacity) have a session-blocked
   **P50 of exactly 125 ns — constant in all 120 of their repetitions**, spread
@@ -1091,14 +1115,31 @@ optimization**. Every number in it is attributable to a single configuration.
   exact or the build fails. What is claimed is "timer-resolution-limited", never
   "the latency is the timer, not the queue": the queue is doing real work at a
   scale this clock bounds but does not resolve.
-- **Capacity.** The two groups differ in **which thread waits**: in the fast
-  cells the consumer spins empty 0.93–2.5 **billion** times while the producer
-  almost never finds the ring full; in the 64 B cells the producer is blocked
-  26–204 **million** times and the consumer spins empty only 12 thousand to 3.9
-  million times. Within the slow band a larger capacity means **fewer** producer
-  stalls but a **longer** measured latency — P50 is 94–97% of one full ring's
-  drain time (`capacity × ns_per_message`) in all three, which is consistent with
-  a drain model but **does not confirm it** (producer lead is not instrumented).
+- **Capacity.** The two groups differ in **which thread waits**, and the side
+  that accumulates retries is the side being held up — so the *other* side is the
+  pace-limiting one. In the fast (16 B / 32 B) cells the **consumer** spins empty
+  0.93–2.5 **billion** times while the producer almost never finds the ring full:
+  the consumer is waiting for work, so the **producer** is pace-limiting and the
+  ring is essentially empty. In the 64 B cells it inverts — the producer is
+  blocked 26–204 **million** times and the consumer spins empty only 12 thousand
+  to 3.9 million times: a producer waiting for room is a producer that cannot get
+  ahead, so the **consumer** is pace-limiting and the ring stays full. "The
+  producer is blocked" is **not** the same statement as "the producer is the
+  bottleneck". Within the slow band a larger capacity means **fewer** producer
+  stalls but a **longer** measured latency — P50 is **≈ 0.95 of one full ring's
+  drain time** (`capacity × ns_per_message`, 0.946–0.959) in all three, which is
+  **consistent with** a consumer-limited drain model in which the producer runs
+  ahead and a sampled message waits behind roughly one ring of queued work. It
+  **does not confirm** that mechanism: producer lead and the backlog ahead of a
+  sampled message are not instrumented, and **no** cache, coherence, scheduler or
+  core-placement cause is asserted for it.
+- **The size axis is a message *shape*, not a payload byte count.** 16 / 32 / 64 B
+  are three distinct message types that differ in their per-message deterministic
+  construction and validation work as well as in width, and this design does
+  **not** separate the two — size and work are one **bundled workload
+  dimension**. So no claim is made that a 64-byte *payload size* causes the slow
+  regime; what is claimed is that **the 64-byte benchmark message shape
+  consistently produced the consumer-limited regime in this harness**.
 - **Extremes are mostly isolated, with one named exception.** In seven of nine
   cells 1–3 of the 20 repetitions have a maximum above 5× the cell's own median
   maximum. **32 B / 65536** is the exception — **7 of 20**, including three
@@ -1161,3 +1202,6 @@ Experiment 02: **all phases COMPLETE / FROZEN** — Phases 1, 2, 3A, 3B and
 **Phase 4** (tail latency / jitter, a measurement phase that compares no
 treatments and opens no optimization). No further Experiment 02 phase is
 planned; in particular Phase 4 does **not** start a new SPSC optimization phase.
+No Phase 5, no MPMC, no disruptor and no futex work is opened here.
+
+**The next repository work is Experiment 03 — Market Data Pipeline.**

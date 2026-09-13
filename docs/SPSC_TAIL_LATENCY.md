@@ -113,6 +113,34 @@ Message payloads are deterministic functions of the sequence number, and each
 carries a validator: a corrupted, stale or partially published payload is
 detected rather than silently measured.
 
+### The size axis is a message *shape*, not a payload byte count
+
+The three sizes are three **distinct message types**, and they differ in more
+than how many bytes they occupy:
+
+| size | payload words | derived from `seq` | validator checks |
+|---|---|---|---|
+| 16 B | `seq` | 1 | `seq` |
+| 32 B | `seq`, `price`, `qty` | 3 | all 3 |
+| 64 B | `seq`, `price`, `qty`, `flags`, `pad0`, `pad1`, `pad2` | 7 | all 7 |
+
+Every shape also carries the `ready_ticks` stamp word; it is the second of 2, 4
+and 8 words respectively. Construction is a function of the sequence number on
+the producer side (`derive_price`, `derive_qty`, `derive_flags`, and three
+independent `mix64` rounds for the 64 B padding words), and validation re-derives
+and compares every one of those fields on the consumer side — so a larger shape
+carries more *work* per message on both threads, not just a wider copy. The 16 B
+shape has the weakest validator of the three for exactly this reason: with two
+words, one of them the stamp, there is no room for a derived payload field.
+
+**The 16 / 32 / 64 B axis is therefore NOT a pure payload-byte-size
+experiment.** Size and per-message construction/validation work move together
+and are **not separated by this design**; they are one **bundled workload
+dimension**. Nothing here can attribute an effect to the byte count alone, and
+the correct reading of any size-indexed statement in this document is "the
+16 / 32 / 64 B **message shape**", never "the payload size". No rerun was made to
+separate them; the limitation is recorded instead.
+
 ## Sampling
 
 Latency is sampled by a **deterministic sequence-keyed schedule** with interval
@@ -413,20 +441,27 @@ readings are **not mathematically identical**:
   repetition-level statistics. Reported in `CELL_SESSION_BLOCKED.csv` and
   `TAIL_MATRIX.md` as an explicitly labelled **diagnostic only**.
 
-A median of medians is not a median of all values: the blocked figure weights
-each *session* equally while the all-20 figure weights each *repetition*
-equally, so with 5 repetitions per session the blocked median is a **weighted**
-median of the same 20 numbers. For an odd number of sessions the two coincide;
-for 4 they generally do not. Where they differ, the PRIMARY column is the cell's
-value and the SECONDARY column is context — never a competing headline. They do
-differ: 16 B/1024's P99 is **437 ns** session-blocked and **417 ns** across all
-20.
+These are **two different estimands**, produced by two different aggregation
+rules and computed on two different sets of numbers, and they **need not be
+equal**. The blocked median is the median of **four session medians**; the
+all-20 median is the median of **twenty repetition-level statistics**. Neither
+is a weighted median of the other's inputs, and the gap between them is not a
+rounding artefact. 16 B/1024's P99 is **437.5 ns** session-blocked and
+**417 ns** across all 20, because that metric's four session medians — 334, 375,
+500, 833 ns — are not a representative sample of its twenty repetition-level
+P99s. Where they differ, the PRIMARY column is the cell's value and the
+SECONDARY column is context — never a competing headline.
 
-The session-blocked level is primary because of how the data was collected: the
-5 repetitions inside one session share a process, a thread placement and a
-moment in time, so a cell's 20 repetitions are not 20 exchangeable observations.
-Collapsing each session first stops one session that behaved differently from
-dominating the cell's summary.
+The session-blocked level is primary because of how the data was collected. The
+five measured repetitions inside one session share **one process and
+address-space lifetime, one binary and build, and a short temporal block** — and
+**not** a verified fixed CPU or thread placement: every repetition launches a
+fresh producer/consumer `std::thread` pair, no affinity is set anywhere in this
+experiment, and the operating system may migrate either thread during a run. A
+session is therefore a *process and time* grouping, not a pinned-core block, and
+a cell's 20 repetitions are not 20 exchangeable observations. Collapsing each
+session first stops one session that behaved differently from dominating the
+cell's summary.
 
 `CELL_SESSION_BLOCKED.csv` also carries, for every cell and every metric, the
 **min and max session median** — the spread the blocked median sits inside, and
@@ -464,20 +499,31 @@ claim).
 
 ### Q1 — What are the session-blocked P50 / P90 / P99 / P99.9 / max values?
 
-DERIVED — PRIMARY (session-blocked) values in ns, with the median `ns_per_message`
-for reference:
+DERIVED — PRIMARY (session-blocked) values in ns, with the **session-blocked**
+median `ns_per_message` for reference. The last column is on the same
+aggregation level as the percentile columns beside it; it is the median of the
+four session medians of `ns_per_message`, **not** the all-20 median, which is a
+different number in seven of the nine cells — 33.30 / 32.14 / 36.14 / 28.70 /
+41.45 / 41.33 / 31.32 / 31.07 / 30.88 — and must not be substituted into a ratio
+built from this row:
 
 | cell | P50 | P90 | P99 | P99.9 | max | P99/P50 | ns/msg |
 |---|---|---|---|---|---|---|---|
-| 16 B / 1024 B | **125** | 167 | 437 | 5,896 | 79,062 | 3.5 | 32.88 |
-| 16 B / 4096 B | **125** | 167 | 458 | 8,395 | 23,666 | 3.7 | 32.32 |
-| 16 B / 65536 B | **125** | 125 | 645 | 7,000 | 26,396 | 5.2 | 36.14 |
-| 32 B / 1024 B | **125** | 167 | 729 | 11,437 | 75,750 | 5.8 | 29.11 |
-| 32 B / 4096 B | **125** | 166 | 708 | 20,312 | 54,833 | 5.7 | 41.54 |
-| 32 B / 65536 B | **125** | 125 | 438 | 7,458 | 31,729 | 3.5 | 41.16 |
-| 64 B / 1024 B | **30,042** | 31,437 | 71,687 | 103,104 | 212,437 | 2.4 | 30.74 |
-| 64 B / 4096 B | **120,396** | 128,562 | 279,333 | 361,625 | 489,375 | 2.3 | 31.07 |
-| 64 B / 65536 B | **1,952,833** | 2,025,083 | 3,771,208 | 4,055,666 | 4,088,416 | 1.9 | 31.07 |
+| 16 B / 1024 B | **125** | 167 | 437.5 | 5,896 | 79,062.5 | 3.5 | 32.88 |
+| 16 B / 4096 B | **125** | 167 | 458.5 | 8,395.5 | 23,666.5 | 3.7 | 32.32 |
+| 16 B / 65536 B | **125** | 125 | 645.5 | 7,000 | 26,396 | 5.2 | 36.14 |
+| 32 B / 1024 B | **125** | 167 | 729 | 11,437.5 | 75,750.5 | 5.8 | 29.11 |
+| 32 B / 4096 B | **125** | 166 | 708.5 | 20,312.5 | 54,833 | 5.7 | 41.54 |
+| 32 B / 65536 B | **125** | 125 | 438 | 7,458.5 | 31,729 | 3.5 | 41.16 |
+| 64 B / 1024 B | **30,042** | 31,437.5 | 71,687.5 | 103,104.5 | 212,437 | 2.4 | 30.74 |
+| 64 B / 4096 B | **120,396** | 128,562.5 | 279,333.5 | 361,625 | 489,375 | 2.3 | 31.07 |
+| 64 B / 65536 B | **1,952,833** | 2,025,083.5 | 3,771,208.5 | 4,055,666.5 | 4,088,416.5 | 1.9 | 31.07 |
+
+A **half-nanosecond** value here is a legitimate median, not noise: the blocked
+median of four session medians is the **mean of the middle two** when there are
+four sessions, so it lands on `.5` whenever those two differ by an odd number of
+nanoseconds. `437.5` is exactly that, and it is published as `437.5` — the
+derived tables never truncate a derived median to an integer.
 
 DERIVED — the spread each PRIMARY value sits inside (max session median ÷ min
 session median, over the 4 sessions). This is the qualifier on every number
@@ -550,7 +596,7 @@ DERIVED — PRIMARY (session-blocked) ratios, with the max for context:
 MEASURED. The ratio spans **two orders of magnitude across the matrix**: 47–163×
 in the six fast-band cells, only 2.1–3.4× in the three slow-band ones. The
 absolute tail height is *not* what separates them — 16 B/65536's P99.9 (7,000 ns)
-is an order of magnitude *lower* than 64 B/1024's (103,104 ns) — it is the
+is an order of magnitude *lower* than 64 B/1024's (103,104.5 ns) — it is the
 **floor**. Where P50 sits at 125 ns, any excursion at all is a large multiple of
 it; where P50 is already 1.95 ms, the tail has only 2.1× of headroom left to
 move. **A tail ratio is therefore not comparable between two cells whose medians
@@ -579,32 +625,55 @@ MEASURED — retries summed over each cell's 20 repetitions (200M messages each)
 | 64 B / 4096 B | 120,396 | 77,534,424 | 544,316 |
 | 64 B / 65536 B | 1,952,833 | 26,425,067 | 12,311 |
 
-MEASURED. The two groups differ in **which thread waits**. In the six fast-band
-cells the *consumer* spins empty 0.93–2.5 **billion** times while the producer
-almost never finds the ring full: those runs are consumer-starved, the ring is
-essentially empty, and the producer is free to run ahead. In the three 64 B cells
-that inverts almost exactly — the producer is blocked **26–204 million** times
-and the consumer spins empty only 12 thousand to 3.9 million times. The producer
-is the constrained side and the ring stays full.
+MEASURED. The two groups differ in **which thread waits**, and the side that
+accumulates retries is the side being held up — which makes the *other* side the
+pace-limiting one:
+
+- **In the six fast-band (16 B and 32 B) cells the consumer is the side that
+  waits.** It spins empty 0.93–2.5 **billion** times while the producer almost
+  never finds the ring full. A consumer that is repeatedly finding the ring
+  empty is a consumer waiting for work, so the **producer** is the pace-limiting
+  / slower side here; the ring is essentially empty, and the consumer is often
+  already waiting when a sampled message is published.
+- **In the three 64 B cells it inverts.** The producer is blocked **26–204
+  million** times and the consumer spins empty only 12 thousand to 3.9 million
+  times. A producer that is repeatedly finding the ring full is a producer
+  waiting for room, so the **consumer** is the pace-limiting / slower side here;
+  the producer runs ahead and the ring stays full or near-full.
+
+The distinction matters because "the producer is blocked" is **not** the same
+statement as "the producer is the bottleneck". A blocked producer is a producer
+that *cannot get ahead of* the consumer, i.e. evidence that the consumer is the
+pace-limiting side.
 
 DERIVED. Within the 64 B group, larger capacity means **fewer** producer stalls
 but **longer** measured latency — the opposite of the naive reading:
 
 | cell | capacity | P50 | P50 ÷ (capacity × ns/msg) |
 |---|---|---|---|
-| 64 B / 1024 B | 1,024 | 30,042 | 0.937 |
+| 64 B / 1024 B | 1,024 | 30,042 | 0.954 |
 | 64 B / 4096 B | 4,096 | 120,396 | 0.946 |
-| 64 B / 65536 B | 65,536 | 1,952,833 | 0.965 |
+| 64 B / 65536 B | 65,536 | 1,952,833 | 0.959 |
 
-P50 is **94–97% of one full ring's drain time**, `capacity × ns_per_message`, in
-all three cells. INTERPRETATION, offered only as a hypothesis these numbers are
-consistent with: the producer fills the ring and stays ahead, so a sampled
-message is enqueued behind a full ring of work and waits for the consumer to
-drain everything ahead of it — and the wait is set by how much ring there is to
-drain, not by how often the producer is blocked. LIMITATION: producer lead is not
-instrumented, so the drain model is **not confirmed** by this dataset, and no
-cache, coherence or scheduler cause is asserted for why the 64 B cells are the
-slow ones.
+Both figures in the ratio are the cell's **PRIMARY (session-blocked)** values:
+`P50` as tabulated in Q1, and the session-blocked median `ns_per_message`
+(30.742, 31.071, 31.072 ns). Mixing levels — dividing the session-blocked P50 by
+the *all-20* median `ns_per_message` (31.321, 31.071, 30.881 ns) — gives 0.937,
+0.946 and 0.965 instead. The two levels must not be mixed inside one ratio, and
+the observation is the same either way: P50 is **≈ 0.95 of one full ring's drain
+time** (0.946–0.959), `capacity × ns_per_message`, in all three cells.
+
+INTERPRETATION, offered only as a hypothesis these numbers are consistent with:
+in a consumer-limited regime the producer runs ahead and keeps the ring full, so
+a sampled message is enqueued behind approximately one ring of queued work and
+waits for the consumer to drain everything ahead of it — and the wait is set by
+how much ring there is to drain, not by how often the producer is blocked.
+**This mechanism is consistent with the numbers; it is not proven by them.**
+Producer lead is not instrumented, the backlog ahead of a sampled message is not
+observed, and the 0.95 agreement is a single comparison per cell across three
+cells, not a fit. No cache, coherence, scheduler or core-placement cause is
+asserted here for why the 64 B cells are the slow ones, and none may be inferred
+from this relationship.
 
 MEASURED, for contrast: in the six fast-band cells the same product is
 `1024 × 32.88 = 33.7 µs` against a measured P50 of 125 ns. The ring is nowhere
@@ -707,7 +776,7 @@ two different harnesses, so no absolute value is compared across them:
 | P50 was unstable *within* a cell, between repetitions | P50 is **constant at 125 ns** in all 120 repetitions of the six fast-band cells |
 | P99 the most stable statistic, P50 among the least | **reversed** — P50 is now the most reproducible, P99.9/max the least |
 | fast/slow bands did not track size or capacity cleanly | bands separate cleanly: **16/32 B fast, 64 B slow**, at every capacity |
-| slow-band P50 ÷ (capacity × ns/msg) = 0.66, 0.81, 0.82 | = **0.937, 0.946, 0.965** |
+| slow-band P50 ÷ (capacity × ns/msg) = 0.66, 0.81, 0.82 | = **0.954, 0.946, 0.959** |
 | 81 of 180 repetitions in the fast band | **120 of 180** — the same six cells, every repetition |
 
 DERIVED. **The unstable mode does not survive. The bimodality does**, in a
@@ -779,6 +848,14 @@ is `docs/results/spsc-tail-latency/invariants.txt`.
   lead, which depends on scheduling.
 - **No claim about `MutexBoundedQueue`, the same-line layout, or the cached
   remote-cursor variant.** None of them is in this matrix.
+- **No claim that the 64-byte payload size causes the slow regime.** The
+  size axis is a **bundled workload dimension** — bytes and per-message
+  construction/validation work move together and are not separated by this
+  design. What may be said is narrower: *the 64-byte benchmark **message shape**
+  consistently produced the consumer-limited regime in this harness*. The
+  mechanism behind that association is not identified here, and the same
+  limitation applies in the other direction: the 16 B and 32 B shapes are not
+  shown to be fast *because* they are small.
 
 ## Status
 
@@ -788,7 +865,11 @@ is `docs/results/spsc-tail-latency/invariants.txt`.
 failures, and per-repetition instrumentation counters proving that clock reads
 were sparse (9,696 per thread per repetition, not 10,000,000).
 
-Experiment 02 — SPSC is **COMPLETE**. Phase 4 is a **measurement** phase: it
-characterizes the frozen queue and opens no new optimization. No further SPSC
-optimization phase is started from here. See the top-level `README.md` for the
-canonical status line.
+Experiment 02 — SPSC is **COMPLETE / FROZEN**: Phase 1, Phase 2, Phase 3A,
+Phase 3B and Phase 4 are each COMPLETE / FROZEN. Phase 4 is a **measurement**
+phase: it characterizes the frozen queue and opens no new optimization. No
+further SPSC optimization phase is started from here — no Phase 5, no MPMC, no
+disruptor, no futex work.
+
+**The next repository work is Experiment 03 — Market Data Pipeline.** See the
+top-level `README.md` for the canonical status line.

@@ -30,20 +30,31 @@ are NOT mathematically identical:
       repetition -> median of that session's 5 repetitions
                  -> median of the 4 session medians
 
-  SECONDARY (pooled repetitions), a diagnostic only:
+  SECONDARY (all repetitions), a diagnostic only:
       repetition -> median across all 20 repetition-level statistics
 
-The session-blocked figure is PRIMARY because it matches how the data was
-collected: the 5 repetitions inside one session share a process, a thread
-placement and a moment in time, so they are not 20 exchangeable observations.
-Collapsing each session first keeps a session that behaved differently from
-dominating the cell's summary.
+These are two different aggregation rules applied to the same 20 numbers, and
+they need not agree. The session-blocked figure is PRIMARY because it is the
+hierarchy the experiment was designed around; the all-20 figure is reported
+beside it so the size of that choice is visible, never as a competing headline.
 
-For an ODD number of sessions the two coincide; for 4 they generally do not.
-A median of medians is not a median of all values: it weights each session
-equally rather than each repetition equally, so with 5 repetitions per session
-it is a weighted median of the 20 values, not the ordinary one. Both are
-reported, always labelled. Neither is ever presented as the other.
+The session-blocked figure is used because it respects how the data was grouped:
+the 5 repetitions inside one session share one process and address-space
+lifetime, one binary/build, and a short temporal block, so the 20 repetitions of
+a cell are not 20 exchangeable observations. Collapsing each session first keeps
+a session that behaved differently from dominating the cell's summary.
+
+It is NOT justified by any thread-placement claim. Each measured repetition
+launches a FRESH producer/consumer std::thread pair, no CPU affinity is set
+anywhere, and macOS may migrate either thread during a run. A session is a
+process/time grouping, not a verified fixed CPU placement.
+
+For an ODD number of sessions the two can coincide; for 4 they generally do not,
+and where they differ the PRIMARY column is the cell's value. A median of
+session medians is NOT a weighted median of the original 20 observations — it is
+a different estimand computed on a different set of numbers (four session
+medians, not twenty repetitions). Both are reported, always labelled. Neither is
+ever presented as the other.
 
 For every cell and percentile the PRIMARY table also carries the MIN and MAX
 session median, so the spread across sessions is visible next to the location.
@@ -72,6 +83,21 @@ from collections import defaultdict
 INT_METRICS = ("p50_ns", "p90_ns", "p99_ns", "p999_ns", "max_ns")
 FLOAT_METRICS = ("mean_ns",)
 METRICS = INT_METRICS + FLOAT_METRICS
+
+
+def num(x):
+    """Render a derived ns value without throwing away a legitimate half.
+
+    The benchmark's own percentile of a repetition is always an exact integer of
+    nanoseconds, but a DERIVED aggregate over an EVEN number of those can be a
+    half: the median of four session medians is the mean of the middle two, so
+    four session P99s of 334, 375, 500 and 833 give 437.5 ns. Formatting that
+    with int() would publish 437 and silently misstate a table whose whole
+    purpose is exact recomputation. Integral values still render bare (`125`).
+    """
+    if isinstance(x, float) and not x.is_integer():
+        return "%.1f" % x
+    return "%d" % int(x)
 
 
 def read_rows(path):
@@ -182,7 +208,7 @@ def main(argv):
                 rec = cells[cell][session]
                 w.writerow(
                     [cell, session, len(rec["p50_ns"])] +
-                    [int(statistics.median(rec[m])) for m in INT_METRICS] +
+                    [num(statistics.median(rec[m])) for m in INT_METRICS] +
                     ["%.3f" % statistics.median(rec[m]) for m in FLOAT_METRICS] +
                     ["%.6f" % statistics.median(npm[cell][session])])
 
@@ -257,9 +283,9 @@ def main(argv):
             for m in INT_METRICS:
                 b = blocked_rows[(cell, m)]
                 w.writerow([cell, m, b["n_sessions"], b["n_reps"],
-                            int(b["blocked"]), int(b["min_session"]),
-                            int(b["max_session"]), "%.4f" % b["session_spread"],
-                            int(b["secondary_all20"]),
+                            num(b["blocked"]), num(b["min_session"]),
+                            num(b["max_session"]), "%.4f" % b["session_spread"],
+                            num(b["secondary_all20"]),
                             "%.4f" % b["all20_spread"]])
             b = blocked_rows[(cell, "mean_ns")]
             w.writerow([cell, "mean_ns", b["n_sessions"], b["n_reps"],
@@ -285,6 +311,16 @@ def main(argv):
                  "here is the P99 a typical repetition exhibited, not the pooled "
                  "99th percentile of every sample in the cell.")
     lines.append("")
+    lines.append("**The 16 / 32 / 64 B label is a MESSAGE SHAPE, not a payload "
+                 "byte count.** The three sizes are three distinct message types "
+                 "that differ in their per-message deterministic construction and "
+                 "validation work as well as in width, and this design does not "
+                 "separate the two: size and work are one **bundled workload "
+                 "dimension**. So a size-indexed row below is never evidence that "
+                 "a payload size *causes* a latency; the supported reading is "
+                 "that the 64-byte message shape consistently produced the "
+                 "consumer-limited regime in this harness.")
+    lines.append("")
     lines.append("## How to read this file: two levels, one of them canonical")
     lines.append("")
     lines.append("The design is **nested** — each cell has 4 sessions, each "
@@ -297,21 +333,27 @@ def main(argv):
     lines.append("* **SECONDARY — all repetitions.** repetition → median across "
                  "all 20 repetition-level statistics. A **diagnostic only**.")
     lines.append("")
-    lines.append("These are **not mathematically identical.** A median of medians "
-                 "is not a median of all values: the blocked median weights each "
-                 "*session* equally, the all-20 median weights each *repetition* "
-                 "equally — with 5 repetitions per session the blocked figure is "
-                 "a weighted median of the same 20 numbers. For an odd number of "
-                 "sessions the two coincide; for 4 they generally do not. Where "
-                 "they differ, **the PRIMARY column is the cell's value** and the "
-                 "SECONDARY column is context, never a competing headline.")
+    lines.append("These are **two different aggregation rules**, applied to the "
+                 "same 20 numbers, and they need not agree. The blocked figure is "
+                 "the median of four session medians; the all-20 figure is the "
+                 "median of twenty repetition-level statistics. A median of "
+                 "medians is **not** a weighted median of the original "
+                 "observations — it is a different estimand over a different set "
+                 "of numbers. For an odd number of sessions the two can coincide; "
+                 "for 4 they generally do not. Where they differ, **the PRIMARY "
+                 "column is the cell's value** and the SECONDARY column is "
+                 "context, never a competing headline.")
     lines.append("")
-    lines.append("The session-blocked level is primary because of how the data "
-                 "was collected: the 5 repetitions inside one session share a "
-                 "process, a thread placement and a moment in time, so the 20 "
-                 "repetitions of a cell are not 20 exchangeable observations. "
-                 "Collapsing each session first stops a single session that "
-                 "behaved differently from dominating the cell's summary.")
+    lines.append("The session-blocked level is primary because it is the hierarchy "
+                 "the experiment was designed around. The 5 repetitions inside one "
+                 "session share one process and address-space lifetime, one "
+                 "binary/build, and a short temporal block, so the 20 repetitions "
+                 "of a cell are not 20 exchangeable observations; collapsing each "
+                 "session first stops a single session that behaved differently "
+                 "from dominating the cell's summary. It is **not** a "
+                 "thread-placement claim: every measured repetition launches a "
+                 "fresh producer/consumer `std::thread` pair, no CPU affinity is "
+                 "set, and macOS may migrate either thread mid-run.")
     lines.append("")
     lines.append("## PRIMARY — session-blocked, per cell (ns)")
     lines.append("")
@@ -325,10 +367,10 @@ def main(argv):
     for cell in ordered_cells:
         for m in INT_METRICS:
             b = blocked_rows[(cell, m)]
-            lines.append("| %s | %s | %d | %d | %d | %.2fx |" % (
+            lines.append("| %s | %s | %s | %s | %s | %.2fx |" % (
                 pretty(cell), LABEL[m],
-                int(b["blocked"]), int(b["min_session"]),
-                int(b["max_session"]), b["session_spread"]))
+                num(b["blocked"]), num(b["min_session"]),
+                num(b["max_session"]), b["session_spread"]))
     lines.append("")
     lines.append("## SECONDARY (diagnostic) — all-20 median beside the blocked one")
     lines.append("")
@@ -343,9 +385,9 @@ def main(argv):
             b = blocked_rows[(cell, m)]
             delta = (100.0 * (b["secondary_all20"] - b["blocked"]) / b["blocked"]
                      if b["blocked"] else float("nan"))
-            lines.append("| %s | %s | %d | %d | %+.1f%% |" % (
+            lines.append("| %s | %s | %s | %s | %+.1f%% |" % (
                 pretty(cell), LABEL[m],
-                int(b["blocked"]), int(b["secondary_all20"]), delta))
+                num(b["blocked"]), num(b["secondary_all20"]), delta))
     lines.append("")
     lines.append("## P50 / P99, per cell and session (ns)")
     lines.append("")
@@ -358,15 +400,15 @@ def main(argv):
     lines.append("| cell | s1 | s2 | s3 | s4 | P50 spread | P99 spread |")
     lines.append("|---|---|---|---|---|---|---|")
     for cell in ordered_cells:
-        p50 = [int(statistics.median(cells[cell][s]["p50_ns"]))
+        p50 = [statistics.median(cells[cell][s]["p50_ns"])
                for s in sorted(cells[cell])]
-        p99 = [int(statistics.median(cells[cell][s]["p99_ns"]))
+        p99 = [statistics.median(cells[cell][s]["p99_ns"])
                for s in sorted(cells[cell])]
         p50_spread = (max(p50) / min(p50)) if min(p50) > 0 else float("nan")
         p99_spread = (max(p99) / min(p99)) if min(p99) > 0 else float("nan")
         lines.append("| %s | %s | %.2fx | %.2fx |" % (
             pretty(cell),
-            " | ".join("%d / %d" % (a, b) for a, b in zip(p50, p99)),
+            " | ".join("%s / %s" % (num(a), num(b)) for a, b in zip(p50, p99)),
             p50_spread, p99_spread))
     lines.append("")
     lines.append("## Tail ratios (median across repetitions)")

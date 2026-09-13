@@ -76,9 +76,38 @@ reconstructs both files byte-for-byte, and the reconstructed files hash to
 `3cd807df…` and `a96b2ac2…` — the digests recorded above. That reproduces the
 run-time sources from the current tree and therefore **proves no code that
 executes in the timed path was changed**: the pre-edit files differed from the
-recorded ones in those four text spans and nowhere else. One of the four edits is
-inside a string literal (the `--help` usage text), so the **rebuilt binary is not
-byte-identical** to the one that produced the dataset:
+recorded ones in those four text spans and nowhere else.
+
+### A second comment-only pass removed a stale description of the side array
+
+One further documentation-only edit was made in `benchmark/spsc_tail_latency_bench.cpp`
+after that. A comment block still described the **superseded** transport — a
+stamp written to a "`Capacity`-entry array indexed by `s & (Capacity - 1)`" before
+the push — long after the stamp had moved inside the message. It was replaced
+with the current description, and the historical side-array reasoning was
+redirected to the superseded dataset's `SUPERSEDED.md`, where it belongs. The
+current digest is:
+
+```
+eed7deb5774aa15bea5da31b6dc6b590b22e7b0ec72de794f4138463f16e56d9  benchmark/spsc_tail_latency_bench.cpp   (now)
+5fdbbf599bb1df9a6111a3e171fa40612b296d35bb609136867fe41e9e85ef99  benchmark/spsc_tail_harness.h           (now, unchanged by this pass)
+```
+
+Like the first pass, this one is **verifiable rather than asserted**: the diff
+consists only of `//` comment lines — no statement, no declaration, no string
+literal, no formatting of code — so it cannot alter what the timed path executes.
+`benchmark/spsc_tail_harness.h` was not touched at all. The claim is reproducible
+from any later tree with:
+
+```sh
+git diff -U0 <this-commit> -- benchmark/spsc_tail_latency_bench.cpp \
+  | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' \
+  | grep -vE '^[+-][[:space:]]*//'      # must print nothing
+```
+
+Because one of the **earlier** edits is inside a string literal (the `--help`
+usage text), the **rebuilt binary is not byte-identical** to the one that produced
+the dataset:
 
 ```
 96ae9f35c1f4fff950b2b26a117c27ca93405dce205d49210af72292334393ef  build-p41/spsc_tail_latency_bench   (produced this dataset, 16:22:16)
