@@ -430,9 +430,20 @@ dominating the cell's summary.
 
 `CELL_SESSION_BLOCKED.csv` also carries, for every cell and every metric, the
 **min and max session median** — the spread the blocked median sits inside, and
-the first thing to look at before quoting any single number. `CELL_TAIL.csv`,
-`TAIL_MATRIX.md` and `TAIL_RATIOS.csv` are derived from the same summaries by
-`scripts/analyze-spsc-tail.py`.
+the first thing to look at before quoting any single number.
+
+The four derived tables sit at two different levels, and the filenames do not
+make that obvious, so their own headers state it:
+
+| table | level | what a row is |
+|---|---|---|
+| `CELL_SESSION_BLOCKED.csv` | **cell — PRIMARY** | one cell, all five metrics, blocked + the spread it sits inside |
+| `TAIL_MATRIX.md` | **cell — PRIMARY**, readable | the same, with the secondary all-20 column beside it |
+| `CELL_TAIL.csv` | **cell-session** | one `(cell, session)` — a **session, not a cell summary**; there is no per-cell row here |
+| `TAIL_RATIOS.csv` | **cell-session** | one `(cell, session)` |
+
+All four are derived from `summaries/*.csv` by `scripts/analyze-spsc-tail.py`;
+none is edited by hand.
 
 **No distribution is pooled.** The benchmark records one distribution per
 measured repetition and never merges them; the analysis aggregates the

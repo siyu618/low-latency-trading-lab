@@ -49,11 +49,12 @@ For every cell and percentile the PRIMARY table also carries the MIN and MAX
 session median, so the spread across sessions is visible next to the location.
 
 Outputs (into the results directory):
-  CELL_TAIL.csv             level-1 aggregates: per cell, per session
+  CELL_TAIL.csv             LEVEL-1 aggregates: one row per (cell, session).
+                            A row is a session, NOT a cell summary.
   CELL_SESSION_BLOCKED.csv  PRIMARY per-cell summary + min/max session median,
                             with the secondary all-20 figure beside it
   TAIL_MATRIX.md            the readable form of the same, PRIMARY first
-  TAIL_RATIOS.csv           per-session tail ratios (p99/p50, p999/p50, max/p50)
+  TAIL_RATIOS.csv           LEVEL-1 tail ratios, one row per (cell, session)
 
 Usage: scripts/analyze-spsc-tail.py <results-dir>
 Exit: 0 = tables written, 1 = refused (verification missing or data malformed).
@@ -163,10 +164,16 @@ def main(argv):
     # ------------------------------------------------------------- CELL_TAIL.csv
     with open(os.path.join(root, "CELL_TAIL.csv"), "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["# Experiment 02 Phase 4 — DERIVED cross-repetition aggregate.",
-                    ])
-        w.writerow(["# Each value is the MEDIAN across the measured repetitions "
-                    "of that repetition-level statistic."])
+        w.writerow(["# Experiment 02 Phase 4 — DERIVED LEVEL-1 aggregate: one row "
+                    "per (cell, session)."])
+        w.writerow(["# Each value is the MEDIAN across that session's 5 measured "
+                    "repetitions of that repetition-level statistic."])
+        w.writerow(["# A ROW HERE IS A SESSION, NOT A CELL SUMMARY. This table has "
+                    "no per-cell row."])
+        w.writerow(["# The per-cell PRIMARY figure is the session-blocked median in "
+                    "CELL_SESSION_BLOCKED.csv —"])
+        w.writerow(["# repetition -> median of 5 -> median of the 4 session medians. "
+                    "Quote that one, not a row of this."])
         w.writerow(["# NO distribution is pooled. See scripts/analyze-spsc-tail.py."])
         w.writerow(["cell", "session", "reps", "p50_ns", "p90_ns", "p99_ns",
                     "p999_ns", "max_ns", "mean_ns", "ns_per_message"])
@@ -182,8 +189,16 @@ def main(argv):
     # ----------------------------------------------------------- TAIL_RATIOS.csv
     with open(os.path.join(root, "TAIL_RATIOS.csv"), "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["# Experiment 02 Phase 4 — DERIVED per-repetition tail "
-                    "ratios (median across reps)."])
+        w.writerow(["# Experiment 02 Phase 4 — DERIVED LEVEL-1 tail ratios: one row "
+                    "per (cell, session)."])
+        w.writerow(["# Each ratio is computed per repetition, then medianed across "
+                    "that session's 5 measured repetitions."])
+        w.writerow(["# NOT COMPARABLE ACROSS CELLS whose medians sit in different "
+                    "bands: the ratio is driven by the"])
+        w.writerow(["# denominator (how low P50 sits), not by the tail. Published for "
+                    "completeness, never for ranking."])
+        w.writerow(["# Cell-level PRIMARY percentiles are in "
+                    "CELL_SESSION_BLOCKED.csv."])
         w.writerow(["cell", "session", "p99_over_p50", "p999_over_p50",
                     "max_over_p50"])
         for cell in ordered_cells:

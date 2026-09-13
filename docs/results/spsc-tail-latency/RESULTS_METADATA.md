@@ -71,9 +71,9 @@ same 9,696 retained latencies.
 | `SESSIONS.md` | the session design and the cell order within each session |
 | `HOST.md` | host, toolchain, flags, cache-line size, load average, and the **source digests of the exact files the binary was built from** |
 | `CELL_SESSION_BLOCKED.csv` | **DERIVED, PRIMARY** per-cell summary: the blocked median plus the min/max session median it sits inside, and the all-20 median beside it as a labelled diagnostic |
-| `CELL_TAIL.csv` | **DERIVED** per-cell, per-session aggregate (median of each repetition-level statistic) |
-| `TAIL_MATRIX.md` | **DERIVED** the same as a readable matrix, with the two aggregation levels shown separately |
-| `TAIL_RATIOS.csv` | **DERIVED** per-repetition tail ratios (P99/P50, P99.9/P50, max/P50) |
+| `CELL_TAIL.csv` | **DERIVED, LEVEL-1** one row per `(cell, session)` (median of each repetition-level statistic). A row is a **session, not a cell summary** — this table has no per-cell row |
+| `TAIL_MATRIX.md` | **DERIVED** the readable form, with the two aggregation levels shown separately and PRIMARY first |
+| `TAIL_RATIOS.csv` | **DERIVED, LEVEL-1** one row per `(cell, session)`; each ratio computed per repetition, then medianed across the session's 5. Not comparable across cells whose medians sit in different bands |
 | `invariants.txt` | the passing raw→summary verification output |
 | `PROVENANCE.md` | how the dataset was produced and how to re-verify it |
 

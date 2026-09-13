@@ -1,4 +1,8 @@
-# Experiment 02 Phase 4 — DERIVED per-repetition tail ratios (median across reps).
+"# Experiment 02 Phase 4 — DERIVED LEVEL-1 tail ratios: one row per (cell, session)."
+"# Each ratio is computed per repetition, then medianed across that session's 5 measured repetitions."
+# NOT COMPARABLE ACROSS CELLS whose medians sit in different bands: the ratio is driven by the
+"# denominator (how low P50 sits), not by the tail. Published for completeness, never for ranking."
+# Cell-level PRIMARY percentiles are in CELL_SESSION_BLOCKED.csv.
 cell,session,p99_over_p50,p999_over_p50,max_over_p50
 b16_c1024,1,2.6720,31.0000,84.3360
 b16_c1024,2,6.6640,84.6640,1186.3360

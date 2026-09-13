@@ -211,8 +211,10 @@ measurement family. Transient raw runs land in repo-root `results/`
   percentiles are not Phase-4 results and must not be cited as such**, and its
   findings are not assumed to reproduce. See `RESULTS_METADATA.md`,
   `PROVENANCE.md`, `invariants.txt`, `HOST.md`, `SESSIONS.md`,
-  `CELL_SESSION_BLOCKED.csv` (PRIMARY), `CELL_TAIL.csv`, `TAIL_MATRIX.md`,
-  `TAIL_RATIOS.csv` and `docs/SPSC_TAIL_LATENCY.md`.
+  `CELL_SESSION_BLOCKED.csv` (**cell-level, PRIMARY**), `TAIL_MATRIX.md`
+  (the same, readable), `CELL_TAIL.csv` and `TAIL_RATIOS.csv` (**level-1:
+  one row per cell-session, not a cell summary**) and
+  `docs/SPSC_TAIL_LATENCY.md`.
 
   **Phase 4 — COMPLETE / FROZEN.** Experiment 02 — SPSC is **COMPLETE**.
 - `spsc-false-sharing-pre3a1-payload-offset-confounded/` — the **first

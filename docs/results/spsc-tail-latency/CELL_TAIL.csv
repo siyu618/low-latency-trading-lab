@@ -1,5 +1,8 @@
-# Experiment 02 Phase 4 — DERIVED cross-repetition aggregate.
-# Each value is the MEDIAN across the measured repetitions of that repetition-level statistic.
+"# Experiment 02 Phase 4 — DERIVED LEVEL-1 aggregate: one row per (cell, session)."
+# Each value is the MEDIAN across that session's 5 measured repetitions of that repetition-level statistic.
+"# A ROW HERE IS A SESSION, NOT A CELL SUMMARY. This table has no per-cell row."
+# The per-cell PRIMARY figure is the session-blocked median in CELL_SESSION_BLOCKED.csv —
+"# repetition -> median of 5 -> median of the 4 session medians. Quote that one, not a row of this."
 # NO distribution is pooled. See scripts/analyze-spsc-tail.py.
 cell,session,reps,p50_ns,p90_ns,p99_ns,p999_ns,max_ns,mean_ns,ns_per_message
 b16_c1024,1,5,125,167,334,3875,10542,138.647,32.437654
