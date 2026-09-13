@@ -326,6 +326,97 @@ if(BUILD_BENCHMARKS)
     set_tests_properties(spsc_remote_cursor_bench_smoke_cached_instrumented
                          PROPERTIES TIMEOUT 300)
 
+    # -----------------------------------------------------------------------
+    # Experiment 02 — Phase 4: SPSC TAIL LATENCY / JITTER. A SEPARATE executable
+    # from every earlier phase; it does not overload the Experiment-01 tail
+    # benchmark (orderbook_tail_bench) or the Phase-2/3A/3B benches.
+    #
+    # The measured queue is the SEPARATED-CURSOR BASELINE only: acquire/release
+    # publication, separated head/tail cache lines, baseline remote cursor loads,
+    # NO remote-cursor cache. The Phase-3B cached variant, the mutex queue and
+    # the Phase-3A same-line layout are deliberately NOT in this matrix, so every
+    # Phase-4 number is attributable to one queue.
+    #
+    # The measured quantity is producer_ready -> consumer_received, stamped
+    # immediately before the producer's try_push retry loop and immediately after
+    # a successful try_pop. It INCLUDES backpressure, queue synchronization and
+    # the consumer's retry loop, so it must never be described as pure queue
+    # residence. Sampling is a deterministic ODD-interval countdown (default
+    # 1021), which is coprime with every power-of-two capacity.
+    #
+    # Phase-4 absolute numbers must NOT be compared with Phase-2 or Phase-3
+    # numbers: the message shapes are 16/32/64 (not 8/32/64) and the measured
+    # quantity is a latency distribution, not an end-to-end rate.
+    # -----------------------------------------------------------------------
+    add_executable(spsc_tail_latency_bench benchmark/spsc_tail_latency_bench.cpp)
+    target_link_libraries(spsc_tail_latency_bench PRIVATE llob_core Threads::Threads)
+    target_compile_options(spsc_tail_latency_bench PRIVATE -O3 -DNDEBUG
+                           -Wall -Wextra -Wpedantic -Wconversion
+                           -Wsign-conversion -Werror)
+
+    # Phase-4 harness statistics/validation tests. Fast, and they never run the
+    # canonical multi-million-message tail matrix.
+    add_executable(spsc_tail_latency_tests tests/spsc_tail_latency_tests.cpp)
+    target_link_libraries(spsc_tail_latency_tests PRIVATE llob_core Threads::Threads)
+    target_compile_options(spsc_tail_latency_tests PRIVATE -Wall -Wextra
+                           -Wpedantic -Wconversion -Wsign-conversion -Werror)
+    add_test(NAME spsc_tail_latency_tests COMMAND spsc_tail_latency_tests)
+
+    # Short SMOKE cells only: tiny message count, one measured repetition, no
+    # warm-up, one message size per capacity. The canonical 9-cell x 4-session
+    # matrix is run by scripts/spsc-tail-latency.sh, never by ctest.
+    add_test(NAME spsc_tail_latency_bench_smoke_16
+             COMMAND spsc_tail_latency_bench --message-bytes=16 --capacity=1024
+                     --messages=30000 --settling=1000 --reps=1 --warmup=0
+                     --calibration-reps=1000)
+    set_tests_properties(spsc_tail_latency_bench_smoke_16 PROPERTIES TIMEOUT 300)
+    add_test(NAME spsc_tail_latency_bench_smoke_32
+             COMMAND spsc_tail_latency_bench --message-bytes=32 --capacity=4096
+                     --messages=30000 --settling=1000 --reps=1 --warmup=0
+                     --calibration-reps=1000)
+    set_tests_properties(spsc_tail_latency_bench_smoke_32 PROPERTIES TIMEOUT 300)
+    add_test(NAME spsc_tail_latency_bench_smoke_64
+             COMMAND spsc_tail_latency_bench --message-bytes=64 --capacity=65536
+                     --messages=30000 --settling=1000 --reps=1 --warmup=0
+                     --calibration-reps=1000)
+    set_tests_properties(spsc_tail_latency_bench_smoke_64 PROPERTIES TIMEOUT 300)
+
+    # Exit-code guard: a deliberately failing CHECK must make the harness tests
+    # return non-zero.
+    add_test(NAME spsc_tail_latency_tests_exitcode
+             COMMAND ${CMAKE_COMMAND}
+                     -DLLDB_SELFTEST_FAIL=1
+                     -DNAME=spsc_tail_latency_tests_exitcode
+                     -DBINARY=$<TARGET_FILE:spsc_tail_latency_tests>
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/assert_nonzero_exit.cmake)
+    set_tests_properties(spsc_tail_latency_tests_exitcode PROPERTIES
+                         PASS_REGULAR_EXPRESSION "spsc_tail_latency_tests_exitcode: got expected non-zero exit")
+
+    # Validation guards: a malformed Phase-4 run must REFUSE to produce numbers
+    # rather than quietly measuring the wrong thing. WILL_FAIL inverts the exit
+    # code, so these pass only while the benchmark rejects the invocation.
+    add_test(NAME spsc_tail_latency_bench_rejects_even_interval
+             COMMAND spsc_tail_latency_bench --message-bytes=16 --capacity=1024
+                     --messages=50000 --settling=1000 --reps=1 --warmup=0
+                     --sample-interval=1024)
+    set_tests_properties(spsc_tail_latency_bench_rejects_even_interval
+                         PROPERTIES WILL_FAIL TRUE TIMEOUT 60)
+    add_test(NAME spsc_tail_latency_bench_rejects_offmatrix_message
+             COMMAND spsc_tail_latency_bench --message-bytes=8 --capacity=1024
+                     --messages=50000 --settling=1000 --reps=1 --warmup=0)
+    set_tests_properties(spsc_tail_latency_bench_rejects_offmatrix_message
+                         PROPERTIES WILL_FAIL TRUE TIMEOUT 60)
+    add_test(NAME spsc_tail_latency_bench_rejects_settling_past_end
+             COMMAND spsc_tail_latency_bench --message-bytes=16 --capacity=1024
+                     --messages=1000 --settling=1000 --reps=1 --warmup=0)
+    set_tests_properties(spsc_tail_latency_bench_rejects_settling_past_end
+                         PROPERTIES WILL_FAIL TRUE TIMEOUT 60)
+    add_test(NAME spsc_tail_latency_bench_rejects_zero_sample_region
+             COMMAND spsc_tail_latency_bench --message-bytes=16 --capacity=1024
+                     --messages=50000 --settling=49500 --reps=1 --warmup=0)
+    set_tests_properties(spsc_tail_latency_bench_rejects_zero_sample_region
+                         PROPERTIES WILL_FAIL TRUE TIMEOUT 60)
+
     set(BENCH_ARCH_FLAGS "" CACHE STRING
         "Extra arch flags for the benchmark target (e.g. -march=native). Empty = compiler default")
     if(NOT BENCH_ARCH_FLAGS STREQUAL "")
@@ -338,6 +429,7 @@ if(BUILD_BENCHMARKS)
             target_compile_options(spsc_throughput_bench PRIVATE ${BENCH_ARCH_FLAGS})
             target_compile_options(spsc_false_sharing_bench PRIVATE ${BENCH_ARCH_FLAGS})
             target_compile_options(spsc_remote_cursor_bench PRIVATE ${BENCH_ARCH_FLAGS})
+            target_compile_options(spsc_tail_latency_bench PRIVATE ${BENCH_ARCH_FLAGS})
         else()
             message(WARNING "BENCH_ARCH_FLAGS '${BENCH_ARCH_FLAGS}' unsupported by this compiler; "
                             "building the benchmark with the compiler default")

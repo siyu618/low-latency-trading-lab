@@ -1,0 +1,15 @@
+# Experiment 02 Phase 4 — PER-REPETITION LATENCY SUMMARY.
+# One row per MEASURED repetition. The warm-up repetition is not summarized here at all.
+# Percentiles are nearest-rank on the observed samples: index(p) = ceil(p*N) - 1.
+# P99.99 is deliberately not reported. No pooled distribution is produced.
+# ns_per_message = elapsed_ns / messages delivered: an END-TO-END rate over the whole
+# repetition, NOT a latency, and NOT comparable with Phase-2/3 absolute values.
+# expected_samples = (messages - settling_prefix) / sample_interval; a row whose
+# sample_count differs from it is a FAILURE, not a smaller dataset.
+# queue=SpscSeparatedBaselineRingBuffer session=2 message_bytes=16 capacity=4096 messages=10000000 settling_prefix=100000 sample_interval=1021 warmup_reps=1 measured_reps=5
+session,message_bytes,capacity,repetition,status,expected_samples,sample_count,min_ns,mean_ns,p50_ns,p90_ns,p99_ns,p999_ns,max_ns,elapsed_ns,ns_per_message,delivered,producer_full_retries,consumer_empty_retries,checksum,sequence_ok,correctness
+2,16,4096,1,PASS,9696,9696,41,12551.140,125,49167,132792,178125,205208,495132209,49.513221,10000000,8232,74490093,4046696471198022735,1,PASS
+2,16,4096,2,PASS,9696,9696,0,12444.620,125,46417,161333,191917,199917,498391167,49.839117,10000000,16028,77785557,4046696471198022735,1,PASS
+2,16,4096,3,PASS,9696,9696,41,10829.692,125,40292,149834,194250,200042,501727416,50.172742,10000000,0,77615104,4046696471198022735,1,PASS
+2,16,4096,4,PASS,9696,9696,41,18052.922,125,69291,181750,200625,257333,471618584,47.161858,10000000,70190,75358518,4046696471198022735,1,PASS
+2,16,4096,5,PASS,9696,9696,41,19307.215,125,72042,189666,206708,222292,474219459,47.421946,10000000,80975,71796915,4046696471198022735,1,PASS

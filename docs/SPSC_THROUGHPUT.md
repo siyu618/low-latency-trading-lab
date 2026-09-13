@@ -867,8 +867,14 @@ the *distribution*, not the exact values; the spread is part of the result.
 - **Experiment 02, Phase 2 — Throughput Baseline: COMPLETE / FROZEN.**
   Canonical dataset: `docs/results/spsc-throughput/` — 4 balanced AB/BA sessions,
   72 processes, 360 measured repetitions, all invariants PASS.
-- **Experiment 02, Phase 3 — False Sharing / Cursor Caching: NOT STARTED.**
-- **Experiment 02, Phase 4 — Tail Latency: NOT STARTED.**
+- **Experiment 02, Phase 3 — False Sharing / Cursor Caching: COMPLETE / FROZEN**
+  as two phases — Phase 3A (controlled cursor placement, canonical dataset
+  `docs/results/spsc-false-sharing/`) and Phase 3B (remote-cursor caching,
+  canonical dataset `docs/results/spsc-remote-cursor/`).
+- **Experiment 02, Phase 4 — Tail Latency / Jitter: COMPLETE / FROZEN**
+  (measurement only; it compares no treatments and opens no optimization).
+  Canonical dataset: `docs/results/spsc-tail-latency/`; methodology:
+  `docs/SPSC_TAIL_LATENCY.md`.
 
 Superseded datasets, retained as labelled artifacts and not to be cited for
 comparative claims:

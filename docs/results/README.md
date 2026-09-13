@@ -183,6 +183,68 @@ measurement family. Transient raw runs land in repo-root `results/`
   See its `RESULTS_METADATA.md`, `LAYOUT_VERIFICATION.md`, `MECHANISM.md`,
   `mechanism/ATTEMPTS.csv` (derived, not measured), `invariants.txt`,
   `PROVENANCE.md` and `docs/SPSC_REMOTE_CURSOR_CACHE.md`.
+- `spsc-tail-latency/` — the **canonical Experiment 02 Phase 4 tail-latency /
+  jitter dataset** (measured 2026-09-13): the **separated-cursor baseline SPSC
+  only** — monotonic cursors, separated head/tail cache lines, acquire/release
+  publication, baseline remote-cursor loads with **no** remote-cursor cache. 9
+  cells (3 message sizes × 3 capacities), 10M messages per repetition, a
+  100,000-message settling prefix, deterministic **countdown** sampling at
+  interval **1021**, one excluded warm-up plus 5 measured repetitions per
+  process, 4 sessions in forward/reverse/forward/reverse order, **36 processes,
+  180 measured repetitions, 1,745,280 sampled latencies**. Message shapes are
+  **16/32/64 B**, deliberately not Phase 2/3A/3B's 8/32/64 B.
+  **This phase compares no treatments.** The matrix contains exactly **one**
+  queue configuration: the Phase-3B `cached` variant, `MutexBoundedQueue` and the
+  Phase-3A `same_line` layout are all absent by design, so every number here is
+  attributable to one queue and none of them is a treatment effect.
+  The measured quantity is `producer_ready → consumer_received` on
+  `steady_clock`, stamped immediately **before** the producer's `try_push` retry
+  loop and immediately **after** a successful `try_pop`. It therefore
+  **includes** backpressure, the release/acquire edge, the payload copy, the
+  consumer's empty-retry loop and both clock reads — it is **not** pure queue
+  residence time, **not** a per-call cost and **not** a one-way handoff latency,
+  and it is **not comparable** to any `ns/msg` figure in `spsc-throughput/`,
+  `spsc-false-sharing/` or `spsc-remote-cursor/`. Because the stamp precedes the
+  push, the interval depends on how far ahead the consumer the producer has run,
+  so the distribution is a **producer-relative service latency including
+  backpressure**. Session order balances a cell's temporal position only; it is
+  **not** an AB/BA crossover (there is no treatment pair) and does not remove
+  scheduler, migration, DVFS or thermal variation — none of which was measured.
+  Timer calibration (200,000 clock pairs per process, `clock_pair` P99 ≈ 42 ns)
+  provides **scale and context, never a correction factor**; it is not subtracted
+  from any latency. The tick→ns conversion is exact or the build fails.
+  **Result: the reproducibility of a statistic is not the same for every
+  statistic, and the median is among the least reproducible.** Across 180
+  repetitions of nine *fixed* configurations, five consecutive repetitions of an
+  identical configuration produced P50s spanning **379×** (32 B / 4096) and P90s
+  spanning **442×** (16 B / 4096), while the **P99 spread never exceeded 5.00×**
+  and was 1.08× in exactly the cell whose P50 moved most. So a per-cell P50 or
+  P90 describes *the runs that happened*, not the ring; **no cell may be ranked
+  above another on P50**, and the derived `P99/P50` ratios (394–1268 in the
+  fast-band cells, 1.8–2.4 in the slow-band cells) differ because of their
+  **denominators**, not their tails. The fast mode is the **timer, not the
+  queue**: the 81 sub-microsecond P50s take only ten distinct values in the whole
+  dataset, each within 1 ns of a whole multiple of the 41.7 ns clock quantum, so
+  the floor is three quanta wide and is not resolvable below that. End-to-end
+  throughput is stable where the latency distribution is not — `ns_per_message`
+  varies only **1.12×–1.70×** per cell across the same repetitions in which P50
+  moves up to 709×. Capacity and message size do not determine the mode: at
+  capacity 4096 the three sizes land in three different bands. No causal
+  attribution of any kind is made — nothing was profiled, and no cache-miss,
+  coherence-event, preemption, core-migration, P-core/E-core, frequency or
+  thermal quantity was measured or may be inferred.
+  Verified: 36 processes, 180 measured repetitions, every repetition
+  `correctness=PASS` with strict sequence and payload validation, **0** timestamp
+  inversions, the per-message-size checksum identical across all 20 repetitions
+  of each size, cursor layout verified on the measured object in every process,
+  and **5,240,255** raw→summary checks passed with 0 failures.
+  See its `RESULTS_METADATA.md`, `PROVENANCE.md`, `HOST.md` (which records the
+  digest of every source file as compiled — the tree was dirty and the recorded
+  HEAD predates the benchmark), `invariants.txt`, `CELL_TAIL.csv`,
+  `TAIL_MATRIX.md`, `TAIL_RATIOS.csv` (all three **DERIVED**) and
+  `docs/SPSC_TAIL_LATENCY.md`. The frozen `spsc-throughput/`,
+  `spsc-false-sharing/` and `spsc-remote-cursor/` datasets are unchanged and were
+  neither read nor regenerated.
 - `spsc-false-sharing-pre3a1-payload-offset-confounded/` — the **first
   Phase-3A pass, SUPERSEDED, not canonical**. Real and self-validating: 72
   processes, 360 measured repetitions, all `correctness=PASS`, every row's cursor
@@ -209,6 +271,26 @@ measurement family. Transient raw runs land in repo-root `results/`
   turned out to be strongly bimodal under that sampling. Retained as a labeled
   historical artifact and as the evidence for adopting pooled multi-session
   measurement. See its `SUPERSEDED.md`; cite it only for that purpose.
+- `spsc-tail-latency-CONTAMINATED-concurrent-load/` — **NOT ARCHIVED IN THIS
+  REPOSITORY**, the **first Phase-4 pass, INVALID, not canonical**. Real, complete and self-validating: 36 processes, 180
+  measured repetitions, every queue gate passing, all 5,240,246 verification
+  checks green. It is invalid because it was measured **concurrently with other
+  work on the same host** — 8 of its 180 repetitions account for **95%** of the
+  experiment's total measured wall time, six of them clustered within
+  25.48–25.66 s, with `ns_per_message` 50×–2,000× their own cell's median. Every
+  gate in the harness is an invariant of the *queue*, and a starved thread
+  violates none of them; it simply runs slower, so no correctness check could
+  have caught this. It was caught by reading `ns_per_message` per repetition
+  against its own cell's median, which is now an automated check in
+  `scripts/verify-spsc-tail-summary.py` (any repetition above 5× its cell's
+  median fails the dataset). Nothing in it was edited or deleted, but its
+  **derived aggregate tables were deleted** so that no quotable summary of it
+  survives. Do not cite a single number from it. The directory is deliberately
+  not committed — 106 MB of raw data for a run that cannot be used — so it and
+  its `SUPERSEDED.md` are absent from a clone, and this entry is the repository's
+  only record of it. See the "Two hazards" section of `docs/SPSC_TAIL_LATENCY.md`;
+  cite it only as the evidence for the per-repetition starvation check and the
+  pre-flight load gate.
 
 ## Honesty rule
 

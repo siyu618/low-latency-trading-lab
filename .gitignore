@@ -40,3 +40,12 @@ Testing/
 # canonical committed dataset lives under docs/results/ (see its metadata file).
 /results/
 bench_results_*
+
+# ---- One deliberately uncommitted dataset ----
+# The first Phase-4 tail-latency pass is real, complete and self-validating, but
+# it was measured concurrently with other work on the same host, so none of it
+# is usable. It is kept on the machine that ran it, labelled and unedited, with
+# its derived tables deleted. It is NOT committed: 106 MB of raw data for a run
+# that cannot be cited. docs/results/README.md carries the repository's record
+# of it, including why every queue-level gate passed anyway.
+docs/results/spsc-tail-latency-CONTAMINATED-concurrent-load/

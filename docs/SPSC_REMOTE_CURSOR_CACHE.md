@@ -1314,7 +1314,7 @@ Experiment 02
 | Phase 2 — Throughput Baseline | COMPLETE / FROZEN |
 | Phase 3A — Controlled Cursor Placement | COMPLETE / FROZEN |
 | **Phase 3B — Remote Cursor Caching** | **COMPLETE / FROZEN** |
-| Phase 4 — Tail Latency | NOT STARTED |
+| Phase 4 — Tail Latency / Jitter | COMPLETE / FROZEN (measurement only; no treatment comparison) |
 
 Phase 3B was marked complete only after: correctness passed; the layout
 invariants passed on every measured row; the remote-load reduction was directly

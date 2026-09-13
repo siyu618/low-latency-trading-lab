@@ -1034,7 +1034,13 @@ and scheduler behaviour are all machine-specific; the *method* transfers, the
   `docs/SPSC_REMOTE_CURSOR_CACHE.md`. Its result is negative (the mechanism
   reduced remote loads; the throughput did not follow), which is a statement
   about Phase 3B and not about cursor placement.
-- **Experiment 02, Phase 4 — Tail Latency: NOT STARTED.**
+- **Experiment 02, Phase 4 — Tail Latency / Jitter: COMPLETE / FROZEN.** A
+  measurement phase over the frozen separated-cursor baseline queue only — it
+  compares no cursor layouts and no treatments, so nothing in it is a
+  cursor-placement result. Its finding is that a per-cell median is not
+  reproducible across repetitions of an identical configuration while P99 and
+  end-to-end `ns/message` are; methodology in `docs/SPSC_TAIL_LATENCY.md`,
+  canonical data in `docs/results/spsc-tail-latency/`.
 
 **Phase 3B must not be combined with Phase 3A.** Remote-cursor caching
 (`cached_head` / `cached_tail`) reduces the *number* of remote cursor
