@@ -7,9 +7,13 @@
 # expected_samples = (messages - settling_prefix) / sample_interval; a row whose
 # sample_count differs from it is a FAILURE, not a smaller dataset.
 # queue=SpscSeparatedBaselineRingBuffer session=1 message_bytes=32 capacity=1024 messages=10000000 settling_prefix=100000 sample_interval=1021 warmup_reps=1 measured_reps=5
-session,message_bytes,capacity,repetition,status,expected_samples,sample_count,min_ns,mean_ns,p50_ns,p90_ns,p99_ns,p999_ns,max_ns,elapsed_ns,ns_per_message,delivered,producer_full_retries,consumer_empty_retries,checksum,sequence_ok,correctness
-1,32,1024,1,PASS,9696,9696,0,8761.619,125,30041,89292,255250,2554750,562299958,56.229996,10000000,4520641,78164553,9688180432013741715,1,PASS
-1,32,1024,2,PASS,9696,9696,0,9672.344,125,34250,106250,226167,607250,593030208,59.303021,10000000,3869905,82097736,9688180432013741715,1,PASS
-1,32,1024,3,PASS,9696,9696,41,3103.162,125,3042,44833,159500,4913917,601195125,60.119512,10000000,7685950,97246113,9688180432013741715,1,PASS
-1,32,1024,4,PASS,9696,9696,41,3103.723,125,4667,57041,63875,89958,526188041,52.618804,10000000,178877,72711162,9688180432013741715,1,PASS
-1,32,1024,5,PASS,9696,9696,41,3313.563,125,6625,56750,68000,1980084,537611292,53.761129,10000000,399804,73778417,9688180432013741715,1,PASS
+# producer_sample_clock_reads and consumer_sample_clock_reads are the PROOF that
+# the timestamp instrumentation is SPARSE: they count actual Clock::now() calls made
+# for sampled messages only, and each must equal expected_samples. A harness that
+# timestamped every message would report ~messages here and FAIL.
+session,message_bytes,capacity,repetition,status,expected_samples,sample_count,producer_sample_clock_reads,consumer_sample_clock_reads,stamp_contract_failures,min_ns,mean_ns,p50_ns,p90_ns,p99_ns,p999_ns,max_ns,elapsed_ns,ns_per_message,delivered,producer_full_retries,consumer_empty_retries,checksum,sequence_ok,correctness
+1,32,1024,1,PASS,9696,9696,9696,9696,0,41,455.800,125,458,2959,79375,254209,418260542,41.826054,10000000,128681,66792729,966167567837155835,1,PASS
+1,32,1024,2,PASS,9696,9696,9696,9696,0,41,626.125,125,333,8250,104417,176791,381176750,38.117675,10000000,318880,60265558,966167567837155835,1,PASS
+1,32,1024,3,PASS,9696,9696,9696,9696,0,41,239.721,125,167,1041,19709,131042,305192750,30.519275,10000000,51134,46173202,966167567837155835,1,PASS
+1,32,1024,4,PASS,9696,9696,9696,9696,0,41,248.012,125,167,1750,12417,145250,286306833,28.630683,10000000,38661,45751444,966167567837155835,1,PASS
+1,32,1024,5,PASS,9696,9696,9696,9696,0,41,137.043,125,125,500,3792,16125,390089833,39.008983,10000000,0,98455256,966167567837155835,1,PASS

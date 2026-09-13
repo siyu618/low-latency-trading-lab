@@ -341,8 +341,15 @@ if(BUILD_BENCHMARKS)
     # immediately before the producer's try_push retry loop and immediately after
     # a successful try_pop. It INCLUDES backpressure, queue synchronization and
     # the consumer's retry loop, so it must never be described as pure queue
-    # residence. Sampling is a deterministic ODD-interval countdown (default
-    # 1021), which is coprime with every power-of-two capacity.
+    # residence.
+    #
+    # The stamp travels INSIDE the message, through the SPSC payload path — there
+    # is no timestamp side array. Instrumentation is SPARSE: a deterministic
+    # sequence-keyed schedule (default interval 1021, coprime with every
+    # power-of-two capacity) selects ~9,696 of the 10,000,000 messages, and both
+    # threads evaluate that schedule independently. A repetition reports the
+    # number of clock reads it actually took, and FAILS if that is not exactly
+    # the expected sample count.
     #
     # Phase-4 absolute numbers must NOT be compared with Phase-2 or Phase-3
     # numbers: the message shapes are 16/32/64 (not 8/32/64) and the measured

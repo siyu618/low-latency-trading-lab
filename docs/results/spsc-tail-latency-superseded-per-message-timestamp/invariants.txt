@@ -1,0 +1,10 @@
+Phase 4 raw -> summary verification
+  results dir  : docs/results/spsc-tail-latency
+  raw files    : 36
+  summary files: 36
+
+  verified repetitions : 180
+  sampled latencies    : 1745280
+  checks run           : 5240255
+
+ALL PHASE 4 RAW -> SUMMARY CHECKS PASSED

@@ -61,15 +61,21 @@
 // ---------------------------------------------------------------------------
 // SAMPLING, SETTLING AND WHAT IS PREALLOCATED
 // ---------------------------------------------------------------------------
-// Sampling is a deterministic ODD-interval countdown (default 1021, not 1024),
-// so it is coprime with every power-of-two capacity and rotates through all ring
-// positions. A `--settling` prefix runs through the REAL queue but is excluded
-// from the distribution. The expected sample count is DERIVED, not observed, and
-// a repetition that observes a different count FAILS.
+// Sampling is a deterministic sequence-keyed schedule with an ODD interval
+// (default 1021, not 1024), so it is coprime with every power-of-two capacity
+// and rotates through all ring positions. A `--settling` prefix runs through the
+// REAL queue but is excluded from the distribution. The expected sample count is
+// DERIVED, not observed, and a repetition that observes a different count FAILS.
 //
-// The clock is read UNCONDITIONALLY on every message, settled or sampled: the
-// sampling decision decides only whether a latency is RECORDED, never whether it
-// is MEASURED, so the measurement point is identical for every message.
+// The clock is read ONLY for sampled messages: once on the producer side,
+// immediately before that message's try_push retry loop, and once on the
+// consumer side, immediately after its successful try_pop. The sparse
+// instrumentation is not a claim about this file — each repetition reports
+// `producer_sample_clock_reads` and `consumer_sample_clock_reads`, and a count
+// that differs from the derived sample count FAILS the repetition. Stamping
+// every message instead would put a clock read (and, before Phase 4.1, a write
+// into a capacity-sized side array) on all 10M messages rather than on the
+// 1-in-1021 that is sampled.
 //
 // All sample storage is sized exactly, before the transfer starts. Inside the
 // transfer there is NO allocation, NO vector growth, NO sorting and NO file or
@@ -167,7 +173,7 @@ constexpr const char* kQueueName = "SpscSeparatedBaselineRingBuffer";
         "the consumer's empty-retry loop. It is NOT pure queue residence.\n"
         "\n"
         "--sample-interval must be ODD, so that it is coprime with every\n"
-        "power-of-two capacity and the deterministic countdown sample rotates\n"
+        "power-of-two capacity and the deterministic sample schedule rotates\n"
         "through all ring positions. The default is 1021, not 1024.\n"
         "\n"
         "expected_samples = (messages - settling) / sample-interval, and a\n"
@@ -239,8 +245,11 @@ struct RepResult {
     std::uint64_t delivered             = 0;
     std::uint64_t producer_full_retries = 0;
     std::uint64_t consumer_empty_retries = 0;
+    std::uint64_t producer_sample_clock_reads = 0;
+    std::uint64_t consumer_sample_clock_reads = 0;
     std::uint64_t checksum              = 0;
     std::uint64_t payload_mismatches    = 0;
+    std::uint64_t stamp_contract_failures = 0;
     std::uint64_t timestamp_inversions  = 0;
     std::uint64_t elapsed_ns            = 0;
     bool          sequence_ok           = true;
@@ -251,14 +260,17 @@ struct RepResult {
 
     h::RepInvariants invariants() const noexcept {
         h::RepInvariants v;
-        v.expected_delivered   = expected_delivered;
-        v.delivered            = delivered;
-        v.expected_samples     = expected_samples;
-        v.sample_count         = sample_count;
-        v.payload_mismatches   = payload_mismatches;
-        v.timestamp_inversions = timestamp_inversions;
-        v.sequence_ok          = sequence_ok;
-        v.cursor_ok            = layout_checked && cursor_ok;
+        v.expected_delivered          = expected_delivered;
+        v.delivered                   = delivered;
+        v.expected_samples            = expected_samples;
+        v.sample_count                = sample_count;
+        v.producer_sample_clock_reads = producer_sample_clock_reads;
+        v.consumer_sample_clock_reads = consumer_sample_clock_reads;
+        v.payload_mismatches          = payload_mismatches;
+        v.stamp_contract_failures     = stamp_contract_failures;
+        v.timestamp_inversions        = timestamp_inversions;
+        v.sequence_ok                 = sequence_ok;
+        v.cursor_ok                   = layout_checked && cursor_ok;
         return v;
     }
     bool ok() const noexcept { return h::repetition_ok(invariants()); }
@@ -312,44 +324,39 @@ RepResult run_repetition(const Config& c, int repetition, bool collect) {
         }
     }
 
-    // Measurement scaffolding, allocated BEFORE the transfer: one raw tick stamp
-    // per message, written by the producer before it publishes the message and
-    // read by the consumer after it acquires that message.
+    // THERE IS NO TIMESTAMP SIDE ARRAY.
     //
-    // WHY 2 * Capacity SLOTS AND NOT Capacity.
+    // The producer's stamp is a FIELD of the message and reaches the consumer
+    // through the queue with the rest of the payload, so the instrumentation
+    // touches only memory the measurement already touches. The superseded dataset
+    // allocated a `ready_ticks[2 * Capacity]` array instead; that array was a
+    // second, independently addressed working set whose footprint scaled with
+    // capacity, and the aliasing argument that sized it to 2 * Capacity rather
+    // than Capacity is preserved in that dataset's `SUPERSEDED.md`.
     //
-    // Indexing this array by the ring slot (`s & (Capacity - 1)`) is WRONG, and
-    // wrong in a way that corrupts samples rather than failing loudly. The
-    // producer must write the stamp for message s before it pushes s, so it can
-    // write the stamp for index `h + Capacity` while the consumer's head is
-    // still h — the ring allows Capacity messages in flight, and the producer
-    // writes its stamp for the message it is ABOUT to push, one past the last
-    // one it managed to publish. With Capacity slots that write lands on exactly
-    // the slot holding the stamp for index h, i.e. on the stamp the consumer is
-    // about to read for the message it just popped. The consumer then subtracts
-    // a LATER timestamp from its own and computes a negative latency — a sample
-    // that is not merely noisy but impossible. It is rare (roughly one in 5e7
-    // samples on this host) because the window between the pop and the stamp
-    // read is a few instructions, which is precisely what makes it dangerous.
-    //
-    // With 2 * Capacity slots addressed by a power-of-two mask, let the consumer
-    // have just popped index c, so the shared head is c + 1. The producer can
-    // publish at most index head + Capacity - 1 and can therefore stamp at most
-    // index head + Capacity = c + 1 + Capacity. The next index sharing c's slot
-    // is c + 2 * Capacity, which is unreachable because c + 1 + Capacity <
-    // c + 2 * Capacity for every Capacity >= 2. So the stamp for index c is
-    // intact from the moment it is written until the moment it is read.
-    //
-    // Visibility is the ring's own release/acquire pair, exactly as for the
-    // payload: the stamp store is sequenced before the release store that
-    // publishes the message, and the consumer's acquire load of the cursor
-    // synchronizes with it. A plain (non-atomic) store and load are therefore
-    // correctly ordered, not a race.
-    constexpr std::size_t kStampSlots = 2 * Capacity;
-    static_assert(kStampSlots > Capacity, "the stamp array must be larger than "
-                                          "the ring, or a live stamp can be "
-                                          "overwritten before it is read");
-    auto ready_ticks = std::make_unique<std::int64_t[]>(kStampSlots);
+    // One consequence is worth stating, because it is a correctness gain rather
+    // than a tidy-up: the failure that argument existed to prevent — a producer
+    // stamp overwriting a stamp the consumer had not yet read, yielding a
+    // negative latency — is now STRUCTURALLY IMPOSSIBLE. There is no shared
+    // mutable slot to overwrite. The stamp the consumer subtracts is the one that
+    // arrived inside the message it just popped.
+
+    // THE SENTINEL'S ONE ASSUMPTION, verified rather than assumed. `ready_ticks
+    // == 0` means "not sampled", so a real stamp must never be 0. That holds
+    // whenever the steady clock's epoch is not the instant being measured, which
+    // is true of every steady clock in practice — but if it ever failed, every
+    // sampled message would be misread as unsampled and the run would be
+    // silently wrong rather than loudly broken. So it is checked here.
+    if (Clock::now().time_since_epoch().count() == 0) {
+        std::fprintf(stderr,
+                     "\nsteady_clock reads 0 at its epoch (bytes=%zu cap=%zu "
+                     "rep=%d).\n"
+                     "The unsampled sentinel (ready_ticks == 0) would be "
+                     "ambiguous with a real stamp, so every sampled message "
+                     "would be misread as unsampled. Refusing to measure.\n",
+                     Msg::kBytes, Capacity, repetition);
+        return r; // invariants are unset, so this repetition FAILS
+    }
 
     // Sample storage, sized EXACTLY, before the transfer. Inside the transfer
     // there is no growth, no allocation, no sorting and no I/O.
@@ -365,7 +372,10 @@ RepResult run_repetition(const Config& c, int repetition, bool collect) {
     std::uint64_t checksum               = 0;
     std::uint64_t delivered              = 0;
     std::uint64_t sample_count           = 0;
+    std::uint64_t producer_clock_reads   = 0;
+    std::uint64_t consumer_clock_reads   = 0;
     std::uint64_t payload_mismatches     = 0;
+    std::uint64_t stamp_failures         = 0;
     std::uint64_t timestamp_inversions   = 0;
     bool          sequence_ok            = true;
     Clock::time_point consumer_end{};
@@ -375,17 +385,30 @@ RepResult run_repetition(const Config& c, int repetition, bool collect) {
         while (!start.load(std::memory_order_acquire)) {
             std::this_thread::yield(); // ready-wait: NOT part of the measurement
         }
-        std::uint64_t misses = 0;
+        h::SampleSchedule schedule(settling, interval);
+        std::uint64_t     misses = 0;
         for (std::uint64_t s = 0; s < n; ++s) {
-            const Msg m = Msg::make(s);
-            // MEASUREMENT POINT: immediately before the retry loop, so the stamp
-            // precedes every push attempt for this message. It is written before
-            // the push that publishes the message, and the consumer's acquire
-            // observation of `head` publishes it. Indexed over 2 * Capacity
-            // slots — see the allocation comment for why Capacity slots would
-            // let this write corrupt a stamp the consumer has not read yet.
-            ready_ticks[s & (kStampSlots - 1)] = static_cast<std::int64_t>(
-                Clock::now().time_since_epoch().count());
+            // 1. The DETERMINISTIC payload first. `ready_ticks` starts at the
+            //    sentinel, so an unsampled message is complete as it stands and
+            //    no branch is needed to clear it.
+            Msg m = Msg::make(s);
+
+            // 2. The ONLY producer clock read in this loop, taken for a sampled
+            //    sequence only — roughly one message in 1021, not every message.
+            //    It is taken immediately before the retry loop, so the stamp
+            //    precedes every push attempt for this message and producer
+            //    backpressure falls inside the measured interval. The stamp then
+            //    travels inside the payload, and the consumer's acquire
+            //    observation of `head` publishes it exactly as it publishes the
+            //    rest of the message.
+            if (schedule.is_sample(s)) {
+                m.ready_ticks = static_cast<std::int64_t>(
+                    Clock::now().time_since_epoch().count());
+                ++producer_clock_reads;
+                schedule.advance();
+            }
+
+            // 3. The frozen SPSC queue, unchanged, with the frozen retry policy.
             while (!q->try_push(m)) {
                 ++producer_full_retries;
                 if (++misses >= kYieldAfterMisses) {
@@ -402,10 +425,10 @@ RepResult run_repetition(const Config& c, int repetition, bool collect) {
         while (!start.load(std::memory_order_acquire)) {
             std::this_thread::yield(); // ready-wait: NOT part of the measurement
         }
-        h::SamplingCountdown sampler(interval);
-        std::uint64_t        expected = 0;
-        std::uint64_t        misses   = 0;
-        Msg                  m{};
+        h::SampleSchedule schedule(settling, interval);
+        std::uint64_t     expected = 0;
+        std::uint64_t     misses   = 0;
+        Msg               m{};
         while (expected < n) {
             if (!q->try_pop(m)) {
                 ++consumer_empty_retries;
@@ -415,17 +438,26 @@ RepResult run_repetition(const Config& c, int repetition, bool collect) {
                 }
                 continue;
             }
-            // MEASUREMENT POINT: immediately after a successful pop, BEFORE any
-            // sequence check, checksum fold or payload validation. Taken for
-            // EVERY message; the sampler below only decides whether the latency
-            // is recorded.
-            const std::int64_t received = static_cast<std::int64_t>(
-                Clock::now().time_since_epoch().count());
             misses = 0; // success: the consecutive-miss run is over
 
-            if (expected >= settling && sampler.on_message()) {
-                const std::int64_t lat =
-                    received - ready_ticks[expected & (kStampSlots - 1)];
+            // The consumer derives `sampled` from the SAME schedule, keyed on the
+            // sequence it has just popped rather than on a call count. The
+            // message's OWN field is then compared against that expectation, so
+            // a producer/consumer schedule disagreement shows up as a stamp
+            // contract failure instead of as a plausible-looking bogus latency.
+            const bool sampled = schedule.is_sample(expected);
+            if (!h::stamp_contract_ok(m.ready_ticks, sampled)) ++stamp_failures;
+
+            if (sampled) {
+                // MEASUREMENT POINT: immediately after a successful pop, BEFORE
+                // the sequence check, the checksum fold and payload validation.
+                // The ONLY consumer clock read in this loop.
+                const std::int64_t received = static_cast<std::int64_t>(
+                    Clock::now().time_since_epoch().count());
+                ++consumer_clock_reads;
+                schedule.advance();
+
+                const std::int64_t lat = received - m.ready_ticks;
                 if (!h::timestamp_ok(lat)) ++timestamp_inversions;
                 // Bounded by the storage that ACTUALLY exists, not by the
                 // derived count: a warm-up repetition runs the same schedule
@@ -465,12 +497,15 @@ RepResult run_repetition(const Config& c, int repetition, bool collect) {
     r.elapsed_ns = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(consumer_end - t0)
             .count());
-    r.delivered              = delivered;
-    r.producer_full_retries  = producer_full_retries;
-    r.consumer_empty_retries = consumer_empty_retries;
-    r.checksum               = checksum;
-    r.payload_mismatches     = payload_mismatches;
-    r.timestamp_inversions   = timestamp_inversions;
+    r.delivered                   = delivered;
+    r.producer_full_retries       = producer_full_retries;
+    r.consumer_empty_retries      = consumer_empty_retries;
+    r.producer_sample_clock_reads = producer_clock_reads;
+    r.consumer_sample_clock_reads = consumer_clock_reads;
+    r.checksum                    = checksum;
+    r.payload_mismatches          = payload_mismatches;
+    r.stamp_contract_failures     = stamp_failures;
+    r.timestamp_inversions        = timestamp_inversions;
     r.sequence_ok            = sequence_ok;
     r.sample_count           = sample_count;
     if (collect) r.samples = std::move(samples);
@@ -587,8 +622,17 @@ void write_summary(const Config& c, const std::vector<RepResult>& reps) {
         "# queue=%s session=%d message_bytes=%zu capacity=%zu messages=%" PRIu64
         " settling_prefix=%" PRIu64
         " sample_interval=%" PRIu64 " warmup_reps=%d measured_reps=%d\n"
+        "# producer_sample_clock_reads and consumer_sample_clock_reads are the "
+        "PROOF that\n"
+        "# the timestamp instrumentation is SPARSE: they count actual Clock::now() "
+        "calls made\n"
+        "# for sampled messages only, and each must equal expected_samples. A "
+        "harness that\n"
+        "# timestamped every message would report ~messages here and FAIL.\n"
         "session,message_bytes,capacity,repetition,status,expected_samples,"
-        "sample_count,min_ns,mean_ns,p50_ns,p90_ns,p99_ns,p999_ns,max_ns,"
+        "sample_count,producer_sample_clock_reads,consumer_sample_clock_reads,"
+        "stamp_contract_failures,"
+        "min_ns,mean_ns,p50_ns,p90_ns,p99_ns,p999_ns,max_ns,"
         "elapsed_ns,ns_per_message,delivered,producer_full_retries,"
         "consumer_empty_retries,checksum,sequence_ok,correctness\n",
         kQueueName, c.session, c.message_bytes, c.capacity, c.messages,
@@ -604,12 +648,15 @@ void write_summary(const Config& c, const std::vector<RepResult>& reps) {
                                    static_cast<double>(r.delivered);
         std::fprintf(
             f,
-            "%d,%zu,%zu,%d,%s,%" PRIu64 ",%" PRIu64 ",%" PRId64
-            ",%.3f,%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64
-            ",%" PRIu64 ",%.6f,%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64
-            ",%d,%s\n",
+            "%d,%zu,%zu,%d,%s,%" PRIu64 ",%" PRIu64
+            ",%" PRIu64 ",%" PRIu64 ",%" PRIu64
+            ",%" PRId64 ",%.3f,%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64
+            ",%" PRId64 ",%" PRIu64 ",%.6f,%" PRIu64 ",%" PRIu64 ",%" PRIu64
+            ",%" PRIu64 ",%d,%s\n",
             c.session, c.message_bytes, c.capacity, r.repetition,
             ok ? "PASS" : "FAIL", r.expected_samples, r.sample_count,
+            r.producer_sample_clock_reads, r.consumer_sample_clock_reads,
+            r.stamp_contract_failures,
             to_ns(d.min), d.mean * static_cast<double>(kNsPerTick), to_ns(d.p50),
             to_ns(d.p90), to_ns(d.p99), to_ns(d.p999), to_ns(d.max),
             r.elapsed_ns, per_msg, r.delivered, r.producer_full_retries,
@@ -651,22 +698,28 @@ int run_cell(const Config& c) {
         std::fprintf(stderr,
                      "[%s rep %d] delivered=%" PRIu64 "/%" PRIu64
                      " samples=%" PRIu64 "/%" PRIu64
+                     " clock_reads(p/c)=%" PRIu64 "/%" PRIu64
                      " elapsed=%" PRIu64 "ns full_retries=%" PRIu64
                      " empty_retries=%" PRIu64 " checksum=%" PRIu64
                      " seq_ok=%d payload_mismatch=%" PRIu64
+                     " stamp_contract=%" PRIu64
                      " ts_inversions=%" PRIu64 " -> %s\n",
                      kind, r.repetition, r.delivered, r.expected_delivered,
-                     r.sample_count, r.expected_samples, r.elapsed_ns,
+                     r.sample_count, r.expected_samples,
+                     r.producer_sample_clock_reads,
+                     r.consumer_sample_clock_reads, r.elapsed_ns,
                      r.producer_full_retries, r.consumer_empty_retries,
                      r.checksum, r.sequence_ok ? 1 : 0, r.payload_mismatches,
-                     r.timestamp_inversions, r.ok() ? "PASS" : "FAIL");
+                     r.stamp_contract_failures, r.timestamp_inversions,
+                     r.ok() ? "PASS" : "FAIL");
     }
 
     if (failures != 0) {
         std::fprintf(stderr,
                      "\nPhase 4 cell FAILED: %d of %zu repetitions did not "
                      "satisfy their own invariants (delivery, sequence, payload "
-                     "validation, timestamp ordering or expected sample count). "
+                     "validation, timestamp ordering, stamp contract or the "
+                     "sparse-instrumentation clock-read counts). "
                      "Exit code %d.\n",
                      failures, reps.size(), kExitMeasurementFail);
         return kExitMeasurementFail;

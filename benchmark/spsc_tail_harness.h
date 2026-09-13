@@ -38,7 +38,7 @@ inline constexpr int           kDefaultWarmup   = 1;
 inline constexpr std::uint64_t kDefaultSettling = 100'000;
 
 // ODD by design, and NOT 1024. An odd interval is coprime with every
-// power-of-two capacity, so the countdown sample visits every ring position
+// power-of-two capacity, so the sample schedule visits every ring position
 // instead of a fixed subset of them.
 inline constexpr std::uint64_t kDefaultInterval = 1021;
 
@@ -77,9 +77,9 @@ constexpr std::int64_t ticks_to_ns(std::int64_t ticks,
 // requirement, not a prediction: a repetition that observes a different count
 // has failed, and must not be reported as a smaller dataset.
 //
-// Messages [0, settling) are excluded. The countdown is reloaded to `interval`
-// after each recorded sample, so it records on the interval-th, 2*interval-th,
-// ... eligible message — hence floor(measured / interval) samples.
+// Messages [0, settling) are excluded. The schedule records on the
+// interval-th, 2*interval-th, ... eligible message, so the count is
+// floor(measured / interval).
 constexpr std::uint64_t expected_sample_count(std::uint64_t messages,
                                               std::uint64_t settling,
                                               std::uint64_t interval) noexcept {
@@ -87,47 +87,108 @@ constexpr std::uint64_t expected_sample_count(std::uint64_t messages,
     return (messages - settling) / interval;
 }
 
-// Deterministic sparse sampler: a countdown, never `index % interval == 0`.
+// The value an UNSAMPLED message carries in its `ready_ticks` field.
 //
-// The modulus form is rejected because an interval sharing a factor with a
-// power-of-two capacity would sample the same ring positions on every pass,
-// which correlates the sample with slot identity. A countdown over a coprime
-// interval rotates through all positions.
-class SamplingCountdown {
-public:
-    explicit SamplingCountdown(std::uint64_t interval) noexcept
-        : interval_(interval), remaining_(interval), recorded_(0) {}
+// A sampled message carries a raw steady-clock tick count instead. The two are
+// distinguished by an exact equality test, never by a magnitude comparison, so
+// there is no threshold to tune and no "close enough" case.
+//
+// This is the ONE place the sentinel is defined. Both threads compare against the
+// same constant, and a message whose field disagrees with the schedule its
+// sequence number implies is a correctness failure rather than a silent
+// mis-measurement — see `stamp_contract_ok` below.
+inline constexpr std::int64_t kUnsampledSentinel = 0;
 
-    // Called once per eligible message, in message order. Returns true when this
-    // message's latency must be recorded.
-    bool on_message() noexcept {
-        if (interval_ == 0) return false;
-        if (--remaining_ == 0) {
-            remaining_ = interval_;
-            ++recorded_;
-            return true;
-        }
-        return false;
+// Deterministic sparse sampler, keyed on the message's SEQUENCE NUMBER rather
+// than on a call count.
+//
+// Sequence-keyed rather than call-keyed so that the producer and the consumer can
+// each evaluate the SAME schedule independently: the producer asks about the
+// sequence it is about to push, the consumer about the sequence it has just
+// popped. A call-counting sampler could not do this — it would be correct only
+// while both sides happened to call it the same number of times in the same
+// order, which is exactly the kind of silent coupling this design avoids.
+//
+// NEVER `index % interval == 0`. A modulus over an interval sharing a factor with
+// a power-of-two capacity samples the same ring positions on every pass,
+// correlating the sample with slot identity. An ODD interval is coprime with
+// every power-of-two capacity, so the schedule rotates through all positions.
+//
+// The first sampled sequence is `settling + interval - 1`, i.e. the
+// interval-th eligible message when counting from 0 at `settling`. This is
+// identical to what a countdown reloaded to `interval` selects, and a test pins
+// that equivalence.
+class SampleSchedule {
+public:
+    static constexpr std::uint64_t kNever = ~std::uint64_t{0};
+
+    constexpr SampleSchedule(std::uint64_t settling,
+                             std::uint64_t interval) noexcept
+        : interval_(interval),
+          next_(interval == 0 ? kNever : settling + interval - 1) {}
+
+    // True when `seq` is the next scheduled sample. Const: asking does not
+    // advance the schedule. Callers precede `advance()` with this test.
+    constexpr bool is_sample(std::uint64_t seq) const noexcept {
+        return seq == next_;
     }
 
-    std::uint64_t recorded() const noexcept { return recorded_; }
-    std::uint64_t interval() const noexcept { return interval_; }
+    // Move past the sample just taken. Call ONLY after `is_sample(seq)` returned
+    // true for the sequence being recorded, so the two sides cannot drift.
+    constexpr void advance() noexcept { next_ += interval_; }
+
+    constexpr std::uint64_t next_sample_seq() const noexcept { return next_; }
+    constexpr std::uint64_t interval() const noexcept { return interval_; }
 
 private:
     std::uint64_t interval_;
-    std::uint64_t remaining_;
-    std::uint64_t recorded_;
+    std::uint64_t next_;
 };
 
+// The instrumented message contract, checked on receipt.
+//
+// A sampled sequence MUST carry a real producer stamp; an unsampled sequence
+// MUST carry the sentinel. Both sides derive `sampled` from the same schedule,
+// so this test IS the producer/consumer schedule-agreement check: if the two
+// sides ever disagreed about a sequence, the message's own field would
+// contradict the receiver's expectation and fail here.
+constexpr bool stamp_contract_ok(std::int64_t ready_ticks,
+                                 bool sampled) noexcept {
+    return sampled ? ready_ticks != kUnsampledSentinel
+                   : ready_ticks == kUnsampledSentinel;
+}
+
 // ---------------------------------------------------------------------------
-// Message types — 16, 32 and 64 bytes.
+// Message types — 16, 32 and 64 bytes, each carrying its own producer stamp.
 //
 // These are NOT the Phase-2/3 shapes (8/32/64) and Phase-4 absolute numbers must
 // not be compared with Phase-2 or Phase-3 numbers.
 //
-// Every field is RE-DERIVED from the sequence number on receipt, so a torn,
-// stale or partially published payload is DETECTABLE. A validator that cannot
-// fail is not a correctness gate, which is why these are exercised by tests.
+// THE STAMP TRAVELS INSIDE THE MESSAGE. `ready_ticks` is a field of every payload
+// and reaches the consumer through the same SPSC path as the rest of the payload
+// — producer -> SPSC message -> consumer. There is deliberately NO side array,
+// map or shared metadata structure holding stamps. A side array is a second,
+// independently addressed memory working set whose footprint scales with
+// capacity, which contaminates the capacity comparison this phase exists to
+// make; it also forces a write and a read per message. The superseded dataset
+// did use one, and its `SUPERSEDED.md` records why that was wrong.
+//
+// Every DETERMINISTIC field is re-derived from the sequence number on receipt, so
+// a torn, stale or partially published payload is DETECTABLE. A validator that
+// cannot fail is not a correctness gate, which is why these are exercised by
+// tests.
+//
+// `ready_ticks` is NOT deterministic and is deliberately excluded from
+// `valid_for()` and from `fold()`. Including it would make the cross-repetition
+// checksum comparison meaningless, because two repetitions of the same
+// configuration legitimately carry different timestamps. Its contract is checked
+// against the sample schedule instead — see `stamp_contract_ok`.
+//
+// Sizes are exact and are asserted below. Note what the 16-byte shape can and
+// cannot validate: with only two words, one of them the stamp, Msg16 has room for
+// `seq` alone as a derived field. Its gate is the sequence check plus the
+// sentinel contract, which is weaker than Msg32 and Msg64 — those keep three and
+// seven derived fields respectively.
 // ---------------------------------------------------------------------------
 
 constexpr std::uint64_t mix64(std::uint64_t x) noexcept {
@@ -167,19 +228,19 @@ constexpr std::uint64_t derive_flags(std::uint64_t seq) noexcept {
 struct Msg16 {
     static constexpr std::size_t kBytes = 16;
     std::uint64_t seq                   = 0;
-    std::uint64_t price                 = 0;
+    std::int64_t  ready_ticks           = kUnsampledSentinel;
 
+    // Builds the DETERMINISTIC payload only. `ready_ticks` stays at the sentinel
+    // until the producer stamps a sampled message, so an unstamped message is
+    // well formed by construction rather than by remembering to clear a field.
     static Msg16 make(std::uint64_t s) noexcept {
         Msg16 m;
-        m.seq   = s;
-        m.price = derive_price(s);
+        m.seq = s;
         return m;
     }
-    bool valid_for(std::uint64_t s) const noexcept {
-        return seq == s && price == derive_price(s);
-    }
+    bool valid_for(std::uint64_t s) const noexcept { return seq == s; }
     std::uint64_t fold(std::uint64_t h) const noexcept {
-        return fold_words(h, seq, price);
+        return fold_words(h, seq);
     }
 };
 
@@ -188,22 +249,20 @@ struct Msg32 {
     std::uint64_t seq                   = 0;
     std::uint64_t price                 = 0;
     std::uint64_t qty                   = 0;
-    std::uint64_t checksum              = 0;
+    std::int64_t  ready_ticks           = kUnsampledSentinel;
 
     static Msg32 make(std::uint64_t s) noexcept {
         Msg32 m;
-        m.seq      = s;
-        m.price    = derive_price(s);
-        m.qty      = derive_qty(s);
-        m.checksum = mix64(s ^ mix64(m.price ^ m.qty));
+        m.seq   = s;
+        m.price = derive_price(s);
+        m.qty   = derive_qty(s);
         return m;
     }
     bool valid_for(std::uint64_t s) const noexcept {
-        return seq == s && price == derive_price(s) && qty == derive_qty(s) &&
-               checksum == mix64(s ^ mix64(price ^ qty));
+        return seq == s && price == derive_price(s) && qty == derive_qty(s);
     }
     std::uint64_t fold(std::uint64_t h) const noexcept {
-        return fold_words(h, seq, price, qty, checksum);
+        return fold_words(h, seq, price, qty);
     }
 };
 
@@ -216,7 +275,7 @@ struct Msg64 {
     std::uint64_t pad0                  = 0;
     std::uint64_t pad1                  = 0;
     std::uint64_t pad2                  = 0;
-    std::uint64_t tail                  = 0;
+    std::int64_t  ready_ticks           = kUnsampledSentinel;
 
     static Msg64 make(std::uint64_t s) noexcept {
         Msg64 m;
@@ -227,23 +286,15 @@ struct Msg64 {
         m.pad0  = mix64(s ^ 0x1111ull);
         m.pad1  = mix64(s ^ 0x2222ull);
         m.pad2  = mix64(s ^ 0x3333ull);
-        m.tail  = tail_for(m);
         return m;
     }
     bool valid_for(std::uint64_t s) const noexcept {
         return seq == s && price == derive_price(s) && qty == derive_qty(s) &&
                flags == derive_flags(s) && pad0 == mix64(s ^ 0x1111ull) &&
-               pad1 == mix64(s ^ 0x2222ull) && pad2 == mix64(s ^ 0x3333ull) &&
-               tail == tail_for(*this);
+               pad1 == mix64(s ^ 0x2222ull) && pad2 == mix64(s ^ 0x3333ull);
     }
     std::uint64_t fold(std::uint64_t h) const noexcept {
-        return fold_words(h, tail);
-    }
-
-private:
-    static std::uint64_t tail_for(const Msg64& m) noexcept {
-        return fold_words(0, m.seq, m.price, m.qty, m.flags, m.pad0, m.pad1,
-                          m.pad2);
+        return fold_words(h, seq, price, qty, flags, pad0, pad1, pad2);
     }
 };
 
@@ -309,19 +360,29 @@ inline Distribution summarize(const std::vector<std::int64_t>& raw) {
 // ---------------------------------------------------------------------------
 
 struct RepInvariants {
-    std::uint64_t expected_delivered   = 0;
-    std::uint64_t delivered            = 0;
-    std::uint64_t expected_samples     = 0;
-    std::uint64_t sample_count         = 0;
-    std::uint64_t payload_mismatches   = 0;
-    std::uint64_t timestamp_inversions = 0;
-    bool          sequence_ok          = true;
-    bool          cursor_ok            = true;
+    std::uint64_t expected_delivered          = 0;
+    std::uint64_t delivered                   = 0;
+    std::uint64_t expected_samples            = 0;
+    std::uint64_t sample_count                = 0;
+    // The proof that instrumentation is SPARSE rather than an assurance that it
+    // is: these are counted at the call site, so a repetition that took a clock
+    // read per message reports roughly 10,000,000 here and FAILS the gate below,
+    // instead of quietly producing the same 9,696 recorded latencies.
+    std::uint64_t producer_sample_clock_reads = 0;
+    std::uint64_t consumer_sample_clock_reads = 0;
+    std::uint64_t payload_mismatches          = 0;
+    std::uint64_t stamp_contract_failures     = 0;
+    std::uint64_t timestamp_inversions        = 0;
+    bool          sequence_ok                 = true;
+    bool          cursor_ok                   = true;
 };
 
 constexpr bool repetition_ok(const RepInvariants& v) noexcept {
     return v.cursor_ok && v.sequence_ok && v.delivered == v.expected_delivered &&
-           v.sample_count == v.expected_samples && v.payload_mismatches == 0 &&
+           v.sample_count == v.expected_samples &&
+           v.producer_sample_clock_reads == v.expected_samples &&
+           v.consumer_sample_clock_reads == v.expected_samples &&
+           v.payload_mismatches == 0 && v.stamp_contract_failures == 0 &&
            v.timestamp_inversions == 0;
 }
 

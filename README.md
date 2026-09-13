@@ -96,15 +96,29 @@ directories.
 > it did not replace it. **Phase 4 (tail latency / jitter) is COMPLETE / FROZEN**
 > for the Experiment 02 queue — see `docs/SPSC_TAIL_LATENCY.md`. It compares **no
 > treatments**: the matrix contains the separated-cursor baseline only, so every
-> number in it is attributable to one queue. Its result is that a per-cell
-> **median is not a reproducible property of the ring** — five consecutive
-> repetitions of an identical configuration produced P50s spanning up to **~379×**
-> and P90s up to **~442×** — while **P99 (≤ 5.00×) and end-to-end `ns/message`
-> (1.12×–1.70×) are** reproducible, so no cell may be ranked against another on
-> its median. The fast mode is the **timer, not the queue** (the sub-microsecond
-> P50s take only ten distinct values, each a whole multiple of the 41.7 ns clock
-> quantum), and **no causal attribution of any kind is made** — nothing was
-> profiled. **No Phase-2
+> number in it is attributable to one queue. Its **timestamp instrumentation is
+> sparse and the dataset proves it** — 9,696 clock reads per thread per
+> repetition, not 10,000,000, each repetition's own counters checked against the
+> derived count, with the stamp carried *inside* the sampled message rather than
+> in a capacity-sized side array. Its result is a **stable
+> bimodality**: the nine cells split into six whose session-blocked **P50 is
+> exactly 125 ns in all 120 of their repetitions** (every 16 B and 32 B cell, at
+> every capacity) and three — all 64 B — at 30.0 µs / 120.4 µs / 1.95 ms, stable
+> to 1.05–1.09× across sessions. The fast band is **timer-resolution-limited**:
+> 125 ns is three 41.7 ns clock quanta, and 92–95% of those cells' samples lie
+> within four quanta of zero. The two groups differ in **which thread waits** —
+> consumer-starved in the fast cells, producer-blocked in the 64 B cells — and
+> within the slow band a larger capacity means fewer producer stalls but a
+> *longer* measured latency, 94–97% of one full ring's drain time. Percentiles
+> are reported at the **session-blocked** level (repetition → median of 5 →
+> median of 4 session medians) as PRIMARY; the all-20 median is a labelled
+> diagnostic only, since the two are not mathematically identical. **No causal
+> attribution of any kind is made** — nothing was profiled, and "the latency is
+> the timer, not the queue" is explicitly **not** claimed: the queue does real
+> work at a scale this clock bounds but does not resolve. Extreme maxima are
+> isolated in seven of nine cells; 32 B / 65536 is the exception (7 of 20
+> repetitions above 5× the cell's median maximum), named as a contamination
+> *candidate* and left uncensored. **No Phase-2
 > number is attributed to false sharing** — Phase 2 verified no cursor addresses,
 > so it cannot be cited for or against the frozen layout's line placement.
 >
@@ -196,9 +210,9 @@ low-latency-trading-lab/
 │   ├── spsc_tail_latency_bench.cpp  # Exp 02 Phase 4: producer_ready -> consumer_received
 │   │                                #   distribution over the separated-cursor baseline
 │   │                                #   (ONE queue; no treatment; even intervals rejected)
-│   └── spsc_tail_harness.h     # Exp 02 Phase 4: sampling countdown, exact tick->ns
-│                               #   conversion and the timer calibration, shared by the
-│                               #   bench and its tests
+│   └── spsc_tail_harness.h     # Exp 02 Phase 4: sequence-keyed sparse sample
+│                               #   schedule, exact tick->ns conversion and the timer
+│                               #   calibration, shared by the bench and its tests
 ├── scripts/
 │   ├── bench.sh                # Phase 2 canonical per-process run
 │   ├── tail-bench.sh           # Phase 4 canonical matrix runner (one invocation per cell)
@@ -215,9 +229,11 @@ low-latency-trading-lab/
 │   ├── collect-macos-profile-metadata.sh  # host/chip/toolchain metadata (Phase 3M and Phase 4)
 │   ├── spsc-tail-latency.sh    # Exp 02 Phase 4 canonical runner: 9 cells x 4 sessions,
 │   │                           #   fresh Release build, load pre-flight, then raw->summary
-│   │                           #   verification; writes source digests into HOST.md
+│   │                           #   verification and the DERIVED tables; writes source
+│   │                           #   digests into HOST.md
 │   ├── verify-spsc-tail-summary.py  # Exp 02 Phase 4: recomputes every statistic from
-│   │                                #   raw/, plus the per-repetition starvation gate
+│   │                                #   raw/, checks the sparse-instrumentation counters,
+│   │                                #   and reports the per-repetition starvation diagnostic
 │   └── analyze-spsc-tail.py    # Exp 02 Phase 4 DERIVED tables; refuses to run on a
 │                               #   dataset whose invariants.txt is not a passing one
 ├── cmake/
@@ -233,7 +249,9 @@ low-latency-trading-lab/
 │   │   │                    #   payload-offset-confounded pass, and
 │   │   │                    #   spsc-remote-cursor/ canonical Exp 02 Phase 3B,
 │   │   │                    #   spsc-tail-latency/ canonical Exp 02 Phase 4
-│   │   │                    #   (its CONTAMINATED-concurrent-load/ first pass is
+│   │   │                    #   (sparse instrumentation) + its superseded
+│   │   │                    #   per-message-timestamp pass; its
+│   │   │                    #   CONTAMINATED-concurrent-load/ first pass is
 │   │   │                    #   deliberately not committed; see README.md)
 │   │   └── README.md        # layout + honesty rule
 │   ├── ORDERBOOK_BITMAP_OPTIMIZATION.md  # Optimization Study analysis (item 12)
@@ -246,8 +264,8 @@ low-latency-trading-lab/
 │   │                         #   WHY/WHAT/HOW, correctness + counter-wrap
 │   │                         #   argument, mechanism vs performance split
 │   ├── SPSC_TAIL_LATENCY.md  # Exp 02 Phase 4: the measurement contract and what it
-│   │                         #   is not, sampling/clock rules, two hazards found by
-│   │                         #   running it, and the results with claim labels
+│   │                         #   is not, the sparse sampling/clock rules, two hazards
+│   │                         #   found by running it, and the results with claim labels
 │   └── profiling/           # Phase 3 guides (README.md, MACOS_INSTRUMENTS.md) + Phase 4
 │                            #   tail-latency methodology (PHASE4_TAIL_LATENCY.md)
 ├── CMakeLists.txt
@@ -531,15 +549,19 @@ remote cursor loads as designed; the throughput did not follow).
 Phase 4 — Tail Latency / Jitter: COMPLETE / FROZEN.** A **measurement** phase
 over the frozen separated-cursor baseline queue on the Apple M3 Max: 9 cells
 (3 message sizes × 3 capacities), 36 processes, 180 measured repetitions,
-1,745,280 sampled latencies. It compares **no treatments** — the cached
-Phase-3B variant, `MutexBoundedQueue` and the `same_line` layout are absent by
-design — and it opens no new optimization. **Result: the per-cell median is not
-a reproducible property of the ring** (consecutive repetitions of an identical
-configuration spanned up to ~379× in P50 and ~442× in P90) **while P99 and
-end-to-end `ns/message` are** (≤ 5.00× and 1.12×–1.70×), so cells may not be
-ranked on their medians; the sub-microsecond mode is the 41.7 ns **timer
-quantum**, not queue behaviour. See `docs/SPSC_TAIL_LATENCY.md` and
-`docs/results/spsc-tail-latency/`.
+1,745,280 sampled latencies, with **sparse** timestamp instrumentation — 9,696
+clock reads per thread per repetition, not 10,000,000, proven per repetition by
+the harness's own counters. It compares **no treatments** — the cached Phase-3B
+variant, `MutexBoundedQueue` and the `same_line` layout are absent by design —
+and it opens no new optimization. **Result: a stable bimodality** — six cells
+(all 16 B and 32 B) have a session-blocked **P50 of exactly 125 ns in all 120 of
+their repetitions**, and the three 64 B cells sit at 30.0 µs / 120.4 µs /
+1.95 ms, stable to 1.05–1.09× across sessions; the two groups differ in which
+thread waits, and within the slow band a larger capacity means a *longer*
+measured latency (94–97% of one full ring's drain time). The fast band is
+**timer-resolution-limited** (125 ns is three 41.7 ns quanta; 92–95% of its
+samples are within four quanta of zero) — not "the timer, not the queue". See
+`docs/SPSC_TAIL_LATENCY.md` and `docs/results/spsc-tail-latency/`.
 A bounded, single-producer / single-consumer message queue with no mutex and no
 CAS, modeling `Feed / Decoder → SPSC → OrderBook / Strategy`. Two header-only
 types in `lltl`:
@@ -1016,12 +1038,26 @@ and the Phase-3A `same_line` layout are absent by design — and it opens **no n
 optimization**. Every number in it is attributable to a single configuration.
 
 - **Shape.** 9 cells (16/32/64 B × 1024/4096/65536), 10M messages per
-  repetition, a 100,000-message settling prefix, deterministic **countdown**
-  sampling at the deliberately **odd** interval **1021** (coprime with every
-  power-of-two capacity, so samples rotate through all ring positions — it is
-  not 1024), 9,696 samples per repetition, one excluded warm-up plus 5 measured
-  repetitions per process, 4 sessions in forward/reverse/forward/reverse order,
-  **36 processes, 180 measured repetitions, 1,745,280 sampled latencies**.
+  repetition, a 100,000-message settling prefix, a **sequence-keyed sparse**
+  sample schedule at the deliberately **odd** interval **1021** (coprime with
+  every power-of-two capacity, so samples rotate through all ring positions — it
+  is not 1024), **9,696 samples per repetition**, one excluded warm-up plus 5
+  measured repetitions per process, 4 sessions in
+  forward/reverse/forward/reverse order, **36 processes, 180 measured
+  repetitions, 1,745,280 sampled latencies**.
+- **The instrumentation is sparse, and the dataset proves it.** The producer
+  stamp is taken **once per sampled message**, immediately before that message's
+  `try_push` retry loop, and the consumer reads the clock **once per sampled
+  message**, immediately after a successful `try_pop` and before any validation.
+  Every repetition records `expected_samples == sample_count ==
+  producer_sample_clock_reads == consumer_sample_clock_reads == 9,696` and
+  `stamp_contract_failures == 0`, so **1,745,280** sampled clock reads per thread
+  for the whole dataset instead of **1,800,000,000** — 0.097%. A harness that
+  timestamped every message would report ~10,000,000 in those counters and
+  **fail**, not silently produce the same 9,696 latencies. The stamp travels
+  **inside** the sampled message along the SPSC payload path; there is no
+  side array and therefore no second, capacity-dependent memory footprint in the
+  measured path.
 - **The measured quantity** is `producer_ready → consumer_received` on
   `steady_clock`, stamped immediately **before** the producer's `try_push` retry
   loop and immediately **after** a successful `try_pop`. It therefore
@@ -1031,27 +1067,43 @@ optimization**. Every number in it is attributable to a single configuration.
   and it is **not comparable** to any `ns/message` figure in Phase 2, 3A or 3B.
   Because the stamp precedes the push, the interval depends on how far ahead of
   the consumer the producer has run: this is a **producer-relative service
-  latency including backpressure**, and the median of a cell partly reports
-  which regime that cell spent its messages in.
-- **Result — the reproducibility of a statistic is not the same for every
-  statistic, and the median is among the least reproducible.** Five consecutive
-  repetitions of an *identical* configuration produced P50s spanning up to
-  **~379×** and P90s up to **~442×**, while **P99 never exceeded 5.00×** and
-  `ns/message` stayed within **1.12×–1.70×** across the very same repetitions. So
-  a per-cell P50 or P90 describes *the runs that happened*, not the ring, and
-  **no cell may be ranked above another on its median**; the derived `P99/P50`
-  ratios (394–1268 in fast-band cells, 1.8–2.4 in slow-band cells) differ
-  because of their **denominators**, not their tails. The fast mode is the
-  **timer, not the queue**: the 81 sub-microsecond P50s take only ten distinct
-  values in the whole dataset, each within 1 ns of a whole multiple of the
-  **41.7 ns** clock quantum, so the floor is three quanta wide and is not
-  resolvable below that. Capacity and message size do not determine which mode a
-  repetition lands in (at capacity 4096 the three message sizes land in three
-  different bands).
-- **Timer calibration** (200,000 clock pairs per process, `clock_pair` P99 ≈
-  42 ns) provides **scale and context, never a correction factor** — it is not
-  subtracted from any latency. The tick→ns conversion is exact or the build
-  fails.
+  latency including backpressure**.
+- **Aggregation is nested, and the PRIMARY figure is session-blocked**:
+  repetition → median of a session's 5 repetitions → **median of the 4 session
+  medians**. The median across all 20 repetition-level statistics is kept as a
+  **labelled diagnostic only** — a median of medians is not a median of all
+  values, and the two must never be presented as one number. `CELL_SESSION_BLOCKED.csv`
+  carries both plus the min/max session median each blocked value sits inside.
+- **Result — a stable bimodality, not an unstable mode.** The nine cells split
+  cleanly. Six (all 16 B and 32 B, every capacity) have a session-blocked
+  **P50 of exactly 125 ns — constant in all 120 of their repetitions**, spread
+  1.00×. Three (all 64 B) sit at **30.0 µs / 120.4 µs / 1.95 ms**, one per
+  capacity, stable to 1.05–1.09× across sessions. No cell straddles the two
+  groups. P50 is now the **most** reproducible statistic (worst-case spread over
+  a cell's 20 repetitions: 1.11×) and P99.9/max the least (up to 19,271×),
+  because the latter are single observations.
+- **The fast band is timer-resolution-limited.** The clock quantum is **41.7 ns**
+  and 125 ns is three quanta; 92–95% of the six fast cells' samples lie within
+  four quanta of zero and 53–72% are exactly 125 ns, while 0.00% of the three
+  slow cells' samples are within a microsecond. Timer **calibration** (200,000
+  clock pairs per process) provides scale and context, **never a correction
+  factor** — it is never subtracted from a latency, and the tick→ns conversion is
+  exact or the build fails. What is claimed is "timer-resolution-limited", never
+  "the latency is the timer, not the queue": the queue is doing real work at a
+  scale this clock bounds but does not resolve.
+- **Capacity.** The two groups differ in **which thread waits**: in the fast
+  cells the consumer spins empty 0.93–2.5 **billion** times while the producer
+  almost never finds the ring full; in the 64 B cells the producer is blocked
+  26–204 **million** times and the consumer spins empty only 12 thousand to 3.9
+  million times. Within the slow band a larger capacity means **fewer** producer
+  stalls but a **longer** measured latency — P50 is 94–97% of one full ring's
+  drain time (`capacity × ns_per_message`) in all three, which is consistent with
+  a drain model but **does not confirm it** (producer lead is not instrumented).
+- **Extremes are mostly isolated, with one named exception.** In seven of nine
+  cells 1–3 of the 20 repetitions have a maximum above 5× the cell's own median
+  maximum. **32 B / 65536** is the exception — **7 of 20**, including three
+  consecutive repetitions inside a single process (1.85 ms, 3.62 ms, 20.4 ms).
+  Reported and **not censored**.
 - **Session order** balances a cell's temporal position only. It is **not** an
   AB/BA crossover (there is no treatment pair), and it removes neither scheduler
   variation nor core migration, DVFS or thermal drift — none of which was
@@ -1060,21 +1112,40 @@ optimization**. Every number in it is attributable to a single configuration.
   cache-miss, coherence-event, preemption, scheduler, core-migration,
   P-core/E-core, frequency or thermal quantity was measured or may be inferred.
 - **Verified.** All 180 repetitions `correctness=PASS` with strict sequence and
-  payload validation, **0** timestamp inversions, the per-message-size checksum
-  identical across all 20 repetitions of each size, cursor layout verified on the
-  measured object in every process, and **5,240,255** raw→summary checks passed
-  with 0 failures.
+  payload validation, **0** timestamp inversions, **0** stamp-contract failures,
+  the per-message-size checksum identical across all 20 repetitions of each size,
+  cursor layout verified on the measured object in every process, and
+  **5,240,804** raw→summary checks passed with 0 failures.
 - **Two hazards** are documented in the methodology because a methodology that
-  lists only what passed is not one: a rare timestamp-slot indexing race that
-  produced an impossible negative sample (fixed, with a matched A/B control —
-  sanitizers were clean before *and* after and could not have caught it, because
-  it was not a data race), and an earlier complete run that passed **every** gate
-  while being measured concurrently with other work on the same host, caught only
-  by a per-repetition `ns_per_message` starvation gate and preserved, labelled,
-  as `docs/results/spsc-tail-latency-CONTAMINATED-concurrent-load/` with its
-  derived tables deleted. That directory is **not committed** — 106 MB of raw
-  data for a run that cannot be used — so a clone keeps only the description of
-  it in `docs/results/README.md`.
+  lists only what passed is not one. **H1** — a timestamp-slot aliasing race that
+  produced an impossible negative sample. It belonged to the earlier
+  side-array transport, which no longer exists: the current design has no second
+  address to alias, and the historical reasoning is preserved only in the
+  superseded dataset's `SUPERSEDED.md`. What replaced it as the invariant is
+  `stamp_contract_failures`, **0** across all 180 repetitions. **H2** — an
+  earlier complete run that passed **every** gate while being measured
+  concurrently with other work on the same host. Since Phase 4.1 the
+  per-repetition `ns_per_message` check **reports rather than invalidates**: a
+  repetition above 5× its cell's median is raised as a prominent diagnostic
+  WARNING / contamination *candidate* and does not by itself fail the dataset,
+  because Phase 4 studies latency and jitter and a legitimately rare stall must
+  not be censored for being extreme — **magnitude alone is not proof of
+  invalidity**. Independent evidence (a known competing workload) is what
+  disqualified that run; it is preserved, labelled, as
+  `docs/results/spsc-tail-latency-CONTAMINATED-concurrent-load/` with its derived
+  tables deleted. That directory is **not committed** — 106 MB of raw data for a
+  run that cannot be used — so a clone keeps only the description of it in
+  `docs/results/README.md`. On the canonical dataset this warning **did not
+  fire** (worst cell spread 3.01×).
+- **Superseded.** An earlier canonical pass used the same nine cells but
+  timestamped **every** message and kept stamps in a separate
+  `ready_ticks[2 × Capacity]` array — a capacity-dependent second memory path,
+  and instrumentation cost on all 10M messages instead of the 1-in-1021 that is
+  sampled. It is preserved real and unedited at
+  `docs/results/spsc-tail-latency-superseded-per-message-timestamp/`. **Its
+  percentiles are not Phase-4 results and must not be cited as such**, its
+  findings are not assumed to reproduce, and the difference between the two
+  datasets is not attributable to instrumentation as a controlled factor.
 
 Methodology: `docs/SPSC_TAIL_LATENCY.md`. Canonical data, provenance and derived
 tables: `docs/results/spsc-tail-latency/`.

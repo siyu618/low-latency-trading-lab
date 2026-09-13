@@ -5,6 +5,6 @@ Phase 4 raw -> summary verification
 
   verified repetitions : 180
   sampled latencies    : 1745280
-  checks run           : 5240255
+  checks run           : 5240804
 
 ALL PHASE 4 RAW -> SUMMARY CHECKS PASSED

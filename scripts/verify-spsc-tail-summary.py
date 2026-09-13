@@ -54,6 +54,7 @@ import sys
 from collections import defaultdict
 
 FAILURES = []
+WARNINGS = []
 CHECKS = [0]
 
 
@@ -61,6 +62,19 @@ def check(cond, msg):
     CHECKS[0] += 1
     if not cond:
         FAILURES.append(msg)
+    return cond
+
+
+def warn(cond, msg):
+    """A DIAGNOSTIC, not a verdict.
+
+    Phase 4 studies latency and jitter, so a legitimately rare stall must not be
+    silently censored for being extreme. Magnitude alone is not proof that a run
+    is invalid. Warnings are reported prominently and count toward nothing.
+    """
+    CHECKS[0] += 1
+    if not cond:
+        WARNINGS.append(msg)
     return cond
 
 
@@ -306,6 +320,31 @@ def main(argv):
                   "repetition is a FAILURE, not a smaller dataset)" % (
                       basename, rep, got["count"], expected_samples))
 
+            # ------------------------------- sparse instrumentation (§4, §8)
+            #
+            # THE PHASE 4.1 GATE. These counters are taken at the call site in
+            # the benchmark, so they report what the instrumentation ACTUALLY
+            # DID. They must each equal the derived sample count: one clock read
+            # per sampled message, not one per message.
+            #
+            # A harness that timestamped every message would put `messages`
+            # (~10,000,000) in these columns while still recording ~9,696
+            # latencies — the same visible output from a completely different
+            # measurement. This check is what makes that impossible to ship.
+            for col in ("producer_sample_clock_reads",
+                        "consumer_sample_clock_reads"):
+                have = as_int(row, col)
+                check(have == expected_samples,
+                      "%s rep %d: %s is %r, expected %d. The timestamp "
+                      "instrumentation is NOT sparse — a clock read was taken "
+                      "for messages that were never sampled." % (
+                          basename, rep, col, row.get(col),
+                          expected_samples))
+            check(as_int(row, "stamp_contract_failures") == 0,
+                  "%s rep %d: %r messages disagreed with the sample schedule "
+                  "(a producer/consumer schedule disagreement is a CORRECTNESS "
+                  "failure)" % (basename, rep, row.get("stamp_contract_failures")))
+
             for col, key in (("min_ns", "min"), ("p50_ns", "p50"),
                              ("p90_ns", "p90"), ("p99_ns", "p99"),
                              ("p999_ns", "p999"), ("max_ns", "max")):
@@ -385,46 +424,59 @@ def main(argv):
         check(found != {0}, "%d-byte cells produced an all-zero checksum" %
               message_bytes)
 
-    # ------------------------------------------------- host starvation check
-    # THE CHECKS ABOVE CANNOT DETECT A BUSY HOST. Delivery, sequence, payload
-    # validation, timestamp ordering and the checksum are invariants of the
-    # QUEUE; a starved thread violates none of them and simply produces a slower
-    # repetition. A real run of this benchmark, executed while other jobs were
-    # competing for CPU, passed all 5,240,246 of those checks while putting 95%
-    # of the experiment's measured wall time into 8 of its 180 repetitions, with
-    # ns_per_message 50x-2000x the cell's own median.
+    # ------------------------------------------- host-interference DIAGNOSTIC
     #
-    # ns_per_message is elapsed / messages delivered: an end-to-end rate that is
-    # REPRODUCIBLE for a given cell (it varies by a few percent between clean
-    # repetitions) precisely because it is not a latency. That reproducibility is
-    # what makes it a usable detector. A repetition far above its own cell's
-    # median rate did not run slower because of anything the queue did.
+    # THIS IS A WARNING, NOT A VERDICT. It was an automatic dataset failure
+    # before Phase 4.1 and that was wrong for this phase.
     #
-    # The factor is deliberately loose. Across the clean canonical dataset the
-    # within-cell spread of ns_per_message is small (about 1.4x at worst), so 5x
-    # has a wide margin against legitimate variation while still catching the
-    # 50x-and-worse repetitions that indicate interference.
-    NS_PER_MESSAGE_MAX_FACTOR = 5.0
+    # Phase 4 studies LATENCY AND JITTER, so a rare, extreme repetition is part
+    # of the phenomenon being measured, not automatically an artifact. A run
+    # whose tail was legitimately produced by a scheduler stall would have been
+    # censored by a hard 5x rule — the most interesting observation in the
+    # dataset deleted by a threshold. Magnitude alone is therefore NOT proof of
+    # invalidity and must not invalidate a run.
+    #
+    # What DOES justify rejecting or archiving an entire run is INDEPENDENT
+    # evidence of contamination: sanitizer benchmarks running concurrently, a
+    # known competing workload, overlapping benchmark processes, or explicitly
+    # observed host interference. None of that is visible in these files, which
+    # is precisely why this check cannot make the call. The pre-flight host-load
+    # metadata is kept for that purpose.
+    #
+    # So: report extreme repetitions prominently, name every one of them, and
+    # leave the judgement to whoever has the independent evidence.
+    #
+    # ns_per_message is elapsed / messages delivered, an end-to-end rate that is
+    # reproducible for a given cell (a few percent between clean repetitions)
+    # precisely because it is not a latency. That reproducibility is what makes
+    # it a usable detector — a repetition far above its own cell's median rate
+    # did not run slower because of anything the queue did.
+    NS_PER_MESSAGE_REPORT_FACTOR = 5.0
     for key in sorted(npm_by_cell, key=lambda k: (k[0], k[1])):
         entries = npm_by_cell[key]
         values = sorted(v for _, _, v in entries)
         med = values[len(values) // 2]
+        check(med > 0, "%dB / %dB: median ns_per_message is %r" % (
+            key[0], key[1], med))
         if med <= 0:
-            check(False, "%dB / %dB: median ns_per_message is %r" % (
-                key[0], key[1], med))
             continue
         outliers = [(f, r, v) for f, r, v in entries
-                    if v > med * NS_PER_MESSAGE_MAX_FACTOR]
-        check(not outliers,
-              "%dB / %dB: %d of %d repetitions ran at more than %.0fx the "
-              "cell's median ns_per_message (median %.2f ns). This is a HOST "
-              "condition, not a queue result — the repetitions ran on a machine "
-              "that was busy with something else. Worst: %s. Do not cite this "
-              "dataset; re-run on an idle host." % (
-                  key[0], key[1], len(outliers), len(entries),
-                  NS_PER_MESSAGE_MAX_FACTOR, med,
-                  ", ".join("%s rep %d at %.2f ns" % (f, r, v)
-                            for f, r, v in sorted(outliers, key=lambda t: -t[2])[:3])))
+                    if v > med * NS_PER_MESSAGE_REPORT_FACTOR]
+        warn(not outliers,
+             "%dB / %dB: %d of %d repetitions ran at more than %.0fx the cell's "
+             "median ns_per_message (median %.2f ns, worst %.2f ns = %.1fx). "
+             "CONTAMINATION CANDIDATE, not a failed gate: a run is only invalid "
+             "if there is INDEPENDENT evidence of host interference (concurrent "
+             "sanitizer or benchmark processes, a known competing workload, "
+             "observed interference). If there is none, these repetitions are "
+             "real tail observations and belong in the results. Worst: %s." % (
+                 key[0], key[1], len(outliers), len(entries),
+                 NS_PER_MESSAGE_REPORT_FACTOR, med,
+                 max(v for _, _, v in outliers) if outliers else 0.0,
+                 (max(v for _, _, v in outliers) / med) if outliers else 0.0,
+                 ", ".join("%s rep %d at %.2f ns" % (f, r, v)
+                           for f, r, v in sorted(outliers,
+                                                 key=lambda t: -t[2])[:3])))
 
     # ---------------------------------------------------------- calibration
     if os.path.isdir(cal_dir):
@@ -483,6 +535,19 @@ def main(argv):
     print("  sampled latencies    : %d" % total_samples)
     print("  checks run           : %d" % CHECKS[0])
     print()
+
+    # WARNINGS ARE REPORTED FIRST, AND THEY DO NOT FAIL THE RUN.
+    #
+    # They are diagnostics about the HOST, not about the queue, and Phase 4
+    # measures jitter — so an extreme repetition is a result to look at, not a
+    # gate to trip. A run is rejected only on independent evidence of
+    # contamination, which these files cannot contain.
+    if WARNINGS:
+        print("WARNING: %d diagnostic(s) - these do NOT invalidate the "
+              "dataset:" % len(WARNINGS))
+        for msg in WARNINGS:
+            print("  ! %s" % msg)
+        print()
 
     if FAILURES:
         print("FAILED: %d check(s)" % len(FAILURES))

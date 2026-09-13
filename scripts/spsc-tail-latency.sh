@@ -261,8 +261,17 @@ echo
     echo "# DVFS drift, and must not be described as doing so."
     echo "#"
     echo "# --sample-interval=$INTERVAL is deliberately ODD, so it is coprime with"
-    echo "# every power-of-two capacity and the deterministic countdown sample"
+    echo "# every power-of-two capacity and the sequence-keyed sparse sample"
     echo "# rotates through all ring positions. It is not 1024."
+    echo "#"
+    echo "# INSTRUMENTATION IS SPARSE. The producer stamps a timestamp into the"
+    echo "# message itself for the sampled sequences only, and the consumer reads the"
+    echo "# clock on receipt of those same sequences — both sides evaluate the same"
+    echo "# sequence-keyed schedule independently. $EXPECTED_SAMPLES clock reads per"
+    echo "# thread per repetition, NOT $MESSAGES. The summary records the counts"
+    echo "# actually taken and the repetition FAILS if either differs. There is no"
+    echo "# timestamp side array: the stamp travels producer -> SPSC message ->"
+    echo "# consumer."
     echo "#"
     echo "# ONE (cell, session) PER PROCESS: no two cells share an address space."
 } >"$OUT/command.txt"
@@ -452,11 +461,45 @@ grep -E '^.*spsc_tail_latency_bench ' "$OUT/command.txt" \
 # ---------------------------------------------------------------------------
 echo
 echo "==> Verifying every raw repetition against its summary"
+#
+# The report is SAVED as invariants.txt, not merely printed. Two things depend
+# on the artifact rather than on the console: the analyzer refuses to derive any
+# table unless invariants.txt records a passing verification, and a reader who
+# wants to know what was checked needs the record next to the data. `PIPESTATUS`
+# is read instead of `$?` so a failed verification still fails the run — a pipe
+# to `tee` would otherwise mask it.
 if command -v python3 >/dev/null 2>&1; then
-    python3 scripts/verify-spsc-tail-summary.py "$OUT"
+    python3 scripts/verify-spsc-tail-summary.py "$OUT" 2>&1 \
+        | tee "$OUT/invariants.txt"
+    VERIFY_RC="${PIPESTATUS[0]}"
+    if [[ "$VERIFY_RC" != "0" ]]; then
+        echo "FATAL: the raw->summary verification FAILED (exit $VERIFY_RC)." >&2
+        echo "       The dataset is NOT verified and must not be cited." >&2
+        exit 1
+    fi
 else
     echo "FATAL: python3 not found; the raw->summary verification could not run." >&2
     echo "       The dataset is NOT verified and must not be cited." >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Derive the cross-repetition tables the docs cite.
+#
+# Run HERE, immediately after the verification gate, so a dataset and its
+# derived tables are never produced by different steps and can never drift
+# apart. The analyzer refuses to run without a passing invariants.txt, so this
+# cannot derive a table from unverified data.
+# ---------------------------------------------------------------------------
+echo
+echo "==> Deriving the cross-repetition tables (cell-session-blocked is PRIMARY)"
+if command -v python3 >/dev/null 2>&1; then
+    python3 scripts/analyze-spsc-tail.py "$OUT" || {
+        echo "FATAL: the derived tables could not be produced." >&2
+        exit 1
+    }
+else
+    echo "FATAL: python3 not found; the derived tables could not be produced." >&2
     exit 1
 fi
 
@@ -465,3 +508,7 @@ echo "==> Phase 4 dataset complete: $OUT"
 echo "    processes                : $EXPECTED_PROCESSES"
 echo "    measured repetition dists: $EXPECTED_MEASURED_REPETITIONS"
 echo "    sampled latencies        : $(( EXPECTED_MEASURED_REPETITIONS * EXPECTED_SAMPLES ))"
+echo "    clock reads per thread   : $(( EXPECTED_MEASURED_REPETITIONS * EXPECTED_SAMPLES ))"
+echo "                               (sparse: NOT $(( EXPECTED_MEASURED_REPETITIONS * MESSAGES )))"
+echo "    verification record      : $OUT/invariants.txt"
+echo "    PRIMARY cell summary     : $OUT/CELL_SESSION_BLOCKED.csv"

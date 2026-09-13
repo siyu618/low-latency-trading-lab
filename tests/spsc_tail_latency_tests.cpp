@@ -33,13 +33,15 @@
 
 using lltl_tail::Distribution;
 using lltl_tail::expected_sample_count;
+using lltl_tail::kUnsampledSentinel;
 using lltl_tail::Msg16;
 using lltl_tail::Msg32;
 using lltl_tail::Msg64;
 using lltl_tail::ns_per_tick;
 using lltl_tail::RepInvariants;
 using lltl_tail::repetition_ok;
-using lltl_tail::SamplingCountdown;
+using lltl_tail::SampleSchedule;
+using lltl_tail::stamp_contract_ok;
 using lltl_tail::summarize;
 using lltl_tail::ticks_to_ns;
 using lltl_tail::timestamp_ok;
@@ -71,15 +73,20 @@ int summary(const char* suite) {
     return n_fail;
 }
 
-// Run the real countdown over `messages` messages, skipping the settling prefix,
-// and return how many samples it recorded. This is the schedule the benchmark
-// actually executes.
+// Run the real schedule over `messages` messages and return how many samples it
+// recorded. This is the schedule the benchmark actually executes, and it is
+// evaluated the way BOTH threads evaluate it: by asking about a sequence number,
+// never by counting calls. The settling prefix needs no special case here, which
+// is exactly the property the sequence-keyed form buys.
 std::uint64_t run_schedule(std::uint64_t messages, std::uint64_t settling,
                            std::uint64_t interval) {
-    SamplingCountdown sampler(interval);
-    std::uint64_t     recorded = 0;
+    SampleSchedule schedule(settling, interval);
+    std::uint64_t  recorded = 0;
     for (std::uint64_t i = 0; i < messages; ++i) {
-        if (i >= settling && sampler.on_message()) ++recorded;
+        if (schedule.is_sample(i)) {
+            ++recorded;
+            schedule.advance();
+        }
     }
     return recorded;
 }
@@ -120,21 +127,24 @@ void test_expected_count_matches_schedule() {
 }
 
 // ---------------------------------------------------------------------------
-// The countdown is a countdown, and it is NOT `index % interval`.
+// The schedule is a sparse schedule, and it is NOT `index % interval`.
 //
 // A modulus sampler with an interval that shares a factor with a power-of-two
-// capacity revisits the same slot indices forever. The countdown over the
-// canonical odd 1021 must instead visit EVERY slot index of every capacity.
+// capacity revisits the same slot indices forever. The canonical odd 1021 must
+// instead visit EVERY slot index of every capacity.
 // ---------------------------------------------------------------------------
-void test_countdown_is_not_a_modulus() {
+void test_schedule_is_not_a_modulus() {
     // Direct demonstration that the two schedules differ: with interval 4 over
     // 12 eligible messages, both happen to record 3 samples, but at DIFFERENT
-    // message indices (modulus records 0,4,8; countdown records 3,7,11).
+    // message indices (modulus records 0,4,8; this schedule records 3,7,11).
     {
-        SamplingCountdown sampler(4);
+        SampleSchedule             schedule(0, 4);
         std::vector<std::uint64_t> countdown_hits;
         for (std::uint64_t i = 0; i < 12; ++i) {
-            if (sampler.on_message()) countdown_hits.push_back(i);
+            if (schedule.is_sample(i)) {
+                countdown_hits.push_back(i);
+                schedule.advance();
+            }
         }
         CHECK(countdown_hits.size() == 3);
         CHECK(countdown_hits[0] == 3);
@@ -170,9 +180,10 @@ void test_countdown_is_not_a_modulus() {
     CHECK(lltl_tail::kDefaultInterval % 2 == 1);
     CHECK(lltl_tail::kDefaultInterval != 1024);
 
-    // A countdown built with a zero interval records nothing and must not spin.
-    SamplingCountdown degenerate(0);
-    for (int i = 0; i < 10; ++i) CHECK(!degenerate.on_message());
+    // A schedule built with a zero interval records nothing and must not spin.
+    SampleSchedule degenerate(0, 0);
+    for (std::uint64_t i = 0; i < 10; ++i) CHECK(!degenerate.is_sample(i));
+    CHECK(degenerate.next_sample_seq() == SampleSchedule::kNever);
 }
 
 // ---------------------------------------------------------------------------
@@ -282,11 +293,14 @@ void corrupt_each_field_and_check_rejection() {
     Msg bad = good;
     bad.seq += 1;
     CHECK(!bad.valid_for(seq));
-    bad = good;
-    bad.price += 1;
-    CHECK(!bad.valid_for(seq));
-    // `qty` exists on the 32- and 64-byte shapes but not on the 16-byte one, so
-    // it is corrupted only where it exists.
+    // `price` and `qty` exist on the 32- and 64-byte shapes but NOT on the
+    // 16-byte one, whose two words are `seq` and the timestamp. They are
+    // corrupted only where they exist.
+    if constexpr (requires(Msg m) { m.price += 1; }) {
+        bad = good;
+        bad.price += 1;
+        CHECK(!bad.valid_for(seq));
+    }
     if constexpr (requires(Msg m) { m.qty += 1; }) {
         bad = good;
         bad.qty += 1;
@@ -312,13 +326,14 @@ void test_payload_validators() {
     corrupt_each_field_and_check_rejection<Msg32>();
     corrupt_each_field_and_check_rejection<Msg64>();
 
-    // The 64-byte tail word folds the WHOLE payload, so a tail that was written
-    // before the rest of the message (partial publication) is rejected.
+    // A 64-byte payload corrupted in a middle word is rejected: the validator
+    // re-derives every deterministic word, so a partially published message
+    // cannot pass on the strength of its framing.
     const std::uint64_t seq  = 99;
     Msg64               good = Msg64::make(seq);
     Msg64               torn = good;
     CHECK(torn.valid_for(seq));
-    torn.pad1 += 1; // corrupt a field the tail covers
+    torn.pad1 += 1;
     CHECK(!torn.valid_for(seq));
 
     // Distinct sequences produce distinct folds: the checksum actually depends
@@ -346,14 +361,17 @@ void test_timestamp_validation() {
 // ---------------------------------------------------------------------------
 void test_repetition_ok_conditions() {
     RepInvariants good;
-    good.expected_delivered   = 100;
-    good.delivered            = 100;
-    good.expected_samples     = 1000;
-    good.sample_count         = 1000;
-    good.payload_mismatches   = 0;
-    good.timestamp_inversions = 0;
-    good.sequence_ok          = true;
-    good.cursor_ok            = true;
+    good.expected_delivered          = 100;
+    good.delivered                   = 100;
+    good.expected_samples            = 1000;
+    good.sample_count                = 1000;
+    good.producer_sample_clock_reads = 1000;
+    good.consumer_sample_clock_reads = 1000;
+    good.payload_mismatches          = 0;
+    good.stamp_contract_failures     = 0;
+    good.timestamp_inversions        = 0;
+    good.sequence_ok                 = true;
+    good.cursor_ok                   = true;
     CHECK(repetition_ok(good));
 
     RepInvariants v = good;
@@ -384,6 +402,160 @@ void test_repetition_ok_conditions() {
     v = good;
     v.cursor_ok = false; // the layout gate is NOT optional
     CHECK(!repetition_ok(v));
+
+    v = good;
+    v.stamp_contract_failures = 1; // producer/consumer schedules disagreed
+    CHECK(!repetition_ok(v));
+
+    // THE SPARSE-INSTRUMENTATION GATE. A repetition that recorded the right
+    // number of latencies but took a clock read per message is exactly the
+    // defect Phase 4.1 exists to catch, so it must fail even though every
+    // latency it produced is individually plausible.
+    v = good;
+    v.producer_sample_clock_reads = 10'000'000;
+    CHECK(!repetition_ok(v));
+
+    v = good;
+    v.consumer_sample_clock_reads = 10'000'000;
+    CHECK(!repetition_ok(v));
+
+    // Too FEW reads is equally wrong: a sample was recorded without a stamp.
+    v = good;
+    v.producer_sample_clock_reads = 999;
+    CHECK(!repetition_ok(v));
+}
+
+// ---------------------------------------------------------------------------
+// The sample message contract: the schedule's shape, and the stamp field.
+//
+// Phase 4.1's central claim is that the instrumentation is SPARSE and that the
+// stamp TRAVELS WITH THE MESSAGE. Both are properties of the harness logic, so
+// both are testable without a queue, a thread or a clock.
+// ---------------------------------------------------------------------------
+
+// The stamp field's contract, for each message shape.
+template <typename Msg>
+void check_stamp_field_contract() {
+    Msg m = Msg::make(10);
+    // A freshly built payload is UNSAMPLED, and says so.
+    CHECK(m.ready_ticks == kUnsampledSentinel);
+    CHECK(stamp_contract_ok(m.ready_ticks, false));  // consumer agrees: unsampled
+    CHECK(!stamp_contract_ok(m.ready_ticks, true));  // consumer expected a stamp
+
+    m.ready_ticks = 4242; // the producer stamps a sampled message
+    CHECK(stamp_contract_ok(m.ready_ticks, true));
+    CHECK(!stamp_contract_ok(m.ready_ticks, false));
+
+    // Stamping does not disturb the deterministic payload.
+    CHECK(m.valid_for(10));
+}
+
+// The stamp is NOT deterministic, so it must not reach the cross-repetition
+// checksum. Two repetitions of the same configuration legitimately carry
+// different timestamps; if the fold included one, "identical checksum across
+// repetitions" would be a claim that could never hold.
+template <typename Msg>
+void check_fold_ignores_stamp() {
+    const Msg a = Msg::make(7);
+    Msg       b = Msg::make(7);
+    b.ready_ticks = 987'654'321;
+    CHECK(a.fold(0) == b.fold(0)); // same message, different timestamp
+    CHECK(a.fold(12345) == b.fold(12345));
+
+    const Msg other = Msg::make(8); // a deterministic difference still moves it
+    CHECK(a.fold(0) != other.fold(0));
+}
+
+void test_sample_message_contract() {
+    const std::uint64_t interval = lltl_tail::kDefaultInterval; // 1021
+    const std::uint64_t settling = lltl_tail::kDefaultSettling; // 100,000
+
+    // --- the FIRST sampled sequence, spelled out as numbers ---
+    {
+        SampleSchedule s(settling, interval);
+        CHECK(s.next_sample_seq() == settling + interval - 1);
+        CHECK(s.next_sample_seq() == 101'020);
+        CHECK(!s.is_sample(settling - 1));
+        CHECK(!s.is_sample(settling));
+        CHECK(!s.is_sample(101'019));
+        CHECK(s.is_sample(101'020)); // <- the first one
+        CHECK(!s.is_sample(101'021));
+    }
+
+    // --- SUBSEQUENT sampled sequences are spaced by exactly `interval` ---
+    {
+        SampleSchedule s(settling, interval);
+        std::uint64_t  prev = 0;
+        std::uint64_t  n    = 0;
+        for (std::uint64_t seq = 0; seq < 1'000'000; ++seq) {
+            if (!s.is_sample(seq)) continue;
+            if (n > 0) CHECK(seq - prev == interval);
+            prev = seq;
+            ++n;
+            s.advance();
+        }
+        CHECK(n == expected_sample_count(1'000'000, settling, interval));
+        CHECK(prev == 101'020 + (n - 1) * interval);
+    }
+
+    // --- the SETTLING PREFIX is excluded entirely ---
+    {
+        SampleSchedule s(settling, interval);
+        for (std::uint64_t seq = 0; seq < settling; ++seq) {
+            CHECK(!s.is_sample(seq)); // not one sample inside the prefix
+        }
+        CHECK(s.next_sample_seq() == 101'020); // and asking did not advance it
+    }
+
+    // --- the CANONICAL expected count, produced by the schedule itself ---
+    CHECK(run_schedule(10'000'000, settling, interval) == 9696);
+    CHECK(expected_sample_count(10'000'000, settling, interval) == 9696);
+
+    // --- the producer and consumer schedules AGREE, walked independently ---
+    {
+        const std::uint64_t n = 200'000;
+        SampleSchedule      producer(settling, interval);
+        SampleSchedule      consumer(settling, interval);
+        std::uint64_t       agreements = 0;
+        std::uint64_t       mismatches = 0;
+        for (std::uint64_t seq = 0; seq < n; ++seq) {
+            const bool p = producer.is_sample(seq);
+            const bool c = consumer.is_sample(seq);
+            if (p != c) {
+                ++mismatches;
+            } else if (p) {
+                ++agreements;
+            }
+            if (p) producer.advance();
+            if (c) consumer.advance();
+        }
+        CHECK(mismatches == 0);
+        CHECK(agreements == expected_sample_count(n, settling, interval));
+    }
+
+    // --- a DISAGREEMENT is caught, in both directions ---
+    {
+        // The producer stamped it; the consumer's schedule says unsampled.
+        CHECK(!stamp_contract_ok(12345, false));
+        // The producer left the sentinel; the consumer expected a stamp.
+        CHECK(!stamp_contract_ok(kUnsampledSentinel, true));
+        // Both agreeing cases are accepted.
+        CHECK(stamp_contract_ok(kUnsampledSentinel, false));
+        CHECK(stamp_contract_ok(12345, true));
+    }
+
+    // --- the contract, per message shape ---
+    check_stamp_field_contract<Msg16>();
+    check_stamp_field_contract<Msg32>();
+    check_stamp_field_contract<Msg64>();
+    check_fold_ignores_stamp<Msg16>();
+    check_fold_ignores_stamp<Msg32>();
+    check_fold_ignores_stamp<Msg64>();
+
+    // --- sizes stay exact, with the stamp inside ---
+    CHECK(sizeof(Msg16) == 16);
+    CHECK(sizeof(Msg32) == 32);
+    CHECK(sizeof(Msg64) == 64);
 }
 
 // ---------------------------------------------------------------------------
@@ -416,8 +588,11 @@ int main() {
     test_expected_count_matches_schedule();
     failures += summary("expected sample count vs schedule");
 
-    test_countdown_is_not_a_modulus();
-    failures += summary("countdown sampling / slot rotation");
+    test_schedule_is_not_a_modulus();
+    failures += summary("sparse schedule / slot rotation");
+
+    test_sample_message_contract();
+    failures += summary("sample message contract");
 
     test_tick_conversion_is_exact();
     failures += summary("exact tick -> ns conversion");
