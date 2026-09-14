@@ -173,6 +173,14 @@ set_tests_properties(spsc_remote_cursor_tests_exitcode PROPERTIES
                      PASS_REGULAR_EXPRESSION "spsc_remote_cursor_tests_exitcode: got expected non-zero exit")
 
 # ---------------------------------------------------------------------------
+# Experiment 03 — Market Data Pipeline. Self-contained: its own INTERFACE
+# library and test target live in the subdirectory, and this is the only line
+# Experiments 01 and 02 needed from the root. Phase 1 is a correctness phase
+# with no benchmark, so there is no entry in BENCH_ARCH_FLAGS below.
+# ---------------------------------------------------------------------------
+add_subdirectory(market-data-pipeline)
+
+# ---------------------------------------------------------------------------
 # Benchmark (Experiment 01, Phase 2). Deterministic steady-state apply()
 # throughput. The benchmark is only meaningful as a release build: enable it
 # explicitly (default ON), and it is forced to -O3 -DNDEBUG regardless of the

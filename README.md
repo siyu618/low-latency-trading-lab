@@ -1,13 +1,15 @@
 # low-latency-trading-lab
 
 A lab for experiments in low-latency C++ trading infrastructure. This
-repository currently hosts two experiments at the repo root: **Experiment 01**
-— L2 order book (`std::map` vs flat representation) — and **Experiment 02** —
-SPSC ring buffer / concurrency. Experiment 02's files sit alongside
+repository currently hosts three experiments. **Experiment 01** — L2 order book
+(`std::map` vs flat representation) — and **Experiment 02** — SPSC ring buffer /
+concurrency — live at the repo root: Experiment 02's files sit alongside
 Experiment 01's in the shared `include/`, `tests/`, and `docs/` trees, clearly
-separated by file name and by namespace (`llob` = order book, `lltl` = queue);
-if more experiments land later they will be organized into their own top-level
-directories.
+separated by file name and by namespace (`llob` = order book, `lltl` = queue).
+**Experiment 03** — market data pipeline — takes the option that paragraph
+always held open and lives in its **own top-level directory**,
+`market-data-pipeline/`, with its own `include/`, `tests/`, `CMakeLists.txt` and
+namespace (`llmd`), leaving the Experiment 01/02 trees untouched.
 
 > **Status — Experiment 01: Phase 1 COMPLETE / FROZEN; Phase 2 COMPLETE /
 > FROZEN; Phase 3M tooling COMPLETE, recordings COLLECTED, attribution analysis
@@ -161,6 +163,30 @@ directories.
 > regime. The balanced adjacent AB/BA design mitigates temporal ordering bias; it
 > does not guarantee identical machine state. See `docs/SPSC_REMOTE_CURSOR_CACHE.md`
 > §7.5.
+>
+> **Experiment 03 — Market Data Pipeline: Phase 1 (Sequencer / Correctness)
+> COMPLETE / FROZEN.** A feed-handler sequencer over a sequenced L2 stream with
+> inline snapshot framing (`market-data-pipeline/`) detects when the stream it is
+> reading is lossy, refuses to pretend otherwise, and accounts for it. **This
+> phase measures nothing**: no clock is read anywhere, there is no benchmark
+> binary and no `BENCH_ARCH_FLAGS` entry, and none of its numbers are durations.
+> The state machine has four states (`NotSynced` / `Live` / `Snapshot` / `Gap`)
+> and ten per-message outcomes, and the pipeline owns framing and sequencing
+> while the book owns snapshot validity and application — a bracketed run commits
+> through the sink's own `load_snapshot()`, so there is **one snapshot contract,
+> not two**. In-order levels are delegated to `book.apply()` rather than
+> re-decided, because `InvalidUpdate` (`qty < 0`) unsyncs the book and
+> `OutOfRange` consumes the sequence — two outcomes a sequence comparison alone
+> cannot see. Verification is six layers with their limits stated: the
+> specification sketch verbatim as a literal expected-outcome table (the only
+> layer that can catch a *specification* error), 25 hand-written scenario vectors,
+> an accounting identity asserted over the whole corpus plus a coverage assertion
+> that every outcome and counter is actually reached, 1550 seeded traces against
+> an independently written oracle, 300 traces run through two different sinks,
+> and generator determinism. All green under CTest (31/31 including the exit-code
+> guard), byte-identical across two runs, and clean under ASan and UBSan.
+> Methodology, the full transition table, the two inherited asymmetries and the
+> limits of each verification layer: `docs/MARKET_DATA_PIPELINE.md`.
 
 ## Experiments
 
@@ -168,6 +194,7 @@ directories.
 |---|------------|--------|
 | 01 | L2 Order Book: `std::map` vs Flat Representation | Phase 1, 2, 4 COMPLETE / FROZEN; Phase 3M tooling COMPLETE + recordings COLLECTED (attribution analysis deferred); Phase 3L tooling READY (native Linux measurement deferred) |
 | 02 | SPSC Ring Buffer / Concurrency | Phase 1 (Correctness / Memory Model) COMPLETE / FROZEN; Phase 2 (Throughput Baseline) COMPLETE / FROZEN; Phase 3A (Controlled Cursor Placement) COMPLETE / FROZEN; Phase 3B (Remote Cursor Caching) COMPLETE / FROZEN; Phase 4 (Tail Latency / Jitter, measurement only — no treatment comparison) COMPLETE / FROZEN |
+| 03 | Market Data Pipeline (sequencer + correctness) | Phase 1 (Sequencer / Correctness — no clocks, no timing, no benchmark) COMPLETE / FROZEN |
 
 ## Layout
 
@@ -285,8 +312,28 @@ low-latency-trading-lab/
 │   ├── SPSC_TAIL_LATENCY.md  # Exp 02 Phase 4: the measurement contract and what it
 │   │                         #   is not, the sparse sampling/clock rules, two hazards
 │   │                         #   found by running it, and the results with claim labels
+│   ├── MARKET_DATA_PIPELINE.md  # Exp 03 Phase 1: the seam, the full transition
+│   │                         #   table, the accounting identity, the two inherited
+│   │                         #   asymmetries, the six verification layers and what
+│   │                         #   each cannot establish
 │   └── profiling/           # Phase 3 guides (README.md, MACOS_INSTRUMENTS.md) + Phase 4
 │                            #   tail-latency methodology (PHASE4_TAIL_LATENCY.md)
+├── market-data-pipeline/    # Experiment 03 (own top-level dir; header-only, llmd)
+│   ├── include/
+│   │   ├── md_message.h     # MdKind / MdMessage: the typed feed vocabulary
+│   │   │                    #   (no wire format, no byte decoder)
+│   │   ├── market_data_pipeline.h  # the sequencer: 4 states, 10 outcomes,
+│   │   │                    #   counters, recovery episodes — templated on the sink
+│   │   └── md_stream_gen.h  # deterministic base scenarios + the 15-entry named
+│   │                        #   mutation catalogue + seeded composition grammar
+│   ├── tests/
+│   │   ├── md_oracle.h      # independently written reference implementation
+│   │   │                    #   (shares the vocabulary, none of the logic)
+│   │   └── market_data_pipeline_tests.cpp  # 6 suites: sketch vectors, scenario
+│   │                        #   vectors, accounting, corpus coverage, differential
+│   │                        #   fuzz vs the oracle, sink agreement
+│   └── CMakeLists.txt       # header-only INTERFACE lib + tests + exit-code guard;
+│                            #   deliberately no benchmark target in this phase
 ├── CMakeLists.txt
 └── README.md
 ```
@@ -1212,6 +1259,229 @@ tables: `docs/results/spsc-tail-latency/`.
 
 Phases NOT STARTED: none for Experiment 02.
 
+## Experiment 03 — Market Data Pipeline
+
+**Status: Phase 1 — Sequencer / Correctness: COMPLETE / FROZEN.** No clocks, no
+timing, no benchmark binary. Methodology: `docs/MARKET_DATA_PIPELINE.md`.
+
+Experiments 01 and 02 built a correct L2 book and a correct SPSC transport.
+Neither answers the question a feed handler faces on every session: **what does a
+consumer do when the sequenced stream it is reading is lossy?** A book that has
+silently missed a message is not a slightly stale book, it is a *wrong* book, and
+no amount of careful updating afterwards repairs it. This phase is the policy for
+detecting that, refusing to pretend otherwise, and accounting for it.
+
+It is implemented against the specification sketch it was given, verbatim:
+
+```
+SnapshotBegin seq=1 / Bid 100 qty=10 seq=2 / Ask 101 qty=20 seq=3 / SnapshotEnd seq=4
+Bid 100 qty=15 seq=5 / Ask 101 qty=0 seq=6
+seq=9   <- gap
+seq=10  <- rejected while GAP
+SnapshotBegin seq=20 / ... / SnapshotEnd  -> LIVE again
+```
+
+### The seam: framing and sequencing vs snapshot validity
+
+**The pipeline owns framing and sequencing. The book owns snapshot validity and
+application.** Snapshot content accumulates into a staging `llob::BookSnapshot`;
+at `SnapshotEnd` the pipeline hands it to the sink's own `load_snapshot()`, so
+`validate_snapshot()` governs snapshots here exactly as it does on every other
+snapshot path in the repository. **There is one snapshot contract, not two.**
+
+In-order levels are **delegated to `book.apply()`**, not re-decided by hand. This
+is not a convenience: two of the book's five outcomes are invisible to a sequence
+comparison alone. `InvalidUpdate` (`qty < 0`) makes the book *unsync itself*, and
+`OutOfRange` *consumes the sequence* while the book stays synced. A pipeline that
+only compared sequence numbers would report `Live` forever over an unsynced
+book — a silent permanent stall with no gap ever firing to reveal it.
+
+### States and outcomes
+
+Four states — `NotSynced` / `Live` / `Snapshot` / `Gap`. `NotSynced` is kept
+distinct from `Gap` because the two cost different things: a cold start that
+never synced has an outage of unknown length, while losing a live view has a
+measurable one. `Gap → NotSynced` is impossible (`ever_synced_` is never
+cleared). Ten outcomes — `Applied`, `OutOfRange`, `Staged`, `SnapshotCommitted`,
+`SnapshotAbandoned`, `Stale`, `GapDetected`, `Malformed`, `Rejected`,
+`ProtocolViolation` — deliberately richer than `ApplyResult`, which conflates
+"you sent me a duplicate" with "my view is unusable" into one `Stale`.
+
+Two details the sketch exists to pin, both asserted literally: the offending
+`seq=9` is `GapDetected` and **not applied** — the sequence is never consumed, so
+`expected()` is still 7 and the gap cannot be silently papered over — and the
+`seq=10` that follows is `Rejected` because the pipeline is in `Gap`.
+
+### Stale snapshots never rewind
+
+`load_snapshot()` has no staleness check of its own and will happily rewind a
+book to an older sequence; committing a stale bracket would move `last_applied`
+backwards and then double-apply every message in between, with no gap firing to
+reveal it. So the pipeline carries its own gate, `snapshot_fresh(seq) = seq >=
+book.last_applied_seq()`, and applies it in **every** state — including `Gap`,
+where a repair bracket older than the view that was lost is not a repair at all.
+One consequence looks surprising and is pinned by scenario vectors: because a gap
+does not advance the book's cursor, a bracket at the cursor **or at cursor + 1**
+is fresh and accepted, and only one genuinely below the cursor is refused.
+
+### Recovery accounting (counts, never durations)
+
+One `MdRecoveryEpisode` per outage: cause, `first_missing_seq`, the sequence that
+detected it, the span it covered, the highest sequence seen while it was open,
+how many levels that cost (`discarded`), how many repair brackets were accepted
+(`attempts`), and the committing `End`. Outage size is in **messages and sequence
+numbers**; there is no duration anywhere in this phase. `first_missing_seq` is
+read from the **book**, never from the bracket that failed — a mid-stream refresh
+bracket carries its own cursor that runs ahead of the book's, so reporting that
+one would understate the outage by every sequence staged inside it. An outage
+already open is never reopened: it keeps the position and cause of the loss that
+opened it and only accumulates state.
+
+**The accounting identity holds by construction**, not by discipline:
+`messages == the sum of the ten outcome counters`, asserted over the whole
+corpus. Every result is built in one private `note()` function, and that function
+is the only place an outcome counter moves, with a switch exhaustive over
+`MdOutcome`.
+
+### Verification, and what each layer cannot do
+
+Six layers, in `market-data-pipeline/tests/`:
+
+- **The specification sketch verbatim** as a literal expected-outcome table — 13
+  messages, 13 expected outcomes read off the sketch rather than off the
+  implementation. This is the **only** layer that can catch a *specification*
+  error, because its expectations were written by hand.
+- **25 hand-written scenario vectors**, one per failure hypothesis, each with a
+  full expected outcome vector *and* an expected final state, `expected()` and top
+  of book: the sketch; an empty snapshot; `SnapshotEnd` as the very first message;
+  a snapshot that never ends; a gap inside a bracket; a nested `SnapshotBegin`;
+  replays and duplicates while `Live`; a duplicate price inside snapshot content;
+  an out-of-domain price on both paths; negative `qty` on both paths; a stale
+  `SnapshotBegin` while `Live`; a bracket below the lost cursor and one exactly at
+  it; and a `ProtocolViolation` leaving a healthy book intact.
+- **Accounting**: the identity, the episode fields by hand, and — the layer that
+  keeps the fuzz honest — a **corpus coverage assertion** that every one of the
+  ten outcomes, nine diagnostics, four states and four loss causes is actually
+  reached. Differential agreement on a counter that is permanently zero proves
+  nothing about it.
+- **Differential fuzz**: 1550 seeded traces against
+  `tests/md_oracle.h`, an independently written reference implementation. It
+  shares the vocabulary and **none of the logic** — a different book, different
+  staging, hand-derived snapshot validity rather than `validate_snapshot()`, the
+  `apply()` precedence chain written inline, and one flat `if`/`else if` chain.
+  **It catches implementation divergence, not specification error**: if both
+  misread the contract they agree and are both wrong. That is what the vectors
+  above are for, and it is not hypothetical — see below.
+- **Sink agreement**: 300 traces through `MapOrderBook` and `FlatOrderBook`,
+  requiring identical outcomes, counters, position, top of book **and full
+  level-set parity**, because agreement on the top of book is not agreement on
+  the book.
+- **Generator determinism**: `std::mt19937_64` is exactly specified and is used;
+  `std::uniform_int_distribution` is **not** — its mapping is
+  implementation-defined, so the same seed can differ between libstdc++ and
+  libc++ — and is therefore avoided in favour of a hand-rolled `uniform_below`.
+  Failures print the recipe, so any divergence can be frozen into a named
+  regression.
+
+The harness was itself checked by deliberately sabotaging the oracle and the
+pipeline and confirming each break is caught (an off-by-one on the freshness
+gate; `first_missing_seq` taken from the bracket; a wrong staging-cap comparison;
+the historical counting omission).
+
+### Defects found and fixed during this phase
+
+Recorded because they are evidence about the verification, not just the code.
+
+- **The accounting identity did not hold.** `SnapshotBegin` returned `Staged`
+  without incrementing `staged`, and three stale paths returned `Stale` without
+  incrementing `stale`.
+- **The differential fuzz could not see it** — the oracle had been written from
+  the pipeline and inherited the same omission, so all 1550 traces agreed while
+  both were wrong. This is the layer-4 limitation, caught in practice by layer 3.
+  It is why outcomes are now counted in exactly one place.
+- **`attempts` double-counted**, so a two-bracket outage reported three.
+- **`first_missing_seq` was taken from the bracket, not the book** — 7 where the
+  book's real position was 5.
+- **`discarded` did not implement its own documented definition**: staged levels
+  thrown away by an abandoned repair were never charged to the outage.
+- **Two generator mutations tested nothing.** `NegativeQty` and
+  `OutOfDomainPrice` targeted the first `Level` in a trace, which is always
+  inside the opening snapshot — so they exercised snapshot refusal while
+  `malformed` and `out_of_range` stayed permanently at zero. The coverage
+  assertion found this; the differential fuzz could not have.
+
+### Two inherited asymmetries, documented rather than unified
+
+- **A repeated price inside a snapshot rejects the whole snapshot**
+  (`validate_snapshot` treats it as ambiguous state) — including a price listed
+  twice where one listing is `qty == 0`. The same price on *opposite* sides is
+  ordinary.
+- **An out-of-domain price behaves differently on the two paths**: inside a
+  snapshot it rejects the run; as an in-order incremental it is ignored with the
+  sequence consumed (`ApplyResult::OutOfRange`). Both are correct for their own
+  path; they are not unified, and this section does not claim they are.
+
+### What cannot be claimed
+
+- **No performance claim of any kind.** Nothing is timed, no benchmark binary
+  exists, and no number in this section or in the methodology doc is a duration.
+  Phase 1 is not evidence about throughput or latency and must never be quoted as
+  such.
+- **No claim about a real venue's feed protocol.** Real feeds have per-instrument
+  sequence channels, heartbeat and timeout semantics, and cancel/replace ordering
+  rules — none modelled. **The pipeline does not request a resync**; it detects a
+  gap and waits for a snapshot. That is a stated policy gap, not an oversight.
+- **No claim of bounded recovery time.** It waits for a snapshot; how long that
+  takes is a property of the venue.
+- **No allocation or memory measurement.** Staging is bounded and exceeding the
+  bound **abandons** the bracket rather than truncating it, because a truncated
+  snapshot is a wrong snapshot — but nothing was measured.
+- **The fuzz corpus is not exhaustive.** It is a fixed catalogue plus seeded
+  composition; it explores combinations, it does not prove absence.
+
+### Running it
+
+```sh
+cmake -S . -B build-exp03 -DCMAKE_BUILD_TYPE=Release
+cmake --build build-exp03 -j 8
+ctest --test-dir build-exp03 --output-on-failure     # 31/31 incl. the _exitcode guard
+./build-exp03/market-data-pipeline/market_data_pipeline_tests
+```
+
+Runs in well under a second, so it is not conditioned on anything and runs in the
+default CTest set. Output is byte-identical across two runs. Clean under ASan and
+UBSan, warning-free under `-Wall -Wextra`. The exit-code guard drives the binary
+through `LLDB_SELFTEST_FAIL=1` and asserts a non-zero exit, so a regression that
+stopped propagating failures fails the suite rather than silently passing it.
+
+### Status
+
+Phase 1 is **COMPLETE / FROZEN** and publishes no results dataset, because it
+measures nothing.
+
+- `market-data-pipeline/include/md_message.h` — the typed feed vocabulary. No
+  wire format, no byte decoder, therefore no parser tests.
+- `market-data-pipeline/include/market_data_pipeline.h` — the sequencer,
+  `MdResult`, `MdCounters`, `MdRecoveryEpisode`.
+- `market-data-pipeline/include/md_stream_gen.h` — deterministic base scenarios,
+  the 15-entry named mutation catalogue, and the seeded composition grammar.
+- `market-data-pipeline/tests/md_oracle.h` — the independent reference
+  implementation.
+- `market-data-pipeline/tests/market_data_pipeline_tests.cpp` — six suites, all
+  green.
+- `market-data-pipeline/CMakeLists.txt` — header-only `INTERFACE` target plus the
+  tests; **deliberately no benchmark target** in this phase.
+
+**No Experiment 01 or 02 file is modified.** The only change outside the new
+directory is one `add_subdirectory(market-data-pipeline)` line in the root
+`CMakeLists.txt`. There is no `BENCH_ARCH_FLAGS` entry, because there is nothing
+yet to time.
+
+Phases NOT STARTED for Experiment 03: any measurement phase. **A later phase may
+add measurement** — ingress-to-book latency, sequencer cost per message, or the
+cost of a snapshot commit — on top of this contract. No such phase is opened
+here, and Phase 1 is not a prerequisite claim about any of them.
+
 ## Next phases
 
 Experiment 01: Phase 3M per-function call-tree symbolization (an Instruments GUI
@@ -1223,5 +1493,12 @@ treatments and opens no optimization). No further Experiment 02 phase is
 planned; in particular Phase 4 does **not** start a new SPSC optimization phase.
 No Phase 5, no MPMC, no disruptor and no futex work is opened here.
 
-Experiment 02 is **COMPLETE / FROZEN**. **The next engineering task is
-Experiment 03 — Market Data Pipeline.**
+Experiment 03: **Phase 1 (Sequencer / Correctness) COMPLETE / FROZEN** — a
+correctness-only phase that reads no clock, ships no benchmark binary and
+publishes no results dataset. No further Experiment 03 phase is planned or
+opened: a measurement phase (ingress-to-book latency, sequencer cost per message,
+snapshot-commit cost) may be added later on top of the frozen contract, but
+nothing is committed to here, and Phase 1 makes no claim about any of them.
+
+Experiments 01 and 02 are **COMPLETE / FROZEN**; Experiment 03 Phase 1 is
+**COMPLETE / FROZEN**. **No next engineering task is currently opened.**
