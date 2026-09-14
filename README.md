@@ -164,12 +164,15 @@ namespace (`llmd`), leaving the Experiment 01/02 trees untouched.
 > does not guarantee identical machine state. See `docs/SPSC_REMOTE_CURSOR_CACHE.md`
 > §7.5.
 >
-> **Experiment 03 — Market Data Pipeline: Phase 1 (Sequencer / Correctness)
-> COMPLETE / FROZEN.** A feed-handler sequencer over a sequenced L2 stream with
-> inline snapshot framing (`market-data-pipeline/`) detects when the stream it is
-> reading is lossy, refuses to pretend otherwise, and accounts for it. **This
-> phase measures nothing**: no clock is read anywhere, there is no benchmark
-> binary and no `BENCH_ARCH_FLAGS` entry, and none of its numbers are durations.
+> **Experiment 03 — Market Data Pipeline: Phase 1 (Sequencer + Binary Decoder /
+> Correctness) COMPLETE / FROZEN.** A feed-handler sequencer over a sequenced L2
+> stream with inline snapshot framing (`market-data-pipeline/`) detects when the
+> stream it is reading is lossy, refuses to pretend otherwise, and accounts for
+> it; a byte-stream decoder turns raw bytes into the same typed messages that
+> sequencer consumes. **Phase 1A** (sequencer / snapshot / recovery) and
+> **Phase 1B** (wire protocol / decoder) are both COMPLETE / FROZEN. **Neither
+> phase measures anything**: no clock is read anywhere, there is no benchmark
+> binary and no `BENCH_ARCH_FLAGS` entry, and none of their numbers are durations.
 > The state machine has four states (`NotSynced` / `Live` / `Snapshot` / `Gap`)
 > and ten per-message outcomes, and the pipeline owns framing and sequencing
 > while the book owns snapshot validity and application — a bracketed run commits
@@ -183,10 +186,21 @@ namespace (`llmd`), leaving the Experiment 01/02 trees untouched.
 > an accounting identity asserted over the whole corpus plus a coverage assertion
 > that every outcome and counter is actually reached, 1550 seeded traces against
 > an independently written oracle, 300 traces run through two different sinks,
-> and generator determinism. All green under CTest (31/31 including the exit-code
-> guard), byte-identical across two runs, and clean under ASan and UBSan.
-> Methodology, the full transition table, the two inherited asymmetries and the
-> limits of each verification layer: `docs/MARKET_DATA_PIPELINE.md`.
+> and generator determinism. **Phase 1B** adds a synthetic big-endian wire
+> protocol (12-byte header, 1 = `SnapshotBegin` / 2 = `Level` / 3 = `SnapshotEnd`,
+> version 1) with an allocation-free `decode_one()` that returns one message per
+> call from the front of a byte span. Its central invariant is that
+> `consumed != 0` **if and only if** the status is `Ok` — so `NeedMoreData`, the
+> ordinary answer for a partial socket read, can never publish a half-written
+> message into a live book. Bytes are assembled by explicit shifts with no
+> `reinterpret_cast`, no packed struct and no unaligned load, and the tests
+> compare against literal byte constants so an encoder and decoder written by the
+> same hand cannot agree on a wrong byte order unnoticed — a sabotage run that
+> reversed both helpers consistently left every round-trip suite green and failed
+> only the literal-byte suites. All green under CTest (33/33 including the
+> exit-code guards), byte-identical across two runs, and clean under ASan and
+> UBSan. Methodology: `docs/MARKET_DATA_PIPELINE.md`; wire protocol and decoder
+> contract: `docs/MARKET_DATA_PROTOCOL.md`.
 
 ## Experiments
 
@@ -194,7 +208,7 @@ namespace (`llmd`), leaving the Experiment 01/02 trees untouched.
 |---|------------|--------|
 | 01 | L2 Order Book: `std::map` vs Flat Representation | Phase 1, 2, 4 COMPLETE / FROZEN; Phase 3M tooling COMPLETE + recordings COLLECTED (attribution analysis deferred); Phase 3L tooling READY (native Linux measurement deferred) |
 | 02 | SPSC Ring Buffer / Concurrency | Phase 1 (Correctness / Memory Model) COMPLETE / FROZEN; Phase 2 (Throughput Baseline) COMPLETE / FROZEN; Phase 3A (Controlled Cursor Placement) COMPLETE / FROZEN; Phase 3B (Remote Cursor Caching) COMPLETE / FROZEN; Phase 4 (Tail Latency / Jitter, measurement only — no treatment comparison) COMPLETE / FROZEN |
-| 03 | Market Data Pipeline (sequencer + correctness) | Phase 1 (Sequencer / Correctness — no clocks, no timing, no benchmark) COMPLETE / FROZEN |
+| 03 | Market Data Pipeline (sequencer + binary decoder) | Phase 1A (Sequencer / Snapshot / Recovery Correctness) COMPLETE / FROZEN; Phase 1B (Binary Protocol / Decoder Correctness) COMPLETE / FROZEN; Phase 1 overall COMPLETE / FROZEN. Phase 2 (Decoder Thread → SPSC → Book Thread) NOT STARTED |
 
 ## Layout
 
@@ -312,28 +326,39 @@ low-latency-trading-lab/
 │   ├── SPSC_TAIL_LATENCY.md  # Exp 02 Phase 4: the measurement contract and what it
 │   │                         #   is not, the sparse sampling/clock rules, two hazards
 │   │                         #   found by running it, and the results with claim labels
-│   ├── MARKET_DATA_PIPELINE.md  # Exp 03 Phase 1: the seam, the full transition
+│   ├── MARKET_DATA_PIPELINE.md  # Exp 03 Phase 1A: the seam, the full transition
 │   │                         #   table, the accounting identity, the two inherited
 │   │                         #   asymmetries, the six verification layers and what
 │   │                         #   each cannot establish
+│   ├── MARKET_DATA_PROTOCOL.md  # Exp 03 Phase 1B: the wire layout byte by byte,
+│   │                         #   decoder status semantics, the consumed invariant,
+│   │                         #   stream decoding, and the wire-vs-sequence-vs-book
+│   │                         #   validation layers
 │   └── profiling/           # Phase 3 guides (README.md, MACOS_INSTRUMENTS.md) + Phase 4
 │                            #   tail-latency methodology (PHASE4_TAIL_LATENCY.md)
 ├── market-data-pipeline/    # Experiment 03 (own top-level dir; header-only, llmd)
 │   ├── include/
 │   │   ├── md_message.h     # MdKind / MdMessage: the typed feed vocabulary
-│   │   │                    #   (no wire format, no byte decoder)
-│   │   ├── market_data_pipeline.h  # the sequencer: 4 states, 10 outcomes,
+│   │   ├── market_data_pipeline.h  # Phase 1A: the sequencer — 4 states, 10 outcomes,
 │   │   │                    #   counters, recovery episodes — templated on the sink
+│   │   ├── md_wire_protocol.h  # Phase 1B: byte offsets, message IDs, version, and
+│   │   │                    #   the big-endian read/write helpers
+│   │   ├── md_decoder.h     # Phase 1B: DecodeStatus / DecodeOutcome / decode_one
+│   │   ├── md_encoder.h     # Phase 1B: test-and-fixture encoder (allocates; not
+│   │   │                    #   the hot path, and not on it)
 │   │   └── md_stream_gen.h  # deterministic base scenarios + the 15-entry named
 │   │                        #   mutation catalogue + seeded composition grammar
 │   ├── tests/
 │   │   ├── md_oracle.h      # independently written reference implementation
 │   │   │                    #   (shares the vocabulary, none of the logic)
-│   │   └── market_data_pipeline_tests.cpp  # 6 suites: sketch vectors, scenario
-│   │                        #   vectors, accounting, corpus coverage, differential
-│   │                        #   fuzz vs the oracle, sink agreement
-│   └── CMakeLists.txt       # header-only INTERFACE lib + tests + exit-code guard;
-│                            #   deliberately no benchmark target in this phase
+│   │   ├── market_data_pipeline_tests.cpp  # 6 suites: sketch vectors, scenario
+│   │   │                    #   vectors, accounting, corpus coverage, differential
+│   │   │                    #   fuzz vs the oracle, sink agreement
+│   │   └── md_decoder_tests.cpp  # 6 suites: literal expected bytes, endian
+│   │                        #   helpers, stream decoding, exhaustive truncation,
+│   │                        #   malformed frames, bytes -> decoder -> pipeline
+│   └── CMakeLists.txt       # header-only INTERFACE lib + both test targets + their
+│                            #   exit-code guards; deliberately no benchmark target
 ├── CMakeLists.txt
 └── README.md
 ```
@@ -1261,17 +1286,23 @@ Phases NOT STARTED: none for Experiment 02.
 
 ## Experiment 03 — Market Data Pipeline
 
-**Status: Phase 1 — Sequencer / Correctness: COMPLETE / FROZEN.** No clocks, no
-timing, no benchmark binary. Methodology: `docs/MARKET_DATA_PIPELINE.md`.
+**Status: Phase 1A — Sequencer / Snapshot / Recovery Correctness: COMPLETE /
+FROZEN. Phase 1B — Binary Protocol / Decoder Correctness: COMPLETE / FROZEN.
+Phase 1 overall: COMPLETE / FROZEN. Phase 2 — Decoder Thread → SPSC → Book
+Thread: NOT STARTED.** No clocks, no timing, no benchmark binary. Methodology:
+`docs/MARKET_DATA_PIPELINE.md`; wire protocol and decoder contract:
+`docs/MARKET_DATA_PROTOCOL.md`.
 
 Experiments 01 and 02 built a correct L2 book and a correct SPSC transport.
 Neither answers the question a feed handler faces on every session: **what does a
 consumer do when the sequenced stream it is reading is lossy?** A book that has
 silently missed a message is not a slightly stale book, it is a *wrong* book, and
-no amount of careful updating afterwards repairs it. This phase is the policy for
-detecting that, refusing to pretend otherwise, and accounting for it.
+no amount of careful updating afterwards repairs it. Phase 1A is the policy for
+detecting that, refusing to pretend otherwise, and accounting for it. Phase 1B
+is the layer beneath it: the bytes arrive on a socket, and something has to turn
+them into messages before any sequencing question can be asked at all.
 
-It is implemented against the specification sketch it was given, verbatim:
+Phase 1A is implemented against the specification sketch it was given, verbatim:
 
 ```
 SnapshotBegin seq=1 / Bid 100 qty=10 seq=2 / Ask 101 qty=20 seq=3 / SnapshotEnd seq=4
@@ -1460,28 +1491,147 @@ Recorded because they are evidence about the verification, not just the code.
 - **The fuzz corpus is not exhaustive.** It is a fixed catalogue plus seeded
   composition; it explores combinations, it does not prove absence.
 
+### Phase 1B — the wire decoder: bytes -> typed messages
+
+Phase 1A's input was a typed `MdMessage` built by a fixture. A real feed handler
+starts one layer lower, with a byte span from a socket read that may hold three
+messages, two and a half messages, or zero. Phase 1B is that layer and **nothing
+else**: raw bytes in, the same `MdMessage` values Phase 1A already consumes out.
+No Phase-1A file was modified, no counter, state or transition was added to the
+sequencer, and no Phase-1A test was changed — the frozen state machine cannot
+tell whether its input came from a fixture or from bytes.
+
+#### The synthetic protocol
+
+Deliberately simple, and not FIX, ITCH or SBE. A fixed **12-byte header** —
+`message_type` (1 byte), `version` (1 byte, currently 1), `payload_length`
+(2 bytes) and `sequence` (8 bytes) — followed by an optional payload. **All
+multi-byte integers are big endian**, two's complement for signed fields. Three
+message types: `SnapshotBegin` (1, 12 bytes), `Level` (2, 29 bytes, with a
+17-byte payload of side / `price_tick` / `quantity`) and `SnapshotEnd` (3, 12
+bytes).
+
+**The wire format is byte offsets, not a struct.** Padding, alignment and member
+order are compiler implementation details, and a protocol should not inherit
+them; a packed struct would trade that for unaligned loads, which are undefined
+behaviour on strict-alignment targets. Every field is assembled by explicit
+shifts and masks — no `reinterpret_cast` to an integer pointer, no packed struct,
+no unaligned load, no host-endian assumption.
+
+#### The one invariant that matters
+
+```
+consumed != 0   if and only if   status == Ok
+```
+
+On `Ok`, `consumed` is exactly the encoded size of the message decoded — never
+more, so the caller can advance without re-deriving the length; never less, so it
+cannot stall on a message it already consumed. On **every** failure, `consumed`
+is 0 and the output message is **untouched**. A partial `MdMessage` is never
+published. That matters more than it looks: `NeedMoreData` — the ordinary answer
+for a partial socket read — is the case that happens constantly in production,
+and a caller that trusted a partially written message would apply half a level
+update to a live book.
+
+`NeedMoreData` is therefore **not an error**; it is the only status meaning "call
+me again". Of the eight statuses, the six beyond `Ok` and `NeedMoreData`
+(`InvalidVersion`, `InvalidType`, `InvalidLength`, `InvalidSide`, `InvalidPrice`,
+`InvalidQuantity`) are terminal properties of the bytes: re-reading them will not
+help. Keeping "wait for more" distinct from "give up" is the whole difference
+between a decoder that works on a socket and one that discards valid data
+whenever a read lands mid-message.
+
+A message type's declared `payload_length` is checked **before** waiting for that
+many bytes, so a corrupt header cannot stall the decoder indefinitely. And extra
+bytes after a complete message are **not** `InvalidLength` — this reads at most
+one message from the front of a span, because a decoder that demanded the span
+hold exactly one message could not be fed by a socket read at all.
+
+#### Three validity layers, and the boundary between them
+
+Each layer rejects things the others accept, and keeping them apart is what lets
+the system distinguish "the venue sent me a price I do not trade" from "the venue
+sent me garbage":
+
+| Layer | Question | Owner | Example rejection |
+|---|---|---|---|
+| **Wire** | Are these bytes a well-formed message? | `md_decoder.h` | `InvalidSide`, `InvalidLength` |
+| **Sequence** | Is it in order for this stream? | `market_data_pipeline.h` | `Stale`, `GapDetected` |
+| **Book** | Is it applicable to this book? | `types.h` | `OutOfRange`, `InvalidUpdate` |
+
+A **positive** `price_tick` outside the book's configured tick range is
+**wire-valid**: `price_tick = 999999999` decodes `Ok` with `consumed == 29`, and
+becomes `ApplyResult::OutOfRange` one layer up — the sequence is consumed and the
+book stays synced. Different fact, different consequence. The decoder does not
+enforce the tick range because it has no book and no configuration, and a decoder
+that did would be reaching across the seam.
+
+#### Verification, and what it cannot do
+
+Six suites in `md_decoder_tests.cpp`:
+
+- **Literal expected bytes** for `SnapshotBegin`, `Level` Bid, `Level` Ask and
+  `SnapshotEnd`, written out by hand from the protocol document, plus signed
+  fields pinned as literal two's-complement bytes and the three message IDs
+  pinned by number. This is the layer that makes the rest meaningful: an encoder
+  and a decoder written by the same hand can agree on a **wrong byte order
+  forever**, and every round-trip test would stay green. That is not
+  hypothetical — reversing both the read and the write helpers consistently left
+  *stream decoding*, *truncation*, *malformed frames* and the end-to-end
+  integration all passing, and failed only the literal-byte suites. Round-trip
+  tests can only catch a disagreement, never a shared mistake.
+- **Endian helpers** directly, including `-1`, `0`, all-ones and a ±300
+  round-trip sweep.
+- **Stream decoding**: five messages in one contiguous span, exact per-message
+  `consumed`, trailing bytes tolerated.
+- **Truncation, exhaustively**: size 0, every header truncation 1–11, and
+  **every** `Level` truncation 12–28. All `NeedMoreData`, all `consumed == 0`,
+  and each asserted not to have published output. Sampling prefix lengths would
+  miss the interesting boundary — a `Level` truncated to 20 bytes has already
+  read a valid header declaring 17 payload bytes.
+- **Malformed frames**: every rejection path, each asserting `consumed == 0`
+  **and** that the output was not modified.
+- **Bytes → decoder → pipeline**: one focused fixture run through both
+  `MarketDataPipeline<FlatOrderBook>` and `<MapOrderBook>`, requiring agreement
+  on decoder statuses, exact consumed bytes, pipeline outcomes, state,
+  `last_applied_seq` and top of book.
+
+**The 1550-trace Phase-1A differential corpus is deliberately not run through the
+byte decoder.** That corpus exists to exercise the sequencer; putting an encoder
+in front of it would test the encoder against the decoder rather than either
+against its contract. One integration fixture establishes that the pieces
+compose, and the sequencer's own verification is unchanged.
+
 ### Running it
 
 ```sh
 cmake -S . -B build-exp03 -DCMAKE_BUILD_TYPE=Release
 cmake --build build-exp03 -j 8
-ctest --test-dir build-exp03 --output-on-failure     # 31/31 incl. the _exitcode guard
+ctest --test-dir build-exp03 --output-on-failure     # 33/33 incl. both _exitcode guards
 ./build-exp03/market-data-pipeline/market_data_pipeline_tests
+./build-exp03/market-data-pipeline/md_decoder_tests
 ```
 
 Runs in well under a second, so it is not conditioned on anything and runs in the
 default CTest set. Output is byte-identical across two runs. Clean under ASan and
-UBSan, warning-free under `-Wall -Wextra`. The exit-code guard drives the binary
-through `LLDB_SELFTEST_FAIL=1` and asserts a non-zero exit, so a regression that
-stopped propagating failures fails the suite rather than silently passing it.
+UBSan, warning-free under `-Wall -Wextra`. Each target is paired with an
+exit-code guard that drives the binary through `LLDB_SELFTEST_FAIL=1` and asserts
+a non-zero exit, so a regression that stopped propagating failures fails the
+suite rather than silently passing it. Both Experiment 03 targets build under
+`-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Werror`; that flag set
+is deliberately **not** global and **not** applied to the frozen Experiment 01/02
+targets, which carry published measurements.
 
 ### Status
 
-Phase 1 is **COMPLETE / FROZEN** and publishes no results dataset, because it
-measures nothing.
+Phase 1A and Phase 1B are **COMPLETE / FROZEN** and publish no results dataset,
+because they measure nothing.
 
-- `market-data-pipeline/include/md_message.h` — the typed feed vocabulary. No
-  wire format, no byte decoder, therefore no parser tests.
+Phase 1A — sequencer / snapshot / recovery:
+
+- `market-data-pipeline/include/md_message.h` — the typed feed vocabulary, shared
+  by both phases. The decoder produces these values; nothing in the vocabulary
+  knows about bytes.
 - `market-data-pipeline/include/market_data_pipeline.h` — the sequencer,
   `MdResult`, `MdCounters`, `MdRecoveryEpisode`.
 - `market-data-pipeline/include/md_stream_gen.h` — deterministic base scenarios,
@@ -1490,18 +1640,35 @@ measures nothing.
   implementation.
 - `market-data-pipeline/tests/market_data_pipeline_tests.cpp` — six suites, all
   green.
-- `market-data-pipeline/CMakeLists.txt` — header-only `INTERFACE` target plus the
-  tests; **deliberately no benchmark target** in this phase.
+
+Phase 1B — binary protocol / decoder:
+
+- `market-data-pipeline/include/md_wire_protocol.h` — the byte layout, message
+  IDs, version, offsets and the big-endian read/write helpers.
+- `market-data-pipeline/include/md_decoder.h` — `DecodeStatus`, `DecodeOutcome`
+  and the allocation-free `decode_one()`.
+- `market-data-pipeline/include/md_encoder.h` — the test-and-fixture encoder. It
+  allocates and is not the hot path; `append_raw` sets every header field
+  verbatim, which is how the malformed frames are built.
+- `market-data-pipeline/tests/md_decoder_tests.cpp` — six suites, all green.
+- `docs/MARKET_DATA_PROTOCOL.md` — the wire format byte by byte, the decoder's
+  status semantics, the stream contract and the three validity layers.
+
+- `market-data-pipeline/CMakeLists.txt` — one header-only `INTERFACE` target
+  carrying both phases, both test targets, both exit-code guards; **deliberately
+  no benchmark target** in Phase 1.
 
 **No Experiment 01 or 02 file is modified.** The only change outside the new
 directory is one `add_subdirectory(market-data-pipeline)` line in the root
 `CMakeLists.txt`. There is no `BENCH_ARCH_FLAGS` entry, because there is nothing
 yet to time.
 
-Phases NOT STARTED for Experiment 03: any measurement phase. **A later phase may
-add measurement** — ingress-to-book latency, sequencer cost per message, or the
-cost of a snapshot commit — on top of this contract. No such phase is opened
-here, and Phase 1 is not a prerequisite claim about any of them.
+Phases NOT STARTED for Experiment 03: **Phase 2 — decoder thread → SPSC → book
+thread.** Nothing in Phase 1 threads, measures or times anything, and it makes no
+claim about how the decoder behaves once a transport and a second thread are
+placed under it. A later measurement phase — ingress-to-book latency, sequencer
+cost per message, snapshot-commit cost — may be added on top of the frozen
+contract. No such phase is opened here.
 
 ## Next phases
 
@@ -1514,12 +1681,14 @@ treatments and opens no optimization). No further Experiment 02 phase is
 planned; in particular Phase 4 does **not** start a new SPSC optimization phase.
 No Phase 5, no MPMC, no disruptor and no futex work is opened here.
 
-Experiment 03: **Phase 1 (Sequencer / Correctness) COMPLETE / FROZEN** — a
-correctness-only phase that reads no clock, ships no benchmark binary and
-publishes no results dataset. No further Experiment 03 phase is planned or
-opened: a measurement phase (ingress-to-book latency, sequencer cost per message,
-snapshot-commit cost) may be added later on top of the frozen contract, but
-nothing is committed to here, and Phase 1 makes no claim about any of them.
+Experiment 03: **Phase 1A (Sequencer / Snapshot / Recovery Correctness)
+COMPLETE / FROZEN; Phase 1B (Binary Protocol / Decoder Correctness) COMPLETE /
+FROZEN; Phase 1 overall COMPLETE / FROZEN** — a correctness-only phase that reads
+no clock, ships no benchmark binary and publishes no results dataset.
+**Phase 2 — Decoder Thread → SPSC → Book Thread — is NOT STARTED**, and is not
+opened here. Beyond it, a measurement phase (ingress-to-book latency, sequencer
+cost per message, snapshot-commit cost) may be added later on top of the frozen
+contract; nothing is committed to, and Phase 1 makes no claim about any of them.
 
 Experiments 01 and 02 are **COMPLETE / FROZEN**; Experiment 03 Phase 1 is
 **COMPLETE / FROZEN**. **No next engineering task is currently opened.**
