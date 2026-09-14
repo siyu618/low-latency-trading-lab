@@ -53,14 +53,20 @@
 // There is NO timestamp side array, no map and no shared metadata structure.
 // This matters for more than tidiness. A side array is a second, independently
 // addressed memory working set whose footprint scales with capacity, which would
-// contaminate the capacity comparison this phase exists to make; it also costs a
-// write and a read per message. Carrying the stamp in the payload costs neither,
-// and the ordering is the queue's own: the same release store that publishes the
-// message publishes its stamp, and the consumer's acquire observation of that
-// publication makes the stamp visible before it reads it. An earlier revision of
-// this benchmark did use a `ready_ticks[2 * Capacity]` array; its reasoning and
-// its failure mode are recorded in the superseded dataset's `SUPERSEDED.md`, and
-// that design is NOT part of the final Phase-4 benchmark.
+// contaminate the capacity comparison this phase exists to make.
+//
+// Note what the advantage is NOT. A sampled message still has its `ready_ticks`
+// field written by the producer and read by the consumer, so this is not a claim
+// that the stamp is free. The advantage is structural: carrying the stamp in the
+// message REUSES the existing payload publication path and avoids an additional
+// capacity-dependent shared-memory working set and independently addressed
+// side-array access. The ordering, too, is the queue's own: the same release
+// store that publishes the message publishes its stamp, and the consumer's
+// acquire observation of that publication makes the stamp visible before it
+// reads it. An earlier revision of this benchmark did use a
+// `ready_ticks[2 * Capacity]` array; its reasoning and its failure mode are
+// recorded in the superseded dataset's `SUPERSEDED.md`, and that design is NOT
+// part of the final Phase-4 benchmark.
 //
 // ONE CLOCK DOMAIN. std::chrono::steady_clock only. std::chrono::system_clock is
 // NEVER used, not even for labelling: it is not monotonic, and a single backward
@@ -336,8 +342,12 @@ RepResult run_repetition(const Config& c, int repetition, bool collect) {
     // THERE IS NO TIMESTAMP SIDE ARRAY.
     //
     // The producer's stamp is a FIELD of the message and reaches the consumer
-    // through the queue with the rest of the payload, so the instrumentation
-    // touches only memory the measurement already touches. The superseded dataset
+    // through the queue with the rest of the payload. That is a STRUCTURAL
+    // property, not a claim that the stamp costs nothing: the field is still
+    // written here and still read by the consumer. What it avoids is an
+    // ADDITIONAL addressed memory region — the payload's own word is carried by
+    // the transfer the queue already performs, so no second, independently
+    // addressed producer-to-consumer path is introduced. The superseded dataset
     // allocated a `ready_ticks[2 * Capacity]` array instead; that array was a
     // second, independently addressed working set whose footprint scaled with
     // capacity, and the aliasing argument that sized it to 2 * Capacity rather

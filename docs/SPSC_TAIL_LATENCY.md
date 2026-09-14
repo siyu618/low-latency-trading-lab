@@ -63,9 +63,15 @@ rather than presenting a single "tail latency of the queue."
 
 On the canonical dataset that regime turned out to be **stable per cell** rather
 than shifting within one: six of the nine cells sit at the handoff floor in every
-one of their repetitions and three sit in the drain regime in every one. That is
-a result, not an assumption — Q4 and Q7 in the results section establish it from
-the retry counters and the measured latencies.
+one of their repetitions and three behave as the drain regime predicts in every
+one. That is a result, not an assumption — Q4 and Q7 in the results section
+establish it from the retry counters and the measured latencies.
+
+**What classifies a cell is the retry counters and the latency level, not a
+recorded queue depth.** This harness records **no queue occupancy and no
+producer lead**. "Which side is waiting" is directly established by which retry
+counter dominates; the backlog that follows from it is an **inference the
+numbers are consistent with**, and the results section words it that way.
 
 ## The queue under test
 
@@ -182,6 +188,13 @@ is a second, independently addressed memory working set whose footprint scales
 with **capacity**, which contaminates exactly the capacity comparison this phase
 exists to make. (The superseded dataset did use one; see
 `docs/results/spsc-tail-latency-superseded-per-message-timestamp/SUPERSEDED.md`.)
+
+The advantage is **structural, not that the stamp is free.** A sampled message
+still has its `ready_ticks` field written by the producer and read by the
+consumer. What carrying it inside the message buys is that the stamp **reuses the
+existing payload publication path** and avoids an **additional, independently
+addressed, capacity-dependent shared-memory working set** — it does not remove
+the write or the read.
 
 **Instrumentation is sparse, and the dataset proves it.** `Clock::now()` is
 called *only* for sampled messages — ~9,696 times per repetition per thread, not
@@ -625,21 +638,29 @@ MEASURED — retries summed over each cell's 20 repetitions (200M messages each)
 | 64 B / 4096 B | 120,396 | 77,534,424 | 544,316 |
 | 64 B / 65536 B | 1,952,833 | 26,425,067 | 12,311 |
 
-MEASURED. The two groups differ in **which thread waits**, and the side that
-accumulates retries is the side being held up — which makes the *other* side the
-pace-limiting one:
+MEASURED. The two groups differ in **which thread waits**, and the retry counters
+establish that directly: the side that accumulates retries is the side being held
+up, which makes the *other* side the pace-limiting one.
 
 - **In the six fast-band (16 B and 32 B) cells the consumer is the side that
   waits.** It spins empty 0.93–2.5 **billion** times while the producer almost
-  never finds the ring full. A consumer that is repeatedly finding the ring
-  empty is a consumer waiting for work, so the **producer** is the pace-limiting
-  / slower side here; the ring is essentially empty, and the consumer is often
-  already waiting when a sampled message is published.
+  never finds the ring full. Dominant consumer-empty retries mean the consumer is
+  waiting for the producer, so the **producer** is the pace-limiting / slower side
+  here. The measured latencies are then **consistent with an often-empty /
+  low-backlog regime**: the consumer is frequently already waiting when a sampled
+  message is published, so the interval is close to the handoff itself.
 - **In the three 64 B cells it inverts.** The producer is blocked **26–204
   million** times and the consumer spins empty only 12 thousand to 3.9 million
-  times. A producer that is repeatedly finding the ring full is a producer
-  waiting for room, so the **consumer** is the pace-limiting / slower side here;
-  the producer runs ahead and the ring stays full or near-full.
+  times. Dominant producer-full retries mean the producer is waiting for the
+  consumer, so the **consumer** is the pace-limiting / slower side here, and the
+  producer is able to run ahead. The measured latencies are then **consistent
+  with a full / near-full backlog regime**.
+
+LIMITATION. Occupancy itself is **not directly recorded**. There is no queue-depth
+or producer-lead instrument in this harness, so "an often-empty / low-backlog
+regime" and "a full / near-full backlog regime" are readings the retry counters
+and the latency levels support, **not measured occupancies**. What is measured is
+which counter dominates; what follows about the backlog is inference.
 
 The distinction matters because "the producer is blocked" is **not** the same
 statement as "the producer is the bottleneck". A blocked producer is a producer
@@ -663,21 +684,23 @@ the *all-20* median `ns_per_message` (31.321, 31.071, 30.881 ns) — gives 0.937
 the observation is the same either way: P50 is **≈ 0.95 of one full ring's drain
 time** (0.946–0.959), `capacity × ns_per_message`, in all three cells.
 
-INTERPRETATION, offered only as a hypothesis these numbers are consistent with:
-in a consumer-limited regime the producer runs ahead and keeps the ring full, so
-a sampled message is enqueued behind approximately one ring of queued work and
-waits for the consumer to drain everything ahead of it — and the wait is set by
-how much ring there is to drain, not by how often the producer is blocked.
-**This mechanism is consistent with the numbers; it is not proven by them.**
-Producer lead is not instrumented, the backlog ahead of a sampled message is not
-observed, and the 0.95 agreement is a single comparison per cell across three
-cells, not a fit. No cache, coherence, scheduler or core-placement cause is
-asserted here for why the 64 B cells are the slow ones, and none may be inferred
-from this relationship.
+INTERPRETATION, offered only as a hypothesis these numbers are **consistent
+with**: in a consumer-limited regime the producer is able to run ahead, so a
+sampled message is enqueued behind approximately one ring of queued work and
+waits for the consumer to drain what is ahead of it — and the wait is set by how
+much ring there is to drain, not by how often the producer is blocked.
+**This one-ring drain / backlog model is consistent with the numbers; it does
+not prove them, and the numbers do not prove it.** Occupancy and producer lead
+are not instrumented, the backlog ahead of a sampled message is not observed, and
+the 0.95 agreement is a single comparison per cell across three cells, not a fit.
+No cache, coherence, scheduler or core-placement cause is asserted here for why
+the 64 B cells are the slow ones, and none may be inferred from this
+relationship.
 
 MEASURED, for contrast: in the six fast-band cells the same product is
-`1024 × 32.88 = 33.7 µs` against a measured P50 of 125 ns. The ring is nowhere
-near full there and the drain model does not apply at all.
+`1024 × 32.88 = 33.7 µs` against a measured P50 of 125 ns — three to four orders
+of magnitude apart. Whatever backlog exists there is nowhere near one ring deep,
+and the drain model does not apply.
 
 ### Q5 — Which observations are timer-resolution-limited?
 
@@ -871,5 +894,5 @@ phase: it characterizes the frozen queue and opens no new optimization. No
 further SPSC optimization phase is started from here — no Phase 5, no MPMC, no
 disruptor, no futex work.
 
-**The next repository work is Experiment 03 — Market Data Pipeline.** See the
+**The next engineering task is Experiment 03 — Market Data Pipeline.** See the
 top-level `README.md` for the canonical status line.

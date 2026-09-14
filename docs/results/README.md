@@ -202,7 +202,11 @@ measurement family. Transient raw runs land in repo-root `results/`
   three (all 64 B) sit at 30.0 µs / 120.4 µs / 1.95 ms with 1.05–1.09× session
   spread; the fast band is **timer-resolution-limited** (125 ns is three 41.7 ns
   quanta; 92–95% of its samples are within four quanta of zero); the two groups
-  differ in which thread waits; and extreme maxima are isolated in seven of nine
+  differ in which thread waits — established directly by which retry counter
+  dominates, and **no queue occupancy or producer lead is recorded anywhere in
+  this dataset**, so the associated backlog is described as *consistent with* an
+  often-empty or full/near-full regime rather than as a measured occupancy; and
+  extreme maxima are isolated in seven of nine
   cells — 32 B / 65536 is the exception, with 7 of 20 repetitions above 5× the
   cell's median maximum, named as a contamination *candidate* and **not
   censored**. The previous canonical pass — same cells, but per-message

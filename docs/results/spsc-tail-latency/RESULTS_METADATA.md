@@ -153,21 +153,29 @@ fixed cell, 10M messages, 5 consecutive repetitions per process):
   and 125 ns is three quanta. In the six fast cells **92–95%** of samples lie
   within four quanta of zero and **53–72%** are exactly 125 ns; in the three slow
   cells, 0.00% are within a microsecond.
-- **The two groups differ in which thread waits**, and the waiting side is the
-  held-up one — so the *other* side is pace-limiting. In the fast (16 B / 32 B)
-  cells the consumer spins empty 0.93–2.5 **billion** times while the producer
-  almost never finds the ring full: the **producer** is pace-limiting and the
-  ring is essentially empty. In the 64 B cells the producer is blocked 26–204
+- **The two groups differ in which thread waits**, and the retry counters
+  establish that directly — the side that accumulates retries is the held-up one,
+  so the *other* side is pace-limiting. In the fast (16 B / 32 B) cells the
+  consumer spins empty 0.93–2.5 **billion** times while the producer almost never
+  finds the ring full: dominant consumer-empty retries mean the **producer** is
+  pace-limiting, and the latencies are **consistent with an often-empty /
+  low-backlog regime**. In the 64 B cells the producer is blocked 26–204
   **million** times and the consumer spins empty only 12 thousand to 3.9 million
-  times: the **consumer** is pace-limiting and the ring stays full. A blocked
-  producer is not a bottleneck producer.
+  times: the **consumer** is pace-limiting, and the latencies are **consistent
+  with a full / near-full backlog regime**. A blocked producer is not a bottleneck
+  producer.
+- **Occupancy is not directly recorded.** No queue-depth or producer-lead
+  quantity is instrumented anywhere in this dataset, so "often-empty /
+  low-backlog" and "full / near-full backlog" are readings the retry counters and
+  the latency levels support, **not measured occupancies**.
 - **Within the slow band, larger capacity means fewer producer stalls but longer
   measured latency.** P50 is **≈ 0.95 of one full ring's drain time**
   (`capacity × ns_per_message`) in all three: **0.954, 0.946, 0.959**, computed
   from the cell's PRIMARY values on both sides of the ratio. Dividing the
   session-blocked P50 by the *all-20* `ns_per_message` instead gives 0.937,
   0.946, 0.965; the two levels must not be mixed inside one ratio. Either way the
-  observation is the same, and it is an observation, not a mechanism.
+  observation is the same. It is **consistent with** a one-ring drain/backlog
+  model and **does not prove** it.
 - **Extreme maxima are largely isolated, with one cell where they are not.**
   In seven of nine cells 1–3 of 20 repetitions exceed 5× the cell's median
   maximum. In **32 B / 65536** it is **7 of 20**, including three consecutive
@@ -190,9 +198,18 @@ contract failures, and all **5,240,804** raw→summary checks passed.
   cache-miss, coherence-event, cache-line-transfer, preemption, scheduler,
   core-migration, P-core/E-core, frequency or thermal quantity was measured, and
   none may be inferred from a latency value.
-- **No claim that the 64 B cells are slow *because of* anything.** The drain-time
-  relationship in Q4 is a hypothesis the numbers are consistent with, and
-  producer lead is not instrumented; it is not confirmed here.
+- **No claim that the 64 B cells are slow *because of* anything.** The one-ring
+  drain/backlog relationship in Q4 is a hypothesis the numbers are consistent
+  with — neither side proves the other: occupancy and producer lead are not
+  instrumented, so nothing here confirms the model.
+- **No measured queue occupancy or producer lead.** Neither quantity is recorded
+  by this harness, so no statement about how full the ring was at any moment is a
+  measurement.
+- **No claim that the timestamp transport is free.** Carrying the stamp in the
+  message still writes the field on the producer and reads it on the consumer.
+  The advantage over the superseded side-array design is structural: it reuses
+  the existing payload publication path and avoids a second, independently
+  addressed, capacity-dependent shared-memory path.
 - **No claim that the 64-byte payload *size* causes anything.** The size axis is
   a **message shape**: 16 / 32 / 64 B are three distinct types that differ in
   per-message deterministic construction and validation work as well as in width,

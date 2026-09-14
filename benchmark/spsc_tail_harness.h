@@ -170,8 +170,14 @@ constexpr bool stamp_contract_ok(std::int64_t ready_ticks,
 // map or shared metadata structure holding stamps. A side array is a second,
 // independently addressed memory working set whose footprint scales with
 // capacity, which contaminates the capacity comparison this phase exists to
-// make; it also forces a write and a read per message. The superseded dataset
-// did use one, and its `SUPERSEDED.md` records why that was wrong.
+// make. The superseded dataset did use one, and its `SUPERSEDED.md` records why
+// that was wrong.
+//
+// The advantage is STRUCTURAL, not that the stamp is free: a sampled message
+// still has its `ready_ticks` field written by the producer and read by the
+// consumer. What carrying it in the message buys is that the stamp reuses the
+// existing payload publication path instead of adding a second independently
+// addressed producer-to-consumer shared-memory path.
 //
 // Every DETERMINISTIC field is re-derived from the sequence number on receipt, so
 // a torn, stale or partially published payload is DETECTABLE. A validator that

@@ -100,7 +100,10 @@ directories.
 > sparse and the dataset proves it** — 9,696 clock reads per thread per
 > repetition, not 10,000,000, each repetition's own counters checked against the
 > derived count, with the stamp carried *inside* the sampled message rather than
-> in a capacity-sized side array. Its result is a **stable
+> in a capacity-sized side array — a **structural** advantage (it reuses the
+> existing payload publication path and adds no second, independently addressed
+> shared-memory path), not a claim that the stamp costs neither a write nor a
+> read. Its result is a **stable
 > bimodality**: the nine cells split into six whose session-blocked **P50 is
 > exactly 125 ns in all 120 of their repetitions** (every 16 B and 32 B cell, at
 > every capacity) and three — all 64 B — at 30.0 µs / 120.4 µs / 1.95 ms, stable
@@ -108,11 +111,16 @@ directories.
 > 125 ns is three 41.7 ns clock quanta, and 92–95% of those cells' samples lie
 > within four quanta of zero. The two groups differ in **which thread waits**,
 > and the waiting side is the held-up one, so the *other* side is pace-limiting:
-> the fast cells are consumer-starved (producer pace-limiting, ring essentially
-> empty), the 64 B cells are producer-blocked (consumer pace-limiting, ring
-> full). Within the slow band a larger capacity means fewer producer stalls but a
+> the fast cells are consumer-starved (producer pace-limiting, latencies
+> **consistent with an often-empty / low-backlog regime**), the 64 B cells are
+> producer-blocked (consumer pace-limiting, latencies **consistent with a full /
+> near-full backlog regime**). Occupancy itself is not recorded — no queue-depth
+> or producer-lead instrument exists in this harness — so the backlog is a
+> reading the retry counters and latency levels support, not a measurement.
+> Within the slow band a larger capacity means fewer producer stalls but a
 > *longer* measured latency, **≈ 0.95 of one full ring's drain time**, which is
-> consistent with a consumer-limited drain model but does not confirm it.
+> consistent with a one-ring drain/backlog model but neither proves it nor is
+> proved by it.
 > Percentiles are reported at the **session-blocked** level (repetition → median
 > of 5 → median of 4 session medians) as PRIMARY; the all-20 median is a labelled
 > diagnostic only — two different estimands under two different aggregation
@@ -569,9 +577,11 @@ and it opens no new optimization. **Result: a stable bimodality** — six cells
 their repetitions**, and the three 64 B cells sit at 30.0 µs / 120.4 µs /
 1.95 ms, stable to 1.05–1.09× across sessions; the two groups differ in which
 thread waits — consumer-starved/producer-limited in the fast cells,
-producer-blocked/consumer-limited in the 64 B cells — and within the slow band a
-larger capacity means a *longer* measured latency (≈ 0.95 of one full ring's
-drain time, a hypothesis the numbers are consistent with rather than a proven
+producer-blocked/consumer-limited in the 64 B cells, with the backlog described
+only as *consistent with* empty/near-full since occupancy is not recorded — and
+within the slow band a larger capacity means a *longer* measured latency
+(≈ 0.95 of one full ring's drain time, a one-ring drain/backlog model the numbers
+are consistent with rather than a proven
 mechanism). The fast band is **timer-resolution-limited** (125 ns is three
 41.7 ns quanta; 92–95% of its samples are within four quanta of zero) — not
 "the timer, not the queue". See
@@ -1071,7 +1081,11 @@ optimization**. Every number in it is attributable to a single configuration.
   **fail**, not silently produce the same 9,696 latencies. The stamp travels
   **inside** the sampled message along the SPSC payload path; there is no
   side array and therefore no second, capacity-dependent memory footprint in the
-  measured path.
+  measured path. The advantage is **structural, not that the stamp is free**: a
+  sampled message still has its `ready_ticks` field written by the producer and
+  read by the consumer. What the in-message transport buys is that the stamp
+  **reuses the existing payload publication path** instead of adding a second
+  independently addressed producer-to-consumer shared-memory path.
 - **The measured quantity** is `producer_ready → consumer_received` on
   `steady_clock`, stamped immediately **before** the producer's `try_push` retry
   loop and immediately **after** a successful `try_pop`. It therefore
@@ -1115,24 +1129,29 @@ optimization**. Every number in it is attributable to a single configuration.
   exact or the build fails. What is claimed is "timer-resolution-limited", never
   "the latency is the timer, not the queue": the queue is doing real work at a
   scale this clock bounds but does not resolve.
-- **Capacity.** The two groups differ in **which thread waits**, and the side
-  that accumulates retries is the side being held up — so the *other* side is the
-  pace-limiting one. In the fast (16 B / 32 B) cells the **consumer** spins empty
-  0.93–2.5 **billion** times while the producer almost never finds the ring full:
-  the consumer is waiting for work, so the **producer** is pace-limiting and the
-  ring is essentially empty. In the 64 B cells it inverts — the producer is
-  blocked 26–204 **million** times and the consumer spins empty only 12 thousand
-  to 3.9 million times: a producer waiting for room is a producer that cannot get
-  ahead, so the **consumer** is pace-limiting and the ring stays full. "The
-  producer is blocked" is **not** the same statement as "the producer is the
-  bottleneck". Within the slow band a larger capacity means **fewer** producer
-  stalls but a **longer** measured latency — P50 is **≈ 0.95 of one full ring's
-  drain time** (`capacity × ns_per_message`, 0.946–0.959) in all three, which is
-  **consistent with** a consumer-limited drain model in which the producer runs
-  ahead and a sampled message waits behind roughly one ring of queued work. It
-  **does not confirm** that mechanism: producer lead and the backlog ahead of a
-  sampled message are not instrumented, and **no** cache, coherence, scheduler or
-  core-placement cause is asserted for it.
+- **Capacity.** The two groups differ in **which thread waits**, and the retry
+  counters establish that directly: the side that accumulates retries is the side
+  being held up, so the *other* side is pace-limiting. In the fast (16 B / 32 B)
+  cells the **consumer** spins empty 0.93–2.5 **billion** times while the producer
+  almost never finds the ring full — dominant consumer-empty retries mean the
+  consumer is waiting for the producer, so the **producer** is pace-limiting, and
+  the latencies are **consistent with an often-empty / low-backlog regime**. In
+  the 64 B cells it inverts — the producer is blocked 26–204 **million** times
+  and the consumer spins empty only 12 thousand to 3.9 million times, so the
+  **consumer** is pace-limiting and the latencies are **consistent with a full /
+  near-full backlog regime**. "The producer is blocked" is **not** the same
+  statement as "the producer is the bottleneck". **Occupancy is not directly
+  recorded** — there is no queue-depth or producer-lead instrument — so those two
+  regime descriptions are readings the counters and latency levels support, not
+  measured occupancies. Within the slow band a larger capacity means **fewer**
+  producer stalls but a **longer** measured latency — P50 is **≈ 0.95 of one full
+  ring's drain time** (`capacity × ns_per_message`, 0.946–0.959) in all three,
+  which is **consistent with** a one-ring drain/backlog model in which the
+  producer is able to run ahead and a sampled message waits behind roughly one
+  ring of queued work. It **neither proves that model nor is proved by it**: the
+  model is a hypothesis the numbers fit, occupancy and producer lead are not
+  instrumented, and **no** cache, coherence, scheduler or core-placement cause is
+  asserted for it.
 - **The size axis is a message *shape*, not a payload byte count.** 16 / 32 / 64 B
   are three distinct message types that differ in their per-message deterministic
   construction and validation work as well as in width, and this design does
@@ -1204,4 +1223,5 @@ treatments and opens no optimization). No further Experiment 02 phase is
 planned; in particular Phase 4 does **not** start a new SPSC optimization phase.
 No Phase 5, no MPMC, no disruptor and no futex work is opened here.
 
-**The next repository work is Experiment 03 — Market Data Pipeline.**
+Experiment 02 is **COMPLETE / FROZEN**. **The next engineering task is
+Experiment 03 — Market Data Pipeline.**
