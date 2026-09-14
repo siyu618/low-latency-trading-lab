@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 // ---------------------------------------------------------------------------
 // Experiment 03 Phase 1B — the synthetic wire protocol.
@@ -45,6 +46,36 @@
 // undefined behaviour on strict-alignment targets. The header is the contract;
 // the struct is not.
 //
+// THE SEQUENCE DOMAIN. `sequence` is ENCODED as a uint64, so all 2^64 bit
+// patterns can be carried on the wire and a decoder that reads it will produce
+// a value for every one of them. The PROTOCOL-VALID domain is narrower:
+//
+//     1 .. UINT64_MAX - 1        valid
+//     0                          reserved, rejected as InvalidSequence
+//     UINT64_MAX                 reserved, rejected as InvalidSequence
+//
+// The two reserved values are not arbitrary. The sequencer downstream computes
+// `seq + 1` to track the next expected sequence, so UINT64_MAX would wrap to 0
+// and a pipeline that had just accepted such a SnapshotBegin would come up
+// expecting sequence 0 — a watermark that can never be met, since 0 is not a
+// valid sequence either. That is a state the sequencer's own precondition
+// forbids ("sequence numbers are strictly positive and below UINT64_MAX",
+// market_data_pipeline.h), and the decoder is where it has to be caught: the
+// sequencer is frozen, and this is a property of the bytes, not of the stream's
+// history.
+//
+// Rejecting 0 is the same rule seen from the other end. A sequence of 0 is
+// outside the domain whether it arrives on the wire or is produced by a wrap,
+// so the domain is stated once, here, as a closed range rather than as a special
+// case at the top.
+//
+// WHAT IS *NOT* MOVED HERE. The sequence layer still owns stale, duplicate,
+// expected, gap and snapshot-continuity rules. The decoder decides only whether
+// a sequence is a REPRESENTABLE member of the domain — a field-domain check, on
+// the same footing as `side` or `price_tick`, not a sequencing decision. It
+// answers "could this number be part of any valid stream", never "is it the
+// right number for THIS stream".
+//
 // THREE LAYERS OF VALIDITY, and this file is only the first:
 //
 //   wire validity      the bytes are a well-formed message of this protocol
@@ -72,6 +103,17 @@ namespace llmd::wire {
 // any other field is trusted.
 // ---------------------------------------------------------------------------
 inline constexpr std::uint8_t kVersion = 1;
+
+// ---- the sequence domain --------------------------------------------------
+//
+// The valid domain is the CLOSED range [kMinSequence, kMaxSequence]. It is
+// written as a minimum and a maximum rather than as two exclusions because the
+// decoder checks it as a range: `sequence < kMinSequence || sequence >
+// kMaxSequence`. Stating it as the set of values that ARE valid keeps the check
+// and the documentation the same sentence.
+inline constexpr std::uint64_t kMinSequence = 1;
+inline constexpr std::uint64_t kMaxSequence =
+    std::numeric_limits<std::uint64_t>::max() - 1;
 
 // ---- field widths and offsets ---------------------------------------------
 

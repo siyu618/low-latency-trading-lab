@@ -197,10 +197,16 @@ namespace (`llmd`), leaving the Experiment 01/02 trees untouched.
 > compare against literal byte constants so an encoder and decoder written by the
 > same hand cannot agree on a wrong byte order unnoticed — a sabotage run that
 > reversed both helpers consistently left every round-trip suite green and failed
-> only the literal-byte suites. All green under CTest (33/33 including the
-> exit-code guards), byte-identical across two runs, and clean under ASan and
-> UBSan. Methodology: `docs/MARKET_DATA_PIPELINE.md`; wire protocol and decoder
-> contract: `docs/MARKET_DATA_PROTOCOL.md`.
+> only the literal-byte suites. The protocol's sequence domain is
+> `[1, UINT64_MAX - 1]`: `0` and `UINT64_MAX` are reserved and rejected as
+> `InvalidSequence`, because the frozen sequencer tracks the next sequence as
+> `seq + 1` and a reserved value would wrap its watermark to a sequence no
+> message could ever meet. That is a field-domain rule, not a sequencing one —
+> stale, duplicate, gap and snapshot continuity all remain the pipeline's. All
+> green under CTest (33/33 including the exit-code guards), byte-identical across
+> two runs, and clean under ASan and UBSan. Methodology:
+> `docs/MARKET_DATA_PIPELINE.md`; wire protocol and decoder contract:
+> `docs/MARKET_DATA_PROTOCOL.md`.
 
 ## Experiments
 
@@ -1518,6 +1524,19 @@ behaviour on strict-alignment targets. Every field is assembled by explicit
 shifts and masks — no `reinterpret_cast` to an integer pointer, no packed struct,
 no unaligned load, no host-endian assumption.
 
+**The sequence domain is `[1, UINT64_MAX - 1]`.** `sequence` is *encoded* as a
+`uint64`, so all 2⁶⁴ patterns can be carried, but the two ends of the range are
+reserved and rejected as `InvalidSequence`: `0`, and `UINT64_MAX`. The top is
+reserved because the sequencer tracks the next expected sequence as `seq + 1`,
+so a `SnapshotBegin` at `UINT64_MAX` would wrap its watermark to `0` — a sequence
+that is itself outside the domain and can never be met. The sequencer documents
+that precondition and deliberately does not defend it (the branch would cost
+every message to rule out a case no feed produces); the decoder is where it gets
+enforced, because it is a property of the bytes. This is a **field-domain** rule,
+not a sequencing one — it says a number is representable in *some* stream, never
+that it is right for *this* one, so stale, duplicate, gap and snapshot
+continuity all stay in the pipeline.
+
 #### The one invariant that matters
 
 ```
@@ -1555,7 +1574,7 @@ sent me garbage":
 
 | Layer | Question | Owner | Example rejection |
 |---|---|---|---|
-| **Wire** | Are these bytes a well-formed message? | `md_decoder.h` | `InvalidSide`, `InvalidLength` |
+| **Wire** | Are these bytes a well-formed message? | `md_decoder.h` | `InvalidSide`, `InvalidLength`, `InvalidSequence` |
 | **Sequence** | Is it in order for this stream? | `market_data_pipeline.h` | `Stale`, `GapDetected` |
 | **Book** | Is it applicable to this book? | `types.h` | `OutOfRange`, `InvalidUpdate` |
 
@@ -1568,7 +1587,7 @@ that did would be reaching across the seam.
 
 #### Verification, and what it cannot do
 
-Six suites in `md_decoder_tests.cpp`:
+Seven suites in `md_decoder_tests.cpp`:
 
 - **Literal expected bytes** for `SnapshotBegin`, `Level` Bid, `Level` Ask and
   `SnapshotEnd`, written out by hand from the protocol document, plus signed
@@ -1589,18 +1608,59 @@ Six suites in `md_decoder_tests.cpp`:
   and each asserted not to have published output. Sampling prefix lengths would
   miss the interesting boundary — a `Level` truncated to 20 bytes has already
   read a valid header declaring 17 payload bytes.
-- **Malformed frames**: every rejection path, each asserting `consumed == 0`
-  **and** that the output was not modified.
+- **Malformed frames**: every rejection path — bad version, unassigned type,
+  wrong length, reserved sequence, bad side, non-positive price, negative
+  quantity — each asserting `consumed == 0` **and** that the output was not
+  modified. The sequence cases are literal all-zero and all-ones headers, and the
+  two inclusive ends of the domain are checked to survive at full 64-bit width.
 - **Bytes → decoder → pipeline**: one focused fixture run through both
   `MarketDataPipeline<FlatOrderBook>` and `<MapOrderBook>`, requiring agreement
   on decoder statuses, exact consumed bytes, pipeline outcomes, state,
   `last_applied_seq` and top of book.
+- **Decode failure leaves the pipeline untouched** — the composed invariant:
+
+  ```
+  decode failure → no typed message publication → no sequencer/book mutation
+  ```
+
+  Each half is tested separately, and neither half proves the composition, which
+  is where the contract actually lives: the pipeline has no way to know that the
+  message it was handed did not come from a successful decode. So a valid `Live`
+  pipeline is established **through the decoder**, every observable value is
+  recorded, a malformed frame is presented, and all of it is required to be
+  exactly where it was. `apply()` is never called, because there is no message to
+  apply. The fixture asserts its own precondition first (`Live`, cursor 4, two
+  levels) — an empty pipeline would "not change" for trivial reasons.
 
 **The 1550-trace Phase-1A differential corpus is deliberately not run through the
 byte decoder.** That corpus exists to exercise the sequencer; putting an encoder
 in front of it would test the encoder against the decoder rather than either
 against its contract. One integration fixture establishes that the pieces
 compose, and the sequencer's own verification is unchanged.
+
+### The defect this hardening closed
+
+**Both layers were green while the contract between them was violated.** The
+sequencer documents `sequence > 0` and `sequence < UINT64_MAX` as a precondition
+and does not defend it, deliberately — the branch would cost every message to
+rule out a case no feed produces. The decoder accepted the entire `uint64`
+domain. Composed, `decode SnapshotBegin(UINT64_MAX)` returned `Ok`, the pipeline
+entered `Snapshot`, and `expected()` became `0` after the wrap: a watermark no
+message could ever meet. The decoder's suites were green because they only ever
+produced in-domain sequences from the encoder; the sequencer's suites were green
+because they only ever built messages by hand, in-domain. **Neither suite crossed
+the seam, so neither could see it** — the same failure mode as the Phase-1A
+freshness defect, in a different pair of layers. The fix is a two-line range
+check on a header field plus a suite that crosses the seam; the reason it was
+missing is that each side's tests were written against its own contract rather
+than against the composition of the two.
+
+Both new tests were verified by sabotage: removing the range check fails the
+sequence cases, and making the decoder publish before validating is caught by the
+composed suite. That second sabotage also exposed a **bug in the new test
+itself** — the invalid-`side` frame was 21 bytes rather than 29, so it returned
+`NeedMoreData` and passed for the wrong reason until the missing sequence bytes
+were added.
 
 ### Running it
 
@@ -1644,13 +1704,14 @@ Phase 1A — sequencer / snapshot / recovery:
 Phase 1B — binary protocol / decoder:
 
 - `market-data-pipeline/include/md_wire_protocol.h` — the byte layout, message
-  IDs, version, offsets and the big-endian read/write helpers.
+  IDs, version, offsets, the sequence domain and the big-endian read/write
+  helpers.
 - `market-data-pipeline/include/md_decoder.h` — `DecodeStatus`, `DecodeOutcome`
   and the allocation-free `decode_one()`.
 - `market-data-pipeline/include/md_encoder.h` — the test-and-fixture encoder. It
   allocates and is not the hot path; `append_raw` sets every header field
   verbatim, which is how the malformed frames are built.
-- `market-data-pipeline/tests/md_decoder_tests.cpp` — six suites, all green.
+- `market-data-pipeline/tests/md_decoder_tests.cpp` — seven suites, all green.
 - `docs/MARKET_DATA_PROTOCOL.md` — the wire format byte by byte, the decoder's
   status semantics, the stream contract and the three validity layers.
 

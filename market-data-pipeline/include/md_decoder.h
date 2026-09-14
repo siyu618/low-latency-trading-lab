@@ -30,6 +30,14 @@
 // the book trades. Those are the pipeline's question and the book's question
 // respectively. See the three-layer note at the top of md_wire_protocol.h.
 //
+// The one sequence-shaped thing it DOES enforce is the FIELD DOMAIN: 0 and
+// UINT64_MAX are reserved and rejected as `InvalidSequence`, because the
+// sequencer downstream computes `seq + 1` and a reserved value would wrap it.
+// That is a statement about which numbers are representable at all, not about
+// whether a given number is next — the same kind of check as `side`, and it is
+// the reason the frozen sequencer's documented precondition holds for every
+// message this decoder can produce.
+//
 // HOT-PATH CONTRACT. `decode_one` is:
 //
 //   * allocation-free — it writes into a caller-provided `MdMessage` and
@@ -69,6 +77,7 @@ enum class DecodeStatus : std::uint8_t {
     InvalidVersion,   // header version is not kVersion
     InvalidType,      // message_type is not one of the three known IDs
     InvalidLength,    // payload_length disagrees with the message_type
+    InvalidSequence,  // header sequence is outside [kMinSequence, kMaxSequence]
     InvalidSide,      // Level side is neither Bid nor Ask
     InvalidPrice,     // Level price_tick <= 0
     InvalidQuantity,  // Level quantity < 0
@@ -81,6 +90,7 @@ inline const char* decode_status_name(DecodeStatus s) noexcept {
         case DecodeStatus::InvalidVersion:  return "InvalidVersion";
         case DecodeStatus::InvalidType:     return "InvalidType";
         case DecodeStatus::InvalidLength:   return "InvalidLength";
+        case DecodeStatus::InvalidSequence: return "InvalidSequence";
         case DecodeStatus::InvalidSide:     return "InvalidSide";
         case DecodeStatus::InvalidPrice:    return "InvalidPrice";
         case DecodeStatus::InvalidQuantity: return "InvalidQuantity";
@@ -141,6 +151,22 @@ struct DecodeOutcome {
     // nothing after it is trusted until it is known to be ours.
     if (version != kVersion) {
         return DecodeOutcome{DecodeStatus::InvalidVersion, 0};
+    }
+
+    // The sequence domain, checked here because it is a HEADER field common to
+    // every message type — like `version`, it is validated before the type is
+    // consulted, so a frame with both a bad sequence and a bad type reports the
+    // sequence. Like the payload_length check below, it is decided on the header
+    // ALONE: those 8 bytes are already fully present, so a frame carrying a
+    // reserved sequence is definitively malformed whatever arrives next, and
+    // answering `NeedMoreData` would ask the caller to wait for bytes that can
+    // only ever produce this same rejection.
+    //
+    // This is a FIELD-DOMAIN rule, not a sequencing rule. It says a sequence is
+    // representable in a stream, never that it is the right one for this stream.
+    // Stale, duplicate, gap and snapshot-continuity remain the pipeline's.
+    if (sequence < kMinSequence || sequence > kMaxSequence) {
+        return DecodeOutcome{DecodeStatus::InvalidSequence, 0};
     }
 
     switch (static_cast<MessageType>(type)) {

@@ -58,10 +58,54 @@ Offsets are from the start of the message.
 | 0 | 1 | `uint8` | `message_type` | 1, 2 or 3 |
 | 1 | 1 | `uint8` | `version` | exactly 1 |
 | 2 | 2 | `uint16` | `payload_length` | big endian |
-| 4 | 8 | `uint64` | `sequence` | big endian |
+| 4 | 8 | `uint64` | `sequence` | big endian; see the domain below |
 
 Version is currently **1**. `payload_length` describes the payload only — it
 excludes the 12-byte header.
+
+### The sequence domain
+
+`sequence` is **encoded** as a `uint64`, so every one of the 2⁶⁴ bit patterns
+can be carried and a decoder reading the field produces a value for all of them.
+The **protocol-valid** domain is narrower:
+
+| Value | Status |
+|---|---|
+| `1` … `UINT64_MAX - 1` | valid |
+| `0` | reserved → `InvalidSequence` |
+| `UINT64_MAX` | reserved → `InvalidSequence` |
+
+Both reserved values are rejected, with `consumed == 0` and the output message
+left untouched. The check is on the **header**, so it is decided before the
+message type is consulted: a frame that is wrong in both ways reports
+`InvalidSequence`, in the same way that a frame with a bad version reports
+`InvalidVersion`.
+
+**Why the top of the range is reserved.** The sequencer downstream tracks the
+next expected sequence as `seq + 1`. A `SnapshotBegin` at `UINT64_MAX` would wrap
+that to `0`, leaving the pipeline in `Snapshot` state expecting a sequence that
+is itself outside the domain — a watermark no message could ever meet, and a
+state the sequencer's own precondition forbids:
+
+> PRECONDITION: sequence numbers are strictly positive and below UINT64_MAX.
+> `snap_expected_ = seq + 1` and `lost_span = observed - first_missing` both wrap
+> at the top of the range.
+> — `market_data_pipeline.h`
+
+The sequencer does not defend against that, deliberately: the branch would cost
+every message to rule out a case no feed produces. It states the precondition
+instead, and the decoder is where it is enforced — the sequencer is frozen, and
+this is a property of the bytes rather than of any stream's history.
+
+Reserving `0` is the same rule from the other end. Zero is outside the domain
+whether it arrives on the wire or is produced by a wrap, so the domain is stated
+once as a closed range rather than as a special case at the top.
+
+**This is a field-domain rule, not a sequencing rule.** It says a sequence is
+representable in *some* stream, never that it is the right one for *this* stream.
+Stale, duplicate, `expected`, gap and snapshot-continuity all remain the
+pipeline's. A duplicate or wildly out-of-order sequence is in-domain and decodes
+cleanly — the decoder has no opinion about it, which is pinned by test.
 
 ## Message types
 
@@ -133,6 +177,7 @@ DecodeOutcome decode_one(std::span<const std::byte> input, MdMessage& out) noexc
 | `InvalidVersion` | Header version is not 1 | yes |
 | `InvalidType` | `message_type` is not 1, 2 or 3 | yes |
 | `InvalidLength` | `payload_length` disagrees with `message_type` | yes |
+| `InvalidSequence` | `sequence` is not in `[1, UINT64_MAX - 1]` | yes |
 | `InvalidSide` | `Level` side is neither 0 nor 1 | yes |
 | `InvalidPrice` | `Level` `price_tick <= 0` | yes |
 | `InvalidQuantity` | `Level` `quantity < 0` | yes |
@@ -147,7 +192,7 @@ Two alternatives were rejected because they look simpler:
 - **A single `Invalid` status** would collapse "wait for more" into "give up" —
   the difference between a decoder that works on a socket and one that discards
   valid data whenever a read lands mid-message.
-- **Folding the three field-level statuses into one `Malformed`** would make a
+- **Folding the field-level statuses into one `Malformed`** would make a
   venue-side bug indistinguishable from corruption in the counters an operator
   reads.
 
@@ -174,13 +219,22 @@ constantly on a real socket.
 2. Read `message_type`, `version`, `payload_length`, `sequence`.
 3. `version != 1` → `InvalidVersion`. Checked first because it is the field that
    says how to read everything else.
-4. Dispatch on `message_type`; unassigned → `InvalidType`.
-5. `payload_length` checked **against the message type**, before waiting for
+4. `sequence` outside `[1, UINT64_MAX - 1]` → `InvalidSequence`. A header field
+   common to every type, so it is settled alongside `version` and before the
+   type is consulted.
+5. Dispatch on `message_type`; unassigned → `InvalidType`.
+6. `payload_length` checked **against the message type**, before waiting for
    bytes. A frame that declares the wrong length is malformed whatever arrives
    next, and waiting for a length that can never be satisfied would let one
    corrupt header stall the decoder indefinitely.
-6. For `Level`, fewer than 29 bytes total → `NeedMoreData`.
-7. `side`, then `price_tick`, then `quantity`.
+7. For `Level`, fewer than 29 bytes total → `NeedMoreData`.
+8. `side`, then `price_tick`, then `quantity`.
+
+Steps 4 and 6 share a principle: when the offending bytes are **already
+present**, the verdict is returned immediately rather than deferred behind a
+size check. A reserved sequence is fully readable from a 12-byte header, so a
+truncated `Level` carrying one is `InvalidSequence`, not `NeedMoreData` —
+waiting could only ever produce the same rejection.
 
 ## Stream semantics
 
@@ -210,9 +264,16 @@ venue sent me a price I do not trade" from "the venue sent me garbage".
 
 | Layer | Question | Owner | Example rejection |
 |---|---|---|---|
-| **Wire validity** | Are these bytes a well-formed message of this protocol? | `md_decoder.h` | `InvalidSide`, `InvalidLength`, `NeedMoreData` |
+| **Wire validity** | Are these bytes a well-formed message of this protocol? | `md_decoder.h` | `InvalidSide`, `InvalidLength`, `InvalidSequence`, `NeedMoreData` |
 | **Sequence validity** | Is the message in order for this stream? | `market_data_pipeline.h` | `Stale`, `GapDetected`, `Rejected` |
 | **Book validity** | Is it applicable to this book? | `types.h` | `OutOfRange`, `InvalidUpdate` |
+
+`InvalidSequence` sits in the **wire** layer even though it is about a sequence
+number, and the distinction is not pedantic. The wire layer asks whether a value
+is *representable*; the sequence layer asks whether it is *correct for this
+stream*. A `Level` at sequence 7 in a stream that expects 5 passes the first and
+fails the second, and the two failures have entirely different consequences —
+one is corruption to resynchronise from, the other is a gap to recover from.
 
 ### The boundary, stated explicitly
 
@@ -270,7 +331,7 @@ literal-byte suites.
 
 ## Testing
 
-`market-data-pipeline/tests/md_decoder_tests.cpp`, six suites:
+`market-data-pipeline/tests/md_decoder_tests.cpp`, seven suites:
 
 | Suite | What it establishes |
 |---|---|
@@ -278,13 +339,51 @@ literal-byte suites.
 | big-endian helpers | The read/write helpers directly, including `-1`, `0`, all-ones and a ±300 round-trip sweep |
 | stream decoding | Five messages in one span, exact per-message `consumed`, trailing bytes tolerated |
 | truncation | Size 0; every header truncation 1–11; **every `Level` truncation 12–28**; all `NeedMoreData`, `consumed == 0`, output unpublished |
-| malformed frames | Every status: bad version, unassigned type, wrong length for all three types, bad side, non-positive price, negative quantity — each asserting `consumed == 0` **and** that `out` was not modified |
+| malformed frames | Every status: bad version, unassigned type, wrong length for all three types, reserved sequence, bad side, non-positive price, negative quantity — each asserting `consumed == 0` **and** that `out` was not modified |
 | bytes → decoder → pipeline | One focused fixture: encoded bytes through `decode_one` into `MarketDataPipeline<FlatOrderBook>` and `<MapOrderBook>`, agreeing on outcomes, state, position and top of book |
+| decode failure leaves the pipeline untouched | The composed invariant, below |
+
+### The composed invariant
+
+```
+decode failure → no typed message publication → no sequencer/book mutation
+```
+
+Each half of that chain is tested separately. The decoder suites prove a failed
+decode publishes nothing; the Phase-1A suites prove the sequencer behaves for
+every message it is given. Neither proves the **composition**, and the
+composition is where the contract lives: a caller that ignored the status and
+applied the output anyway would be applying a sentinel, and a decoder that wrote
+part of a message before failing would be handing over a real-looking
+half-message. The pipeline cannot defend against either — it has no way to know
+that the message it was handed did not come from a successful decode.
+
+So the invariant is pinned at the seam. A valid `Live` pipeline is established
+**through the decoder** (bracket at 1–4), every observable piece of state is
+recorded — state, cursor, `expected`, top of book, level count, counters — a
+malformed frame is presented, and the decode is asserted to fail with
+`consumed == 0` and an untouched output. `apply()` is **not** called, because
+there is no message to apply. Every recorded value is then required to be
+exactly where it was.
+
+The fixture deliberately confirms its own precondition first (`Live`, cursor 4,
+two levels): an empty pipeline would "not change" for trivial reasons. Two
+malformed frames are used, an invalid `side` and a reserved `sequence`, and the
+`sequence` one matters most — it is an otherwise perfect `SnapshotBegin`, so a
+caller that applied it would leave `Live` and silently reset the watermark.
 
 The truncation suite is exhaustive over prefix lengths rather than sampling
 them, because the boundary between "header complete" and "payload complete" is
 where a decoder that publishes partial state would show up — a `Level` truncated
 to 20 bytes has already read a valid header declaring 17 payload bytes.
+
+The sequence-domain cases are written as **literal bytes** — an all-zero and an
+all-ones sequence — so the values under test are visibly the reserved ones rather
+than whatever the encoder produced, and the two inclusive ends of the domain are
+checked to survive the round trip at full 64-bit width. That is where a decoder
+that truncated the sequence to 32 bits, or that used `>=` where it meant `>`,
+would fail. The suite also pins the boundary as *not* a sequencing decision: a
+duplicate or out-of-order but in-domain sequence decodes `Ok`.
 
 **The 1550-trace Phase-1A differential corpus is deliberately not run through the
 byte decoder.** That corpus exists to exercise the sequencer; running it through
@@ -296,13 +395,49 @@ compose.
 
 | Check | Result |
 |---|---|
-| Clean Release build | 0 warnings, 0 errors under `-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Werror` |
+| Clean Release build (`BUILD_BENCHMARKS=ON`) | 0 warnings, 0 errors under `-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Werror` |
 | Full CTest | 33/33 |
 | ASan | clean, both Experiment 03 suites |
 | UBSan | clean, both Experiment 03 suites |
+| Determinism | decoder suite byte-identical across two runs |
 | `LLDB_SELFTEST_FAIL=1` | exit 1 (non-zero, as the guard requires) |
 
-No TSan run: Phase 1 is single-threaded.
+No TSan run: Phase 1 is single-threaded. No benchmark was run.
+
+### The defect this hardening closed
+
+Recorded because it is evidence about the verification, as much as about the
+code. **Both layers were green while the contract between them was violated.**
+
+The sequencer documents `sequence > 0` and `sequence < UINT64_MAX` as a
+precondition, and does not defend it — deliberately, since the branch would cost
+every message to rule out a case no feed produces. The decoder accepted the
+entire `uint64` domain. Composed, that meant:
+
+```
+decode SnapshotBegin(seq = UINT64_MAX)  ->  Ok
+pipeline.apply(...)                     ->  Staged, state = Snapshot
+pipeline.expected()                     ->  0      // seq + 1 wrapped
+```
+
+A pipeline left expecting sequence 0, which is not a valid sequence and can
+therefore never be met. The decoder's seven suites were green because they only
+ever produced in-domain sequences from the encoder; the sequencer's six suites
+were green because they only ever built messages by hand, in-domain. **Neither
+suite crossed the seam, so neither could see it** — the same failure mode as the
+Phase-1A freshness defect, in a different pair of layers.
+
+The fix is a range check on a header field plus a test that crosses the seam.
+The check itself is two lines; the reason it was missing is that each side's
+tests were written against its own contract rather than against the composition
+of the two, which is why the composed invariant now has its own suite.
+
+Both new tests were verified by sabotage. Removing the range check fails the
+sequence cases; making the decoder publish its output before validating a field
+is caught by the composed suite and by the `out was MODIFIED` assertions. That
+second sabotage also exposed a **bug in the new test itself**: the invalid-`side`
+frame was 21 bytes rather than 29, so it returned `NeedMoreData` and passed for
+the wrong reason until the missing sequence bytes were added.
 
 ## Status
 
@@ -310,10 +445,10 @@ No TSan run: Phase 1 is single-threaded.
 
 | File | Contents |
 |---|---|
-| `market-data-pipeline/include/md_wire_protocol.h` | Byte layout, message IDs, offsets, big-endian helpers |
+| `market-data-pipeline/include/md_wire_protocol.h` | Byte layout, message IDs, offsets, the sequence domain, big-endian helpers |
 | `market-data-pipeline/include/md_decoder.h` | `DecodeStatus`, `DecodeOutcome`, `decode_one` |
 | `market-data-pipeline/include/md_encoder.h` | Test/fixture encoder |
-| `market-data-pipeline/tests/md_decoder_tests.cpp` | Six suites, all green |
+| `market-data-pipeline/tests/md_decoder_tests.cpp` | Seven suites, all green |
 | `docs/MARKET_DATA_PROTOCOL.md` | This document |
 
 Phase 1A files are unmodified. No counter, state or transition was added to the

@@ -40,6 +40,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <initializer_list>
+#include <limits>
 #include <span>
 #include <utility>
 #include <vector>
@@ -537,6 +538,109 @@ void suite_malformed() {
         CHECK(out.side == Side::Ask);
     }
 
+    // THE SEQUENCE DOMAIN. `sequence` is encoded as a uint64, so all 2^64 bit
+    // patterns are representable ON THE WIRE — and the tests below are the
+    // boundary of the narrower domain the protocol actually admits,
+    // [1, UINT64_MAX - 1]. Both reserved values are written as literal bytes so
+    // that the all-zero and all-ones headers are visibly the ones under test
+    // rather than a value the encoder chose.
+    //
+    // WHY THE TOP IS RESERVED. The sequencer downstream computes `seq + 1` to
+    // track the next expected sequence. A SnapshotBegin at UINT64_MAX would wrap
+    // that to 0, leaving a pipeline in Snapshot state expecting a sequence that
+    // is itself outside the domain — a watermark no message can ever meet. The
+    // sequencer is frozen and documents this precondition; the decoder is where
+    // it has to be enforced, because it is a property of the bytes.
+    const std::uint64_t kMax = std::numeric_limits<std::uint64_t>::max();
+    static_assert(llmd::wire::kMaxSequence == kMax - 1);
+
+    // seq = 0 -> rejected.
+    expect_reject("SnapshotBegin seq=0 -> InvalidSequence",
+                  bytes_of({0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                            0x00, 0x00, 0x00, 0x00}),
+                  DecodeStatus::InvalidSequence);
+    expect_reject("Level seq=0 -> InvalidSequence",
+                  bytes_of({0x02, 0x01, 0x00, 0x11,
+                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x64,
+                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x14}),
+                  DecodeStatus::InvalidSequence);
+
+    // seq = UINT64_MAX -> rejected, on the header alone: no Level payload is
+    // present, and the decoder must not answer NeedMoreData for a frame whose
+    // sequence is already known to be unrepresentable.
+    expect_reject("SnapshotBegin seq=UINT64_MAX -> InvalidSequence",
+                  bytes_of({0x01, 0x01, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
+                            0xFF, 0xFF, 0xFF, 0xFF}),
+                  DecodeStatus::InvalidSequence);
+    expect_reject("SnapshotEnd seq=UINT64_MAX -> InvalidSequence",
+                  bytes_of({0x03, 0x01, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
+                            0xFF, 0xFF, 0xFF, 0xFF}),
+                  DecodeStatus::InvalidSequence);
+    expect_reject("Level seq=UINT64_MAX, header only -> InvalidSequence",
+                  bytes_of({0x02, 0x01, 0x00, 0x11, 0xFF, 0xFF, 0xFF, 0xFF,
+                            0xFF, 0xFF, 0xFF, 0xFF}),
+                  DecodeStatus::InvalidSequence);
+    expect_reject("Level seq=UINT64_MAX, full frame -> InvalidSequence",
+                  bytes_of({0x02, 0x01, 0x00, 0x11,
+                            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x64,
+                            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x14}),
+                  DecodeStatus::InvalidSequence);
+
+    // The two INCLUSIVE ends of the domain decode, and the value survives the
+    // round trip at full width — this is where a decoder that truncated the
+    // sequence to 32 bits, or that used `>=` where it meant `>`, would fail.
+    {
+        MdMessage out = sentinel();
+        const DecodeOutcome lo = llmd::decode_one(
+            bytes_of({0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                      0x00, 0x00, 0x00, 0x01}), out);
+        CHECK(lo.status == DecodeStatus::Ok);
+        CHECK(lo.consumed == 12);
+        CHECK(out.seq == 1);
+
+        const DecodeOutcome hi = llmd::decode_one(
+            bytes_of({0x01, 0x01, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
+                      0xFF, 0xFF, 0xFF, 0xFE}), out);
+        CHECK(hi.status == DecodeStatus::Ok);
+        CHECK(hi.consumed == 12);
+        CHECK(out.seq == kMax - 1);
+
+        const DecodeOutcome lvl = llmd::decode_one(
+            bytes_of({0x02, 0x01, 0x00, 0x11,
+                      0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE,
+                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x64,
+                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x14}), out);
+        CHECK(lvl.status == DecodeStatus::Ok);
+        CHECK(lvl.consumed == 29);
+        CHECK(out.seq == kMax - 1);
+        CHECK(out.side == Side::Bid);
+        CHECK(out.price == 100);
+        CHECK(out.qty == 20);
+    }
+
+    // The check is a HEADER rule, so it is decided before the type is
+    // consulted: a frame that is wrong in both ways reports the sequence. This
+    // is the same placement as `version`, and the same reasoning as the
+    // payload_length check below it — the offending bytes are already present,
+    // so nothing that arrives later can change the verdict.
+    expect_reject("bad type AND reserved seq -> InvalidSequence",
+                  raw_bytes(raw(99, 0, kMax)), DecodeStatus::InvalidSequence);
+    expect_reject("bad length AND reserved seq -> InvalidSequence",
+                  raw_bytes(raw(kLevel, 16, kMax)), DecodeStatus::InvalidSequence);
+
+    // And the boundary is NOT a sequencing decision: a duplicate, a stale or an
+    // out-of-order sequence is in-domain and decodes, because those are the
+    // pipeline's questions. 7 is not "next" for any stream here, and the
+    // decoder has no opinion about that.
+    {
+        MdMessage out = sentinel();
+        const DecodeOutcome oc = llmd::decode_one(raw_bytes(raw(kBegin, 0, 7)), out);
+        CHECK(oc.status == DecodeStatus::Ok);
+        CHECK(out.seq == 7);
+    }
+
     // THE LAYER BOUNDARY. A positive price far outside the default book tick
     // range is WIRE-VALID and decodes cleanly. The decoder does not know what
     // the book trades, and must not guess: this same message becomes
@@ -660,6 +764,117 @@ void suite_integration() {
 }
 
 // ---------------------------------------------------------------------------
+// Suite 7 — the composed invariant: decode failure mutates nothing.
+//
+//   decode failure -> no typed message publication -> no sequencer/book mutation
+//
+// Each half of that chain is already tested. The decoder suites prove a failed
+// decode publishes nothing; the Phase-1A suites prove the sequencer behaves for
+// every message it is given. Neither proves the COMPOSITION, and the
+// composition is where the contract actually lives: a caller that ignored the
+// status and applied `out` anyway would be applying a sentinel, and a decoder
+// that wrote 8 of 29 bytes before failing would be handing over a real-looking
+// half-message. The pipeline cannot defend against either — it has no way to
+// know the message it was handed did not come from a successful decode.
+//
+// So the invariant is pinned at the seam instead: given a live pipeline, a
+// failed decode must leave every observable piece of pipeline and book state
+// byte-for-byte where it was.
+// ---------------------------------------------------------------------------
+
+template <class Book>
+void check_no_mutation(const char* label, const std::vector<std::byte>& bad_frame) {
+    // Establish a valid LIVE pipeline through the decoder, so the state under
+    // test is one a real stream produced rather than one a fixture conjured.
+    Book book;
+    MarketDataPipeline<Book> pipe{std::move(book),
+                                  typename MarketDataPipeline<Book>::Config{}};
+    const std::vector<MdMessage> prefix = {B(1), L(2, Side::Bid, 100, 10),
+                                          L(3, Side::Ask, 101, 20), E(4)};
+    const std::vector<std::byte> prefix_wire = llmd::encode::encode_all(prefix);
+    std::size_t offset = 0;
+    while (offset < prefix_wire.size()) {
+        MdMessage m{};
+        const DecodeOutcome oc =
+            llmd::decode_one(std::span<const std::byte>(prefix_wire).subspan(offset), m);
+        CHECK(oc.status == DecodeStatus::Ok);
+        pipe.apply(m);
+        offset += oc.consumed;
+    }
+
+    // Record everything a caller could observe.
+    const MdState      state0 = pipe.state();
+    const std::uint64_t cursor0 = pipe.book().last_applied_seq();
+    const std::uint64_t expect0 = pipe.expected();
+    const std::int64_t  bid0 = pipe.book().best_bid();
+    const std::int64_t  ask0 = pipe.book().best_ask();
+    const std::size_t   levels0 = pipe.book().level_count();
+    const llmd::MdCounters counters0 = pipe.counters();
+
+    // Confirm the precondition is actually the interesting one: a live,
+    // synced pipeline with a real book, not an empty one that would trivially
+    // "not change".
+    CHECK(state0 == MdState::Live);
+    CHECK(cursor0 == 4);
+    CHECK(expect0 == 5);
+    CHECK(levels0 == 2);
+
+    // The malformed frame. The decode is attempted and the status is honoured:
+    // apply() is NOT called, because there is no message to apply.
+    MdMessage out = sentinel();
+    const DecodeOutcome bad = llmd::decode_one(bad_frame, out);
+    CHECK(bad.status != DecodeStatus::Ok);
+    CHECK(bad.consumed == 0);
+    CHECK(same_message(out, sentinel()));
+
+    // Nothing moved. Not the sequence position, not the book, not the counters.
+    CHECK(pipe.state() == state0);
+    CHECK(pipe.book().last_applied_seq() == cursor0);
+    CHECK(pipe.expected() == expect0);
+    CHECK(pipe.book().best_bid() == bid0);
+    CHECK(pipe.book().best_ask() == ask0);
+    CHECK(pipe.book().level_count() == levels0);
+    CHECK(pipe.counters().messages == counters0.messages);
+    CHECK(pipe.counters().applied == counters0.applied);
+    CHECK(pipe.counters().snapshot_committed == counters0.snapshot_committed);
+    CHECK(pipe.counters().staged == counters0.staged);
+    CHECK(pipe.counters().malformed == counters0.malformed);
+
+    if (g_failures == 0) {
+        std::printf("       %s: live at seq=%llu, decode rejected, nothing moved\n",
+                    label, static_cast<unsigned long long>(cursor0));
+    }
+}
+
+void suite_composed_invariant() {
+    // A frame that is structurally fine but carries an unusable side: a full,
+    // well-formed 29-byte Level with side = 5. The frame must be COMPLETE —
+    // a short one would return NeedMoreData and the test would pass for the
+    // wrong reason, proving nothing about publication on a field rejection.
+    const std::vector<std::byte> bad_side =
+        bytes_of({0x02, 0x01, 0x00, 0x11,                          // type/ver/len
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09,  // seq = 9
+                  0x05,                                            // side = 5
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x64,  // price 100
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x14}); // qty 20
+    CHECK(bad_side.size() == 29);
+
+    // A frame whose sequence is reserved. Note this one is otherwise a
+    // perfectly good SnapshotBegin: if it were applied, the pipeline would
+    // leave Live and the wrap would silently reset the watermark to 0.
+    const std::vector<std::byte> bad_seq =
+        bytes_of({0x01, 0x01, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
+                  0xFF, 0xFF, 0xFF, 0xFF});
+
+    check_no_mutation<MapOrderBook>("invalid side", bad_side);
+    check_no_mutation<MapOrderBook>("invalid sequence", bad_seq);
+    check_no_mutation<FlatOrderBook>("invalid side", bad_side);
+    check_no_mutation<FlatOrderBook>("invalid sequence", bad_seq);
+
+    summary("decode failure leaves the pipeline untouched");
+}
+
+// ---------------------------------------------------------------------------
 // The deliberate failure, reached only through the self-test env var.
 // ---------------------------------------------------------------------------
 void suite_selftest_failure() {
@@ -686,6 +901,7 @@ int main() {
     suite_truncation();
     suite_malformed();
     suite_integration();
+    suite_composed_invariant();
 
     if (g_failures_total == 0) {
         std::printf("\nALL SUITES PASSED\n");
