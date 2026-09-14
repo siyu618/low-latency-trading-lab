@@ -32,8 +32,14 @@
 
 namespace llmd::encode {
 
-// Every field of a frame, set explicitly. Defaults describe a well-formed
-// zero-length-payload bracket at sequence 0.
+// Every field of a frame, set explicitly.
+//
+// `RawMessage` is a low-level test-fixture representation, not a validated
+// message: its defaults are NEUTRAL CONSTRUCTION VALUES and are not necessarily
+// protocol-valid. In particular the default `sequence` is 0, which the protocol
+// reserves — a caller that wants a well-formed frame must set the sequence, and
+// a caller that wants a deliberately malformed one can leave it. Nothing here
+// checks; the decoder is what decides validity.
 struct RawMessage {
     std::uint8_t  type = static_cast<std::uint8_t>(wire::MessageType::SnapshotBegin);
     std::uint8_t  version = wire::kVersion;
@@ -102,7 +108,12 @@ inline void append_raw(std::vector<std::byte>& out, const RawMessage& r) {
     return r;
 }
 
-// Append the well-formed encoding of one message.
+// Append the encoding of one message.
+//
+// This SERIALIZES the typed fields into the documented wire layout; it does not
+// validate them. `MdMessage` carries no invalid states of its own, but the
+// mapping to bytes is mechanical — domain rules (the reserved sequence values,
+// side, price, quantity) are the decoder's to enforce, and are checked there.
 inline void append_message(std::vector<std::byte>& out, const MdMessage& m) {
     append_raw(out, raw_of(m));
 }

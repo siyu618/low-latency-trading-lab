@@ -80,3 +80,39 @@ add_test(NAME md_decoder_tests_exitcode
                  -P ${CMAKE_SOURCE_DIR}/cmake/assert_nonzero_exit.cmake)
 set_tests_properties(md_decoder_tests_exitcode PROPERTIES
                      PASS_REGULAR_EXPRESSION "md_decoder_tests_exitcode: got expected non-zero exit")
+
+# ---------------------------------------------------------------------------
+# Phase 2 — the threaded decoder -> SPSC -> book pipeline.
+#
+# The only target in this directory that creates threads, so it is the only one
+# that links Threads::Threads — explicitly, rather than relying on the C++
+# runtime happening to provide it. On a platform where std::thread needs a
+# separate library, an implicit dependency would be a link error in this
+# directory and nowhere else, which is exactly the kind of thing that should be
+# declared rather than discovered.
+#
+# Same shape as the two suites above: strict flags, a plain CTest entry, and a
+# paired exit-code guard.
+# ---------------------------------------------------------------------------
+find_package(Threads REQUIRED)
+
+add_executable(md_threaded_pipeline_tests tests/md_threaded_pipeline_tests.cpp)
+target_link_libraries(md_threaded_pipeline_tests PRIVATE llob_mdp Threads::Threads)
+target_compile_options(md_threaded_pipeline_tests PRIVATE ${LLMD_STRICT_FLAGS})
+
+add_test(NAME md_threaded_pipeline_tests COMMAND md_threaded_pipeline_tests)
+
+add_test(NAME md_threaded_pipeline_tests_exitcode
+         COMMAND ${CMAKE_COMMAND}
+                 -DLLDB_SELFTEST_FAIL=1
+                 -DNAME=md_threaded_pipeline_tests_exitcode
+                 -DBINARY=$<TARGET_FILE:md_threaded_pipeline_tests>
+                 -P ${CMAKE_SOURCE_DIR}/cmake/assert_nonzero_exit.cmake)
+set_tests_properties(md_threaded_pipeline_tests_exitcode PROPERTIES
+                     PASS_REGULAR_EXPRESSION "md_threaded_pipeline_tests_exitcode: got expected non-zero exit")
+
+# A threaded suite is the one place a hang is a realistic failure mode: a
+# consumer that never observes completion, or a producer spinning on a ring
+# nobody drains, blocks forever rather than failing. Give it a hard timeout so
+# that failure mode reports as a test failure instead of stalling CI.
+set_tests_properties(md_threaded_pipeline_tests PROPERTIES TIMEOUT 120)

@@ -1,5 +1,9 @@
 # Experiment 03 Phase 1 — Market Data Pipeline (Sequencer and Correctness)
 
+> This document now covers two phases of Experiment 03. Everything down to and
+> including the Phase-1 status block is **frozen as written**; the Phase-2 part
+> begins at the second top-level heading.
+
 ## Why
 
 Experiments 01 and 02 built a correct L2 order book and a correct single-producer
@@ -540,4 +544,379 @@ nothing yet to time.
 
 **A later phase may add measurement** — ingress-to-book latency, sequencer cost
 per message, or the cost of a snapshot commit — on top of this contract. No such
+phase is opened here.
+
+---
+
+# Experiment 03 Phase 2 — Threaded Decoder → SPSC → Book Correctness
+
+## What this phase adds — and what it does not measure
+
+Phase 1A froze a sequencer and Phase 1B froze a byte decoder, and each was
+verified **single-threaded**. What neither phase established is that the two
+still compose when a thread boundary and a queue are placed between them. That
+is the whole question here:
+
+```
+byte chunks ──▶ Decoder Thread ──▶ decode_one() ──▶ MdMessage
+                                                        │
+                        SpscSeparatedBaselineRingBuffer<MdMessage, Capacity>
+                                                        │
+                                                        ▼
+                                       Book Thread ──▶ MarketDataPipeline<FlatOrderBook>
+```
+
+Four components are **integrated and reimplemented zero times**: Experiment
+01's `FlatOrderBook`, Phase 1A's `MarketDataPipeline`, Phase 1B's `decode_one`,
+and Experiment 02's frozen SPSC selection. No file in Experiments 01 or 02 is
+modified, and no frozen Phase-1 header changes semantics — the only Phase-1 edit
+in this task is a comment in `md_encoder.h` that had gone stale.
+
+**This phase measures nothing.** No nanoseconds per message, no messages per
+second, no latency percentiles, no timing call of any kind, no CPU affinity, no
+thread pinning, and no capacity-performance matrix. Introducing a thread does
+not create a measurement phase; it creates a new **failure mode** — loss,
+reordering, torn state, and a consumer that exits one message too early — and
+the question of this phase is whether the existing correctness survives it.
+
+## Thread ownership
+
+The design is a strict ownership split with exactly one shared object.
+
+| State | Owner | Lifetime |
+|---|---|---|
+| byte chunk cursor (the caller's chunk source) | decoder thread | the run |
+| `StreamDecoder` carry buffer and framing state | decoder thread | the run |
+| SPSC **producer** side | decoder thread | the run |
+| `MarketDataPipeline<FlatOrderBook>` and the book inside it | book thread | the run |
+| SPSC **consumer** side | book thread | the run |
+| producer statistics (`MdProducerStats`) | decoder thread | read after join |
+| consumer statistics (`MdConsumerStats`) | book thread | read after join |
+| `producer_done` | producer writes, consumer reads | the run |
+| final state inspection | `run`'s caller | **only after both joins** |
+
+Nothing is shared except the queue and the one completion flag, and neither
+statistics struct is atomic — they are plain integers written by exactly one
+thread and read by the caller only after `join`, where the join itself is the
+synchronization edge. Adding atomics to them would be paying for a race that
+the join already rules out, and would invite a reader to think the numbers are
+safe to poll *during* a run, which they are not.
+
+### Why the OrderBook remains single-writer
+
+Experiment 01's `FlatOrderBook` has no lock, no atomic and no internal
+synchronization, and this phase does not add one. It does not need one: the book
+has **exactly one writing thread for the entire run**. That is the same argument
+as the single-threaded case with a different thread in the role — a
+single-writer object needs no synchronization because there is no second writer
+to synchronize with. The caller constructs the pipeline before spawning the book
+thread and touches nothing but the const accessors after joining, so the
+"single writer" claim is a property of the ownership table above rather than a
+convention.
+
+The alternative — several consumer threads, or a caller that applies messages
+itself — would require a lock on the book or a redesign of the book, and would
+be measuring a different system.
+
+### Why the book is not a template parameter
+
+`ThreadedMdPipeline` hardcodes `FlatOrderBook`. It is deliberately not
+templated, because the tempting move — push every threaded message into *both*
+a flat and a map book from the consumer thread and require them to agree — would
+change the runtime under test into a dual-book validation pipeline. The work
+being exercised would stop being "decode, enqueue, apply" and become "decode,
+enqueue, apply twice, compare", and any timing-sensitive property measured later
+on that shape would describe the comparison harness, not the pipeline. The
+cross-book agreement check already exists where it belongs: in Phase 1, single
+threaded, against `tests/md_oracle.h`.
+
+## The SPSC boundary
+
+```cpp
+using Queue = lltl::SpscSeparatedBaselineRingBuffer<MdMessage, Capacity>;
+```
+
+which is `RemoteCursorRingBuffer<MdMessage, Capacity, RemoteCursorMode::Direct,
+false>` — the **final frozen Experiment-02 selection**, the uncached
+separated-cursor baseline. Not the cached-remote-cursor variant, not a
+cursor-layout variant, not an instrumented build, and not a copy: the header is
+included and instantiated. `Capacity` must be a power of two, which is asserted
+at compile time rather than documented and hoped for.
+
+No lock is added around the queue, no CAS is introduced, and no memory order,
+cursor placement or capacity semantic is altered. Phase 2 is a *user* of that
+queue, not a revision of it.
+
+## Partial frames: the carry
+
+`decode_one` reads one message from the front of a span and answers
+`NeedMoreData` for a prefix — but it holds no state, so it cannot itself
+remember a prefix across calls. A caller looping over socket reads needs one
+more thing: somewhere to keep the tail of a frame that got cut in half.
+
+`StreamDecoder` is that thing and nothing else. It does the framing; it does not
+parse. Every complete frame it assembles is handed to the frozen `decode_one`,
+so there is exactly one implementation of the binary layout in the repository
+and no second opinion about byte order, field widths or the sequence domain.
+
+The carry is a **fixed** `std::array<std::byte, 29>`. The largest message the
+protocol defines is `kLevelMessageSize`, so a partial frame is at most 28 bytes
+and one array holds every prefix that can exist. A growing receive buffer would
+allocate on the steady path and would put an unbounded, remotely-driven size in
+the hot loop for no benefit. Consequence worth stating: at rest `carry_size()`
+is always `< 29`, because 29 bytes is always either a complete Level or a
+terminal length error — one of which leaves the carry empty. The suite asserts
+exactly that across a byte-at-a-time feed.
+
+The steady state — a chunk that begins and ends on frame boundaries — copies
+nothing at all. That is the reason for the two-path structure: with the carry
+empty, the chunk is decoded in place; only a retained prefix pays for a copy,
+and only up to 29 bytes.
+
+## Backpressure: no message is ever dropped
+
+Every decoded message is pushed with **retry until success**. A full queue makes
+the producer spin, never discard, because a dropped inbound message is not a
+lost update — it is a lost *sequence number*, which the pipeline downstream can
+only read as a gap, forcing a full snapshot recovery the feed never asked for.
+Dropping under load would convert a transient queue-full into a self-inflicted
+outage, and the recovery would be far more expensive than the spin.
+
+The retry policy is Experiment 02's, unchanged:
+
+```
+on failed push:  ++producer_full_retries; ++consecutive
+                 after 1024 consecutive failures: yield, reset consecutive
+on success:      reset consecutive
+```
+
+and the consumer mirrors it with `consumer_empty_retries`. The counter is
+*consecutive*, not cumulative: a producer that is keeping up never yields,
+however many times it retried over the course of a session.
+
+`producer_full_retries` and `consumer_empty_retries` are **diagnostic
+correctness context, not a performance result**. Nothing in this phase is timed,
+and no retry count here is a throughput or latency claim. They appear in test
+output only as evidence that the path was exercised at all.
+
+## Malformed wire is terminal
+
+The decoder thread distinguishes two things that both look like failure:
+
+- **`NeedMoreData` is not an error.** It is the ordinary answer for a partial
+  read, and in this design it never even escapes: a partial frame becomes the
+  retained carry, and `feed` returns `Ok`. A chunk boundary landing mid-message
+  is a normal event, not a fault.
+- **Every other non-`Ok` status is terminal.** The bytes are malformed as a
+  property of themselves; re-reading them cannot help. The decoder thread
+  records the status, publishes nothing further, and **stops accepting that
+  session**.
+
+What it deliberately does **not** do is resynchronise. Skipping a byte and
+continuing is the obvious-looking alternative and it is rejected on a specific
+ground: `consumed` is 0 on malformed input, so the protocol offers no defensible
+resynchronisation point. Picking one is guessing, and a wrong guess silently
+converts a detectable corruption into a plausible-looking stream — the failure
+becomes invisible in exactly the case where visibility matters most. The bytes
+after a malformed frame may well be a valid message; without a framing-level
+resync protocol there is no way to *know* they are aligned, and treating them as
+aligned is an assumption, not a recovery.
+
+## Termination, and the happens-before argument
+
+End-of-input is a runtime fact, not a market-data message, so it is **not** a new
+`MdKind` and not a wire message. Adding `EndOfStream` to the protocol would put
+a control-plane concept into the typed vocabulary every layer shares, and would
+make the wire format depend on how a particular process happens to be
+structured. Instead the producer publishes one atomic flag after its last
+successful push:
+
+```cpp
+producer:  ... all pushes done ...
+           producer_done_.store(true, std::memory_order_release);
+
+consumer:  ... try_pop fails ...
+           if (producer_done_.load(std::memory_order_acquire)) {
+               final try_pop;  if that fails too, exit
+           }
+```
+
+**The happens-before argument.** The release store and the acquire load form a
+release/acquire pair on the same atomic, so everything sequenced-before the
+store in the producer happens-before everything sequenced-after the load in the
+consumer. Every `try_push` the producer will ever perform is sequenced before
+that store; therefore every one of them happens-before the consumer's
+subsequent `try_pop`. Two consequences follow, and they are the whole protocol:
+
+- The consumer's final `try_pop` observes the queue as of **after** the
+  producer's last push. A failure there is not a race that more yielding could
+  win — it means the queue is empty and no further push can ever make it
+  non-empty.
+- The flag is what makes that emptiness **final**. The queue's own
+  release/acquire on its cursors is what makes pushed payload bytes *visible*;
+  the flag is orthogonal to that and does not duplicate it. A push does not need
+  to be ordered against the flag by the queue — the ordering comes from the
+  release/acquire pair, not from the queue's cursors.
+
+`queue.empty()` is deliberately **not** the mechanism. A queue that is empty now
+may be non-empty a microsecond later, so emptiness alone can never terminate a
+consumer; only "empty *and* the producer has stopped" can. Using emptiness as
+the sole signal is the classic lost-final-message bug, and the termination suite
+pins it directly.
+
+## The composed invariant, now across threads
+
+Phase 1B established, single-threaded:
+
+> decode failure → no typed message is published → no sequencer or book mutation
+
+Phase 2 has to preserve that across the thread boundary, and it does so
+structurally rather than by a check: the decoder thread's only path to the book
+thread is `queue_.try_push`, and a message that failed to decode is never handed
+to the sink, so there is nothing to push. The malformed-wire suite asserts the
+consequence — the producer's decoded and enqueued counts both equal the valid
+prefix length, the consumer consumes exactly that many, and the final book
+equals the single-threaded reference computed from the prefix alone.
+
+## Verification
+
+Six suites in `market-data-pipeline/tests/md_threaded_pipeline_tests.cpp`, all
+green:
+
+| Suite | What it pins |
+|---|---|
+| stream framing | chunk-boundary semantics, single-threaded, against the frozen `decode_one` |
+| chunk plan equivalence | the same encoded stream under 6 chunk plans must decode identically |
+| threaded vs single-thread reference | the threaded run must match the Phase-1 result on every observable value |
+| backpressure, no message dropped | capacity 2 and 4, consumer gated until the ring is provably full |
+| termination keeps the final message | a message pushed immediately before `producer_done` must still be consumed |
+| malformed wire terminates the session | a terminal status ends the session without resynchronisation, after the valid prefix is delivered |
+
+The **reference is single-threaded**: the same messages applied straight to a
+`MarketDataPipeline<FlatOrderBook>` with no queue and no threads, then compared
+field by field — state, `last_applied_seq`, `expected`, best bid, best ask, level
+count, and all twenty counters by name. The threaded path therefore has an oracle
+that shares none of its machinery, instead of being compared against itself.
+
+That comparison is doing more work than "no crash". The pipeline is
+**order-sensitive by construction** — a duplicate, a stale or an out-of-order
+sequence produces different outcomes and different counters — so a threaded run
+that matches the reference on every counter *and* the final book can only have
+delivered the messages in exactly the order they were decoded. A single swap
+would move `applied`, `stale` or `gap_detected` and change the book. That is the
+FIFO claim, tested by consequence rather than by inspection.
+
+The fixture is written out message by message rather than generated, so it is
+legible which case is which; it exercises an initial multi-level snapshot, live
+incrementals, a delete, a stale replay, a sequence gap, incrementals suppressed
+while out of sync, a recovery snapshot, and a live incremental after recovery.
+The reference's **counts are asserted as predictions** (20 messages, 10 staged,
+4 applied, 2 snapshot commits, 1 stale, 1 gap, 2 rejected, 1 outage, 1 recovery)
+rather than observed from a run, so the fixture cannot quietly degrade into a
+trivial one whose threaded result would match for the wrong reason.
+
+### Backpressure is made deterministic, not waited for
+
+Waiting a while and hoping the ring filled is not a test. The producer sets a
+test-visible flag the first time a push finds the ring full, and the consumer
+thread spins on a **test-only gate** before its first pop. The test releases the
+gate only after observing that flag, so the ring is provably full and the retry
+path has provably run before the consumer takes anything. Neither the gate nor
+the flag is part of the production algorithm: with no gate set, the pipeline runs
+identically without them, and they exist so that the ordering of the pressure is
+a fact rather than a probability.
+
+The wait for that flag is bounded, and the bound is deliberately **small** — it
+is not patience, it is a failure detector, so that a producer which never
+signals (because it dropped instead of retrying, say) is reported as a failed
+check rather than hanging the suite. The threaded CTest entry also carries a
+120-second timeout, because a hang in the consumer loop is a realistic failure
+mode for this phase and should report as a test failure rather than stalling CI.
+
+### Sabotage results
+
+A green suite is not evidence until it has been shown to fail. Five deliberate
+defects were introduced, one at a time, and reverted:
+
+| Sabotage | Detected by |
+|---|---|
+| drop the message when the push finds the ring full | backpressure suite, deterministically, both capacities |
+| remove the decisive final `try_pop` after `producer_done` | termination suite |
+| treat a terminal decode status as non-terminal and continue | malformed-wire suite |
+| return `NeedMoreData` instead of retaining the carry | framing suite and every chunk-plan run |
+| (found in the harness) a wait bound of 2×10⁹ iterations | **not** a detection — it hung instead of failing, and was reduced |
+
+The third and fourth are the interesting ones. Under a *single* chunk plan the
+terminal-status sabotage was caught only by the status checks, because the bytes
+following the malformed frame happened to resynchronise onto nothing decodable —
+the message counts looked innocent. Running the same malformed stream under all
+five chunk plans is what turns "the session ended" from a claim about a flag into
+a claim about the messages and the book: under two of those plans a byte-skip
+invents messages. The suite was strengthened for that reason, and re-sabotaged to
+confirm it now fails behaviourally.
+
+The fifth is a defect in the *test*, found by the sabotage of the code — the same
+thing that happened in Phase 1B, when sabotaging the decoder exposed a
+malformed-case frame that was 21 bytes instead of 29 and had been passing
+vacuously.
+
+## Sanitizers
+
+| Sanitizer | Result |
+|---|---|
+| ASan (`-fsanitize=address -fno-omit-frame-pointer -g`) | clean; all Experiment-03 suites pass |
+| UBSan (`-fsanitize=undefined -fno-sanitize-recover=all -g`) | clean; all Experiment-03 suites pass |
+| **TSan** (`-fsanitize=thread -fno-omit-frame-pointer`) | **runs, and reports no races** — 20 consecutive runs of the threaded suite, and the CTest set, with zero diagnostics and zero non-zero exits |
+
+TSan is the one that matters for this phase, and it is reported as a real result
+rather than assumed: the toolchain here builds and runs it, so the claim is
+"TSan ran and found nothing", not "TSan was unavailable". The threaded suite is
+run repeatedly under it because a race that manifests once in twenty runs would
+otherwise be reported as a pass.
+
+## What cannot be claimed
+
+- **No performance claim of any kind.** No number in this section is a duration
+  or a rate. The retry counters are evidence that a path was exercised; they are
+  not throughput, and comparing capacity 2 against capacity 4 on them would be
+  meaningless.
+- **No claim that the queue is the right one for this workload.** Its selection
+  was Experiment 02's result under Experiment 02's workload; Phase 2 uses it as a
+  frozen component and makes no claim that it is optimal here.
+- **No claim about a real socket.** The chunk source is in-process and
+  deterministic. Real ingress has partial reads, backpressure at the NIC, and
+  arrival jitter, none of which are modelled.
+- **No claim about fairness or scheduling.** Nothing is pinned, nothing is
+  affinity-bound, and the retry policy is a politeness heuristic, not a
+  latency guarantee.
+- **No claim that malformed input is *recoverable*.** This phase ends the session.
+  Wire resynchronisation is not implemented, and no statement is made about how a
+  real feed handler should do it.
+- **No claim that TSan exhausts the race space.** It reports races it observes on
+  the schedules it produces; absence of a report is evidence, not proof.
+
+## Status
+
+**Phase 2 — Threaded Decoder → SPSC → Book Correctness: COMPLETE / FROZEN.**
+
+- `market-data-pipeline/include/md_stream_decoder.h` — the framing component:
+  arbitrary chunks in, complete messages out, at most one retained partial frame.
+- `market-data-pipeline/include/md_threaded_pipeline.h` — the ownership split, the
+  producer and consumer loops, the retry policy, and the completion protocol.
+- `market-data-pipeline/tests/md_threaded_pipeline_tests.cpp` — six suites, 1518
+  checks, all green, with the `LLDB_SELFTEST_FAIL=1` exit-code guard.
+- `market-data-pipeline/CMakeLists.txt` — the new target, strict flags,
+  `Threads::Threads`, the exit-code guard and a 120-second timeout.
+- `market-data-pipeline/include/md_encoder.h` — comment-only: two stale claims
+  corrected, no behaviour change.
+
+Full CTest: **35/35**, including every pre-existing Phase-1A and Phase-1B test.
+No Experiment 01 or 02 file is touched. There is still no benchmark target in
+this directory, and still no `BENCH_ARCH_FLAGS` entry, because there is still
+nothing being measured.
+
+**Phase 3 — Throughput / End-to-End Latency: NOT STARTED.** Phase 2 deliberately
+left the measurement surfaces alone: no clock is read, no sample is collected,
+and no warm-up or steady-state concept exists yet. A later phase may add
+ingress-to-book latency or end-to-end throughput on top of this contract. No such
 phase is opened here.
