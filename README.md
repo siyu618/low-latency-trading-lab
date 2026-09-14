@@ -179,7 +179,7 @@ namespace (`llmd`), leaving the Experiment 01/02 trees untouched.
 > `OutOfRange` consumes the sequence — two outcomes a sequence comparison alone
 > cannot see. Verification is six layers with their limits stated: the
 > specification sketch verbatim as a literal expected-outcome table (the only
-> layer that can catch a *specification* error), 25 hand-written scenario vectors,
+> layer that can catch a *specification* error), 28 hand-written scenario vectors,
 > an accounting identity asserted over the whole corpus plus a coverage assertion
 > that every outcome and counter is actually reached, 1550 seeded traces against
 > an independently written oracle, 300 traces run through two different sinks,
@@ -1318,11 +1318,17 @@ Two details the sketch exists to pin, both asserted literally: the offending
 book to an older sequence; committing a stale bracket would move `last_applied`
 backwards and then double-apply every message in between, with no gap firing to
 reveal it. So the pipeline carries its own gate, `snapshot_fresh(seq) = seq >=
-book.last_applied_seq()`, and applies it in **every** state — including `Gap`,
-where a repair bracket older than the view that was lost is not a repair at all.
-One consequence looks surprising and is pinned by scenario vectors: because a gap
-does not advance the book's cursor, a bracket at the cursor **or at cursor + 1**
-is fresh and accepted, and only one genuinely below the cursor is refused.
+expected()` — **against the watermark, not against the last sequence consumed.**
+Those differ by exactly one while `Live`, and the difference is the whole point:
+`last_applied_seq()` is the last sequence already *used*, so gating on it accepts
+a `SnapshotBegin` numbered at a sequence we have already consumed, and a frame
+behind the watermark is stale whatever its kind. Because `expected()` is derived,
+this is one rule with one meaning in every state, and it is applied in **every**
+state — including `Gap`, where a repair bracket older than the view that was lost
+is not a repair at all. One consequence looks surprising and is pinned by
+scenario vectors: because a gap does not advance the book's cursor, a repair
+bracket must begin at `cursor + 1` or later, and one beginning *exactly at* the
+lost cursor is refused.
 
 ### Recovery accounting (counts, never durations)
 
@@ -1351,7 +1357,7 @@ Six layers, in `market-data-pipeline/tests/`:
   messages, 13 expected outcomes read off the sketch rather than off the
   implementation. This is the **only** layer that can catch a *specification*
   error, because its expectations were written by hand.
-- **25 hand-written scenario vectors**, one per failure hypothesis, each with a
+- **28 hand-written scenario vectors**, one per failure hypothesis, each with a
   full expected outcome vector *and* an expected final state, `expected()` and top
   of book: the sketch; an empty snapshot; `SnapshotEnd` as the very first message;
   a snapshot that never ends; a gap inside a bracket; a nested `SnapshotBegin`;
@@ -1409,6 +1415,21 @@ Recorded because they are evidence about the verification, not just the code.
   inside the opening snapshot — so they exercised snapshot refusal while
   `malformed` and `out_of_range` stayed permanently at zero. The coverage
   assertion found this; the differential fuzz could not have.
+- **The freshness gate was one sequence too lenient.** `snapshot_fresh` compared
+  against `book.last_applied_seq()` — the last sequence *consumed* — instead of
+  `expected()`, the watermark. Those differ by exactly one while `Live`, and the
+  gate therefore accepted a `SnapshotBegin` numbered at a sequence already used.
+  Found in review, after the phase had been declared complete.
+
+  **The differential fuzz reported full agreement — 1550 of 1550 traces — with
+  the defect present**, because the oracle had been written from the pipeline and
+  inherited the same off-by-one. That is the first bullet's failure mode
+  occurring a *second* time, in a phase whose own documentation already named it,
+  and it is why the freshness boundary is now pinned by paired scenario vectors
+  in `Live` and in `Gap` rather than left to the corpus. The fix was
+  re-validated by reverting both implementations together and confirming the fuzz
+  still reports `[ok]` while the vectors fail 7 of 112 — the harness proving its
+  own limits rather than asserting them.
 
 ### Two inherited asymmetries, documented rather than unified
 

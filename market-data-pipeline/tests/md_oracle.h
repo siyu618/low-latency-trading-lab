@@ -147,7 +147,13 @@ public:
         if (m.kind == MdKind::SnapshotBegin) {
             // Freshness gate. `load_snapshot` has no staleness check of its own
             // and would happily rewind the book, so the gate has to live here.
-            if (m.seq < book_.last_applied) {
+            //
+            // Against the WATERMARK — `expected()` — and not against the last
+            // sequence consumed. Those differ by one while Live, and the
+            // difference is the whole point: gating on the last consumed
+            // sequence accepts a Begin numbered at a sequence already used,
+            // which is a frame behind the watermark and stale whatever its kind.
+            if (m.seq < expected()) {
                 ++counters_.stale_snapshot_begins;
                 return result(MdOutcome::Stale);
             }

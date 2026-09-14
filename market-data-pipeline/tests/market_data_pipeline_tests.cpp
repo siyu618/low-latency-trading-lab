@@ -392,9 +392,9 @@ void suite_scenarios() {
 
         // A bracket from BEFORE the view we lost is not a repair: committing it
         // would restore an old book and then replay old messages over it. The
-        // gate is against the book's cursor, which a gap does NOT advance — so
-        // a bracket at the cursor itself is still accepted, and only one that is
-        // genuinely older is refused.
+        // gate is against the WATERMARK, and a gap does NOT advance the book's
+        // cursor — so `cursor + 1` is the first sequence a repair may begin at,
+        // and one numbered at the lost cursor itself is refused.
         {"repair bracket below the lost cursor -> Stale, still in Gap",
          {B(1), E(2), L(3, Side::Bid, 100, 10), L(50, Side::Bid, 100, 11),
           B(2)},
@@ -402,13 +402,46 @@ void suite_scenarios() {
           MdOutcome::GapDetected, MdOutcome::Stale},
          {MdState::Gap, 4, 100, 0, 1}},
 
-        {"repair bracket AT the lost cursor is accepted, not stale",
+        // The off-by-one that matters. `B(3)` is numbered at the last sequence
+        // the book CONSUMED, which is one behind the watermark of 4. Gating on
+        // `last_applied_seq()` instead of `expected()` would accept it.
+        {"repair bracket AT the lost cursor -> Stale, still in Gap",
          {B(1), E(2), L(3, Side::Bid, 100, 10), L(50, Side::Bid, 100, 11),
-          B(3), L(4, Side::Bid, 100, 7), E(5), L(6, Side::Ask, 60, 2)},
+          B(3)},
+         {MdOutcome::Staged, MdOutcome::SnapshotCommitted, MdOutcome::Applied,
+          MdOutcome::GapDetected, MdOutcome::Stale},
+         {MdState::Gap, 4, 100, 0, 1}},
+
+        {"repair bracket at the watermark is accepted and recovers",
+         {B(1), E(2), L(3, Side::Bid, 100, 10), L(50, Side::Bid, 100, 11),
+          B(4), L(5, Side::Bid, 100, 7), E(6), L(7, Side::Ask, 60, 2)},
          {MdOutcome::Staged, MdOutcome::SnapshotCommitted, MdOutcome::Applied,
           MdOutcome::GapDetected, MdOutcome::Staged, MdOutcome::Staged,
           MdOutcome::SnapshotCommitted, MdOutcome::Applied},
-         {MdState::Live, 7, 100, 60, 2}},
+         {MdState::Live, 8, 100, 60, 2}},
+
+        // The same off-by-one while Live, where `expected() == cursor + 1`.
+        // `B(3)` is refused and the healthy book is UNTOUCHED — not even a
+        // ProtocolViolation, just a stale frame the live view steps over. The
+        // `B(4)` that follows is the same frame one sequence later, and it is
+        // accepted: the pair pins the boundary exactly.
+        {"SnapshotBegin at the last applied seq while Live -> Stale, no rewind",
+         {B(1), E(2), L(3, Side::Bid, 100, 10), B(3),
+          B(4), L(5, Side::Bid, 100, 20), E(6)},
+         {MdOutcome::Staged, MdOutcome::SnapshotCommitted, MdOutcome::Applied,
+          MdOutcome::Stale, MdOutcome::Staged, MdOutcome::Staged,
+          MdOutcome::SnapshotCommitted},
+         {MdState::Live, 7, 100, 0, 1}},
+
+        // While a bracket is open the watermark is the BRACKET's cursor, so a
+        // nested Begin behind the run in progress is stale — and the run
+        // survives it, exactly as it survives a duplicate level.
+        {"nested Begin behind the bracket cursor -> Stale, run survives",
+         {B(1), L(2, Side::Bid, 100, 10), L(3, Side::Bid, 101, 5),
+          B(2), L(4, Side::Bid, 102, 7), E(5)},
+         {MdOutcome::Staged, MdOutcome::Staged, MdOutcome::Staged,
+          MdOutcome::Stale, MdOutcome::Staged, MdOutcome::SnapshotCommitted},
+         {MdState::Live, 6, 102, 0, 3}},
 
         {"a snapshot whose End resumes a long-lost stream",
          {B(1), E(2), L(3, Side::Bid, 100, 10), L(500, Side::Bid, 100, 11),

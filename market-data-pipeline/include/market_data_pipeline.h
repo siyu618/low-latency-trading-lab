@@ -382,18 +382,30 @@ private:
         return MdResult{o, state_, expected()};
     }
 
-    // A snapshot is FRESH only if it is not older than the state we already
-    // hold. This is the pipeline's own guard, not the book's: `load_snapshot()`
-    // has no staleness check and will happily REWIND a book to an older
-    // sequence. Committing a stale bracket would move `last_applied` backwards
-    // and then double-apply every message between the two positions, with no
-    // gap firing to reveal it.
+    // A snapshot is FRESH only if it is not behind the watermark — the next
+    // sequence the pipeline requires. This is the pipeline's own guard, not the
+    // book's: `load_snapshot()` has no staleness check and will happily REWIND a
+    // book to an older sequence. Committing a stale bracket would move
+    // `last_applied` backwards and then double-apply every message between the
+    // two positions, with no gap firing to reveal it.
+    //
+    // The comparison is against `expected()`, NOT `book_.last_applied_seq()`.
+    // While Live those two differ by exactly one, and the difference is the
+    // whole point: `last_applied_seq()` is the last sequence already CONSUMED,
+    // so gating on it accepts a `SnapshotBegin` numbered at a sequence we have
+    // already used. That is a frame behind the watermark, and a frame behind the
+    // watermark is stale whatever its kind.
+    //
+    // Because `expected()` is derived, this is one rule with one meaning in
+    // every state: while a bracket is open it is the bracket's own cursor, and
+    // otherwise it is the book's. So a nested Begin behind the run already in
+    // progress is stale too, and the run survives it.
     //
     // Applied in EVERY state, including Gap. A repair bracket older than the
     // view we lost is not a repair: it would restore an old book and then
     // replay old messages over it.
     bool snapshot_fresh(std::uint64_t seq) const noexcept {
-        return seq >= book_.last_applied_seq();
+        return seq >= expected();
     }
 
     void reset_staging() {

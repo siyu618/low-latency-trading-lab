@@ -146,7 +146,7 @@ Every message goes through exactly one row.
 
 | State | Message | Condition | Outcome | Next state |
 |---|---|---|---|---|
-| any | `SnapshotBegin` | `seq < book.last_applied` | `Stale` | unchanged |
+| any | `SnapshotBegin` | `seq < expected()` | `Stale` | unchanged |
 | `Snapshot` | `SnapshotBegin` | fresh | `Staged` (old run discarded) | `Snapshot` |
 | any other | `SnapshotBegin` | fresh | `Staged` | `Snapshot` |
 | `NotSynced` / `Gap` | `Level` | — | `Rejected` | unchanged |
@@ -182,7 +182,7 @@ Notes that matter:
 
 ### The freshness gate
 
-`snapshot_fresh(seq) = seq >= book.last_applied_seq()`
+`snapshot_fresh(seq) = seq >= expected()`
 
 This is the pipeline's own guard, not the book's. **`load_snapshot()` has no
 staleness check and will happily rewind a book to an older sequence.**
@@ -190,15 +190,35 @@ Committing a stale bracket would move `last_applied` backwards and then
 double-apply every message between the two positions, with no gap firing to
 reveal it.
 
+The comparison is against `expected()` — the watermark, the next sequence the
+pipeline requires — and **not** against `book.last_applied_seq()`. While `Live`
+those two differ by exactly one, and the difference is the whole point:
+`last_applied_seq()` is the last sequence already *consumed*, so gating on it
+accepts a `SnapshotBegin` numbered at a sequence we have already used. That is a
+frame behind the watermark, and a frame behind the watermark is stale whatever
+its kind. This is not a hypothetical: the gate was written against
+`last_applied_seq()` in Phase 1 and was corrected — see defect 7 below.
+
+Because `expected()` is derived rather than stored, this is **one rule with one
+meaning in every state**: while a bracket is open it is the bracket's own cursor,
+and otherwise it is the book's. So
+
+- a `SnapshotBegin` at or ahead of the watermark opens (or restarts) a bracket;
+- one behind it is `Stale`, *including* one numbered at the last applied
+  sequence;
+- while a bracket is already open, a nested `SnapshotBegin` behind **the
+  bracket's own** cursor is also `Stale`, and the run in progress survives it —
+  exactly as it survives a duplicate level.
+
 The gate is applied in **every** state, including `Gap`. A repair bracket older
 than the view that was lost is not a repair: it would restore an old book and
 then replay old messages over it.
 
-One consequence worth stating because it looks surprising: the comparison is
-against the book's cursor, and **a gap does not advance the cursor**. So a
-bracket beginning at exactly the cursor, or at `cursor + 1`, is *fresh* and is
-accepted; only one genuinely below the cursor is refused. Both cases are pinned
-by scenario vectors.
+One consequence worth stating because it looks surprising: **a gap does not
+advance the book's cursor.** A repair bracket must therefore begin at the first
+sequence the book still needs — `cursor + 1` — or later. A bracket beginning
+*exactly at* the lost cursor is refused. Both boundary cases are pinned by
+scenario vectors, in `Live` and in `Gap` alike.
 
 ### Recovery accounting
 
@@ -305,7 +325,7 @@ never papered over.
 
 ### Layer 2 — scenario vectors
 
-**25 hand-written traces**, 100 checks, one per failure hypothesis, each with a
+**28 hand-written traces**, 112 checks, one per failure hypothesis, each with a
 full expected outcome vector *and* an expected final state, `expected()`, and
 top of book. Covered: the sketch; an empty snapshot; `SnapshotEnd` as the very
 first message; a snapshot that never ends; a gap inside a bracket; a nested
@@ -313,10 +333,21 @@ first message; a snapshot that never ends; a gap inside a bracket; a nested
 absent level; `qty == 0` inside snapshot content; a duplicate price inside a
 snapshot; an out-of-domain price inside a snapshot; negative `qty` inside a
 snapshot; a negative `qty` on a **live** level; an out-of-domain price on a live
-level; a stale `SnapshotBegin` while `Live`; a bracket below the lost cursor;
-a bracket exactly at the lost cursor; a long-lost stream resumed by a bracket;
-the same price on both sides of a snapshot; a price listed twice including a
-zero quantity; and `ProtocolViolation` leaving a healthy book intact.
+level; a stale `SnapshotBegin` while `Live`; a long-lost stream resumed by a
+bracket; the same price on both sides of a snapshot; a price listed twice
+including a zero quantity; and `ProtocolViolation` leaving a healthy book intact.
+
+A group of them pin the freshness boundary and exist because the fuzz cannot —
+see defect 7. They come in pairs, because a boundary is only pinned by testing
+both sides of it:
+
+- `SnapshotBegin` **at** the last applied sequence while `Live` → `Stale`, with
+  the healthy book untouched, immediately followed by the same frame one
+  sequence later → accepted;
+- a repair bracket **at** the lost cursor → `Stale`, and **at the watermark** →
+  accepted and recovers;
+- a nested `SnapshotBegin` **behind** the bracket's own cursor → `Stale`, with
+  the run in progress surviving it.
 
 ### Layer 3 — accounting
 
@@ -419,13 +450,29 @@ code.
    the first level that arrives while `Live`. The coverage assertion found this;
    the differential fuzz could not have.
 
+7. **The freshness gate was one sequence too lenient.** `snapshot_fresh`
+   compared against `book.last_applied_seq()` — the last sequence *consumed* —
+   instead of `expected()`, the watermark. The two differ by exactly one while
+   `Live`, and this accepted a `SnapshotBegin` numbered at a sequence already
+   used. A frame behind the watermark is stale whatever its kind. Found in
+   review, after the phase had been declared complete.
+
+   **The differential fuzz reported full agreement — 1550 of 1550 traces — with
+   the defect present**, because the oracle had been written from the pipeline
+   and inherited the same off-by-one. This is defect 2's failure mode occurring
+   a second time, in a phase whose documentation already named it. The fix was
+   re-validated by reverting *both* implementations together and confirming that
+   the fuzz still reports `[ok] differential vs oracle (1550 checks)` while the
+   scenario vectors fail 7 of 112 — the harness proving its own limits.
+
 The verification harness was itself checked by deliberately breaking the oracle
-and the pipeline and confirming each break is caught: an off-by-one on the
-freshness gate, `first_missing_seq` taken from the bracket, a wrong staging-cap
-comparison, and the historical counting omission. Each is detected. The
-staging-cap case is only detectable because the suite runs part of the corpus
-with a small cap — at the default cap of 2²⁰ a ~150-message trace never
-approaches it.
+and the pipeline and confirming each break is caught: the freshness gate read
+against the last consumed sequence instead of the watermark, `first_missing_seq`
+taken from the bracket, a wrong staging-cap comparison, and the historical
+counting omission. Each is detected. The staging-cap case is only detectable
+because the suite runs part of the corpus with a small cap — at the default cap
+of 2²⁰ a ~150-message trace never approaches it. The first of those four is
+detected **only** by the scenario vectors; the differential passes it.
 
 ## Runtime and reproducibility
 
