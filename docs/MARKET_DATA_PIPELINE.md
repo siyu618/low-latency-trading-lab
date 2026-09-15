@@ -539,8 +539,9 @@ would fail the suite rather than silently pass it.
 Phase 1 measures nothing and therefore publishes no results dataset. No
 Experiment 01 or 02 file is modified: the only change outside the new directory
 is one `add_subdirectory(market-data-pipeline)` line in the root `CMakeLists.txt`.
-There is no benchmark target and no `BENCH_ARCH_FLAGS` entry, because there is
-nothing yet to time.
+Phase 1 adds no benchmark target and no `BENCH_ARCH_FLAGS` entry, because it has
+nothing to time. (Phase 3A later added both — at the repository root, beside
+every other benchmark, never in this directory.)
 
 **A later phase may add measurement** — ingress-to-book latency, sequencer cost
 per message, or the cost of a snapshot commit — on top of this contract. No such
@@ -1014,8 +1015,8 @@ vacuously.
 
 | Sanitizer | Result |
 |---|---|
-| ASan (`-fsanitize=address -fno-omit-frame-pointer -g`) | clean; 35/35 CTest |
-| UBSan (`-fsanitize=undefined -fno-sanitize-recover=all -g`) | clean; 35/35 CTest |
+| ASan (`-fsanitize=address -fno-omit-frame-pointer -g`) | clean; 35/35 CTest (the Phase-2 set) |
+| UBSan (`-fsanitize=undefined -fno-sanitize-recover=all -g`) | clean; 35/35 CTest (the Phase-2 set) |
 | **TSan** (`-fsanitize=thread -fno-omit-frame-pointer`) | **runs, and reports no races** — 20 consecutive runs of the threaded suite, and the full CTest set, with zero diagnostics and zero non-zero exits |
 
 TSan is the one that matters for this phase, and it is reported as a real result
@@ -1082,9 +1083,15 @@ instrumentation, so the zero above is a negative and not a blind spot.
 
 Full CTest: **35/35** in a clean Release build with `BUILD_BENCHMARKS=ON`, under
 ASan and under UBSan, and in the CTest set under TSan; including every
-pre-existing Phase-1A and Phase-1B test. No Experiment 01 or 02 file is touched.
-There is still no benchmark target in this directory, and still no
-`BENCH_ARCH_FLAGS` entry, because there is still nothing being measured.
+pre-existing Phase-1A and Phase-1B test. (That is the count as of Phase 2; the
+repository total is 40 today, after Phase 3A added one benchmark target, one
+smoke cell and four off-cell rejection guards.) No Experiment 01 or 02 file is
+touched.
+There is still no benchmark target **in this directory**, and no
+`BENCH_ARCH_FLAGS` entry for one, because every phase described in this document
+measures nothing. Phase 3A's benchmark lives in the root `benchmark/` directory
+with every other benchmark in this repository, never in a correctness test
+binary.
 
 One correctness hole was found and closed after the phase's first cut, and it is
 recorded in full under *Truncated input is not a clean session* above: a session
@@ -1093,8 +1100,25 @@ frame without a trace. That is why the phase's status was not stated as frozen
 until the finalization call, its two test suites, and the sabotages that prove
 those suites fail without it, were all in place.
 
-**Phase 3 — Throughput / End-to-End Latency: NOT STARTED.** Phase 2 deliberately
-left the measurement surfaces alone: no clock is read, no sample is collected,
-and no warm-up or steady-state concept exists yet. A later phase may add
-ingress-to-book latency or end-to-end throughput on top of this contract. No such
-phase is opened here.
+**Phase 3A — Integrated Market-Data Pipeline Throughput Baseline: IMPLEMENTED /
+MEASURED.** Phases 1 and 2 deliberately left the measurement surfaces alone: no
+clock is read, no sample is collected, and no warm-up or steady-state concept
+exists in any component described above. Phase 3A adds a measurement **around**
+this contract without changing it — it integrates the frozen framer, the frozen
+decoder, Experiment 02's frozen queue, the sequencer above and Experiment 01's
+frozen book into one two-thread system and times the whole path end to end. It
+modifies none of them.
+
+Phase 3A measures **throughput only**, at session granularity: 34.909762
+ns/message and 28,646,780 messages/second (median of four session medians) over
+5,000,000 live Level messages, with a 3.676 % spread across session medians. It
+is **not** a latency, **not** a percentile and **not** a per-message cost — no
+component here gained a timestamp and no side timestamp array exists. See
+`docs/MARKET_DATA_THROUGHPUT.md` for the timed boundary, the one canonical cell
+and the limits on the result, and `docs/results/market-data-throughput/` for the
+dataset.
+
+**Phase 3 is NOT complete.** Phase 3B — per-message latency and percentiles — is
+NOT STARTED, and is not opened here. Neither is any controlled comparison of
+chunk sizes, queue capacities, books or queue variants: Phase 3A has one cell
+and compares nothing.

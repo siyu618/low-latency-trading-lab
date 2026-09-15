@@ -1,0 +1,10 @@
+# Experiment 03 Phase 3A raw repetitions — integrated market-data pipeline throughput.
+# messages_per_second = live messages consumed / END-TO-END elapsed_ns (NOT a latency, NOT a percentile).
+# The initial snapshot is applied BEFORE the timed interval and is excluded from every figure.
+# Chunk policy 65536 bytes; queue capacity 4096. All 5 measured repetitions are present; 1 warm-up repetition(s) are excluded.
+rep,live_messages,elapsed_ns,ns_per_message,messages_per_second,decoded_messages,enqueued_messages,consumed_messages,producer_full_retries,consumer_empty_retries,checksum,correctness
+1,5000000,173938958,34.787792,28745716.644,5000130,5000130,5000130,0,19897557,0x7E6BA57E42B53319,PASS
+2,5000000,173286375,34.657275,28853970.775,5000130,5000130,5000130,0,20857829,0x7E6BA57E42B53319,PASS
+3,5000000,167215417,33.443083,29901549.090,5000130,5000130,5000130,0,17295286,0x7E6BA57E42B53319,PASS
+4,5000000,173107750,34.621550,28883744.373,5000130,5000130,5000130,0,20692655,0x7E6BA57E42B53319,PASS
+5,5000000,179722875,35.944575,27820609.925,5000130,5000130,5000130,0,20457937,0x7E6BA57E42B53319,PASS

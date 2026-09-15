@@ -1,0 +1,45 @@
+# Experiment 03 Phase 3A — integrated market-data pipeline throughput:
+# exact invocations, in the order they ran.
+#
+# repo HEAD: 2b24040643445e7ff30349af3dbc7d4b169b7460
+# binary: build-phase3a/market_data_pipeline_throughput_bench
+# messages=5000000 reps=5 warmup=1 sessions=4
+# chunk_bytes=65536 queue_capacity=4096 (compile-time constants)
+#
+# THE MEASURED QUANTITY is [release start gate] -> [the consumer's final
+# apply], stamped by the consumer thread itself. It INCLUDES stream
+# framing, binary decode, the queue handoff, BOTH retry loops, sequence
+# validation, staging bookkeeping and the FlatOrderBook apply. It is NOT
+# a latency, NOT a percentile and NOT a per-message cost.
+#
+# THE TIMED REGION CONTAINS NO SNAPSHOT. A small valid snapshot is applied
+# BEFORE the gate: the producer feeds only the snapshot bytes and parks,
+# the consumer drains exactly the snapshot's 130 messages and parks, and
+# the clock starts only after both are parked. So the window carries no
+# recovery, no malformed bytes, no sequence gap, no stale message, no
+# terminal decode error and no truncated input.
+#
+# THE COMPONENTS ARE FROZEN. None was modified to move a number. The
+# frozen ThreadedMdPipeline is run over the SAME bytes before timing and
+# must agree with a single-threaded reference on every observable and all
+# twenty counters, which is what licenses this harness's own thread pair.
+#
+# CHUNK SIZE AND CAPACITY ARE NOT OPTIONS. The parser refuses unknown
+# flags, so no treatment matrix can be produced by accident. Phase 3A
+# does NOT compare queue variants, books, capacities or chunk sizes.
+#
+# THE FOUR SESSIONS ARE SEQUENTIAL AND NOT INDEPENDENT. They are not four
+# randomised trials; with one fixed cell they are a read on temporal
+# drift, and the session spread is reported rather than averaged away.
+
+# ---- session 1/4 ----
+build-phase3a/market_data_pipeline_throughput_bench --messages=5000000 --reps=5 --warmup=1 --raw-out=docs/results/market-data-throughput/raw/session1.csv --summary-out=docs/results/market-data-throughput/summaries/session1.txt 
+
+# ---- session 2/4 ----
+build-phase3a/market_data_pipeline_throughput_bench --messages=5000000 --reps=5 --warmup=1 --raw-out=docs/results/market-data-throughput/raw/session2.csv --summary-out=docs/results/market-data-throughput/summaries/session2.txt 
+
+# ---- session 3/4 ----
+build-phase3a/market_data_pipeline_throughput_bench --messages=5000000 --reps=5 --warmup=1 --raw-out=docs/results/market-data-throughput/raw/session3.csv --summary-out=docs/results/market-data-throughput/summaries/session3.txt 
+
+# ---- session 4/4 ----
+build-phase3a/market_data_pipeline_throughput_bench --messages=5000000 --reps=5 --warmup=1 --raw-out=docs/results/market-data-throughput/raw/session4.csv --summary-out=docs/results/market-data-throughput/summaries/session4.txt 

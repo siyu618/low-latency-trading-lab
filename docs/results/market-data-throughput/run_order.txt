@@ -1,0 +1,4 @@
+--messages=5000000 --reps=5 --warmup=1 --raw-out=docs/results/market-data-throughput/raw/session1.csv --summary-out=docs/results/market-data-throughput/summaries/session1.txt 
+--messages=5000000 --reps=5 --warmup=1 --raw-out=docs/results/market-data-throughput/raw/session2.csv --summary-out=docs/results/market-data-throughput/summaries/session2.txt 
+--messages=5000000 --reps=5 --warmup=1 --raw-out=docs/results/market-data-throughput/raw/session3.csv --summary-out=docs/results/market-data-throughput/summaries/session3.txt 
+--messages=5000000 --reps=5 --warmup=1 --raw-out=docs/results/market-data-throughput/raw/session4.csv --summary-out=docs/results/market-data-throughput/summaries/session4.txt 

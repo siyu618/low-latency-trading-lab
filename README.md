@@ -260,13 +260,56 @@ namespace (`llmd`), leaving the Experiment 01/02 trees untouched.
 > not by sleeping. Eight sabotage runs confirm the suites fail when they should —
 > two of them found defects in the tests themselves, one of which had been
 > hanging rather than failing, and the three aimed at the truncation fix each
-> fail in a different place. Full CTest **35/35**, clean under ASan and UBSan,
+> fail in a different place. Full CTest **35/35** as of Phase 2 (40/40 today,
+> after Phase 3A added one benchmark target, one smoke cell and four off-cell
+> rejection guards), clean under ASan and UBSan,
 > and **TSan runs and reports no races** across 20 consecutive runs of the
 > threaded suite — with a positive control confirming TSan actually instruments
 > both worker threads, so the clean report is a negative and not a blind spot. No
 > performance claim of any kind: nothing is timed and no retry count is a rate.
 > Methodology: `docs/MARKET_DATA_PIPELINE.md`. **Phase 3 (Throughput /
 > End-to-End Latency) is NOT STARTED.**
+>
+> **Experiment 03 Phase 3A — Integrated Market-Data Pipeline Throughput
+> Baseline: IMPLEMENTED / MEASURED. Phase 3 as a whole is NOT complete.**
+> Phases 1A, 1B and 2 were correctness phases that read no clock; Phase 3A is
+> the first Experiment 03 phase to read one, and it measures **rate only**. It
+> integrates the frozen components into one two-thread system —
+> `StreamDecoder` → frozen `decode_one()` → `MdMessage` →
+> `SpscSeparatedBaselineRingBuffer<MdMessage, 4096>` →
+> `MarketDataPipeline<FlatOrderBook>` — and **modifies none of them**; no
+> component was changed in order to move a number. The measured interval runs
+> from the **release of an explicit start gate** to the **consumer's final
+> apply**, stamped by the consumer thread itself, so it includes framing, binary
+> decode, the queue handoff, *both* retry loops, sequencing and the book apply,
+> and it is **not** a latency, **not** a percentile and **not** a per-message
+> cost. The snapshot is applied **before** the gate and excluded from every
+> figure, so the window carries no malformed bytes, sequence gap, stale message,
+> recovery, terminal decode error or truncated input. **One canonical cell**: the
+> 64 KiB chunk size and the 4096 capacity are compile-time constants and the
+> argument parser refuses unrecognised flags, so `--chunk-bytes` and
+> `--capacity` cannot be smuggled in — Phase 3A compares **nothing**, and no
+> Phase-2 or Phase-3 SPSC number is comparable to these, because a Phase-2
+> message is a raw payload on an empty queue whereas a Phase-3A message is
+> framed, decoded, sequenced and applied to a live book. Result: **34.909762
+> ns/message and 28,646,780 messages/second** (median of four session medians,
+> 5,000,000 live Level messages per repetition after a 130-message snapshot),
+> with a **3.676 %** spread across session medians that must always be quoted
+> with it; the figure is **workload- and host-specific** and is *not* exchange
+> throughput, production trading throughput or wire-to-exchange latency. All
+> **20** measured repetitions passed, each matching a single-threaded reference
+> on the final book state, all twenty pipeline counters and a folded checksum,
+> and the **frozen `ThreadedMdPipeline`** was required to agree with that
+> reference over the same bytes before any clock started — which is what
+> licenses the harness owning its own thread pair in order to place the gate and
+> the end stamp. Retry diagnostics show `consumer_empty_retries` exceeding
+> `producer_full_retries` by roughly **3,331 : 1** pooled; they are reported as
+> diagnostics with **no bottleneck attributed** and **no causal cache/coherence
+> claim**, since a failed `try_pop` is not a unit of time and both loops sit
+> inside the interval. **Phase 3B (per-message latency, percentiles) is NOT
+> started** — no P50/P90/P99/P99.9 and no per-message timestamp exists in this
+> dataset or its tooling. Methodology: `docs/MARKET_DATA_THROUGHPUT.md`;
+> dataset: `docs/results/market-data-throughput/`.
 
 ## Experiments
 
@@ -274,7 +317,7 @@ namespace (`llmd`), leaving the Experiment 01/02 trees untouched.
 |---|------------|--------|
 | 01 | L2 Order Book: `std::map` vs Flat Representation | Phase 1, 2, 4 COMPLETE / FROZEN; Phase 3M tooling COMPLETE + recordings COLLECTED (attribution analysis deferred); Phase 3L tooling READY (native Linux measurement deferred) |
 | 02 | SPSC Ring Buffer / Concurrency | Phase 1 (Correctness / Memory Model) COMPLETE / FROZEN; Phase 2 (Throughput Baseline) COMPLETE / FROZEN; Phase 3A (Controlled Cursor Placement) COMPLETE / FROZEN; Phase 3B (Remote Cursor Caching) COMPLETE / FROZEN; Phase 4 (Tail Latency / Jitter, measurement only — no treatment comparison) COMPLETE / FROZEN |
-| 03 | Market Data Pipeline (sequencer + binary decoder) | Phase 1A (Sequencer / Snapshot / Recovery Correctness) COMPLETE / FROZEN; Phase 1B (Binary Protocol / Decoder Correctness) COMPLETE / FROZEN; Phase 1 overall COMPLETE / FROZEN; Phase 2 (Threaded Decoder → SPSC → Book Correctness) COMPLETE / FROZEN. Phase 3 (Throughput / End-to-End Latency) NOT STARTED |
+| 03 | Market Data Pipeline (sequencer + binary decoder) | Phase 1A (Sequencer / Snapshot / Recovery Correctness) COMPLETE / FROZEN; Phase 1B (Binary Protocol / Decoder Correctness) COMPLETE / FROZEN; Phase 1 overall COMPLETE / FROZEN; Phase 2 (Threaded Decoder → SPSC → Book Correctness) COMPLETE / FROZEN; Phase 3A (Integrated Throughput Baseline — measurement only, one cell, no treatment comparison) IMPLEMENTED / MEASURED. **Phase 3 NOT complete**; Phase 3B (per-message latency / percentiles) NOT STARTED |
 
 ## Layout
 
@@ -336,9 +379,16 @@ low-latency-trading-lab/
 │   ├── spsc_tail_latency_bench.cpp  # Exp 02 Phase 4: producer_ready -> consumer_received
 │   │                                #   distribution over the separated-cursor baseline
 │   │                                #   (ONE queue; no treatment; even intervals rejected)
-│   └── spsc_tail_harness.h     # Exp 02 Phase 4: sequence-keyed sparse sample
-│                               #   schedule, exact tick->ns conversion and the timer
-│                               #   calibration, shared by the bench and its tests
+│   ├── spsc_tail_harness.h     # Exp 02 Phase 4: sequence-keyed sparse sample
+│   │                           #   schedule, exact tick->ns conversion and the timer
+│   │                           #   calibration, shared by the bench and its tests
+│   └── market_data_pipeline_throughput_bench.cpp
+│                               # Exp 03 Phase 3A: the composed
+│                               #   bytes->frames->messages->SPSC->sequencer->book path
+│                               #   as ONE two-thread system. Chunk size (64 KiB) and
+│                               #   capacity (4096) are compile-time constants and the
+│                               #   parser REFUSES unknown flags: one cell, no matrix.
+│                               #   Session-level timing only; no per-message clock.
 ├── scripts/
 │   ├── bench.sh                # Phase 2 canonical per-process run
 │   ├── tail-bench.sh           # Phase 4 canonical matrix runner (one invocation per cell)
@@ -360,8 +410,16 @@ low-latency-trading-lab/
 │   ├── verify-spsc-tail-summary.py  # Exp 02 Phase 4: recomputes every statistic from
 │   │                                #   raw/, checks the sparse-instrumentation counters,
 │   │                                #   and reports the per-repetition starvation diagnostic
-│   └── analyze-spsc-tail.py    # Exp 02 Phase 4 DERIVED tables; refuses to run on a
-│                               #   dataset whose invariants.txt is not a passing one
+│   ├── analyze-spsc-tail.py    # Exp 02 Phase 4 DERIVED tables; refuses to run on a
+│   │                           #   dataset whose invariants.txt is not a passing one
+│   ├── market-data-throughput.sh  # Exp 03 Phase 3A canonical runner: 4 sequential
+│   │                           #   sessions, load pre-flight, refuse-to-clobber, then
+│   │                           #   verification and the DERIVED summary; source digests
+│   │                           #   into HOST.md
+│   └── analyze-market-data-throughput.py  # Exp 03 Phase 3A authoritative gate: re-derives
+│                               #   every headline from raw/, refuses a dataset whose
+│                               #   sessions disagree on workload or checksum, whose counts
+│                               #   are off, or whose slowest rep exceeds 5x its own fastest
 ├── cmake/
 │   └── assert_nonzero_exit.cmake  # ctest guard for the test exit-code self-test
 ├── docs/
@@ -378,7 +436,9 @@ low-latency-trading-lab/
 │   │   │                    #   (sparse instrumentation) + its superseded
 │   │   │                    #   per-message-timestamp pass; its
 │   │   │                    #   CONTAMINATED-concurrent-load/ first pass is
-│   │   │                    #   deliberately not committed; see README.md)
+│   │   │                    #   deliberately not committed, and
+│   │   │                    #   market-data-throughput/ canonical Exp 03
+│   │   │                    #   Phase 3A; see README.md)
 │   │   └── README.md        # layout + honesty rule
 │   ├── ORDERBOOK_BITMAP_OPTIMIZATION.md  # Optimization Study analysis (item 12)
 │   ├── SPSC_MEMORY_MODEL.md  # Exp 02: happens-before + memory-order argument
@@ -400,6 +460,10 @@ low-latency-trading-lab/
 │   │                         #   decoder status semantics, the consumed invariant,
 │   │                         #   stream decoding, and the wire-vs-sequence-vs-book
 │   │                         #   validation layers
+│   ├── MARKET_DATA_THROUGHPUT.md  # Exp 03 Phase 3A: the timed boundary and what it
+│   │                         #   includes, the one canonical cell, the workload,
+│   │                         #   the measured dataset, the retry diagnostics and
+│   │                         #   the limits on what they can be used to claim
 │   └── profiling/           # Phase 3 guides (README.md, MACOS_INSTRUMENTS.md) + Phase 4
 │                            #   tail-latency methodology (PHASE4_TAIL_LATENCY.md)
 ├── market-data-pipeline/    # Experiment 03 (own top-level dir; header-only, llmd)
@@ -434,7 +498,8 @@ low-latency-trading-lab/
 │   │                        #   backpressure, termination, malformed wire,
 │   │                        #   finalization, truncated input at EOF
 │   └── CMakeLists.txt       # header-only INTERFACE lib + three test targets + their
-│                            #   exit-code guards; deliberately no benchmark target
+│                            #   exit-code guards; no benchmark target here — Phase 3A's
+│                            #   benchmark lives in the root benchmark/ directory
 ├── CMakeLists.txt
 └── README.md
 ```
@@ -1936,21 +2001,57 @@ Phase 2 — threaded decoder → SPSC → book:
 
 - `market-data-pipeline/CMakeLists.txt` — one header-only `INTERFACE` target
   carrying all three phases, three test targets, three exit-code guards, and
-  `Threads::Threads` on the threaded target only; **deliberately no benchmark
-  target** in any phase so far.
+  `Threads::Threads` on the threaded target only; **no benchmark target in any
+  correctness phase** — Phase 3A's benchmark lives in the root `benchmark/`
+  directory with every other benchmark in this repo, never in a correctness test
+  binary.
 
-**No Experiment 01 or 02 file is modified.** The only changes outside the new
-directory are one `add_subdirectory(market-data-pipeline)` line in the root
-`CMakeLists.txt`, made in Phase 1. There is no `BENCH_ARCH_FLAGS` entry, because
-there is nothing yet to time.
+**No Experiment 01 or 02 file is modified**, in any Experiment 03 phase. Outside
+the new directory, the changes are one `add_subdirectory(market-data-pipeline)`
+line in the root `CMakeLists.txt` (Phase 1) and, added by Phase 3A, one
+benchmark target, one `BENCH_ARCH_FLAGS` entry and five CTest cases in that same
+root file, plus the new files under `benchmark/` and `scripts/`. No frozen
+header, no frozen queue, no frozen book and no frozen decoder is touched.
 
-Phases NOT STARTED for Experiment 03: **Phase 3 — throughput / end-to-end
-latency.** Phases 1 and 2 read no clock and collect no sample, and Phase 2 makes
-no claim about how fast the threaded path runs — its retry counters prove a code
-path was exercised and nothing more. There is no warm-up, no steady-state
-concept, and no sample-collection surface, so a measurement phase starts from a
-blank slate on top of a now-frozen correctness contract. No such phase is opened
-here.
+Phases 1 and 2 read no clock and collect no sample, and Phase 2 makes no claim
+about how fast the threaded path runs — its retry counters prove a code path was
+exercised and nothing more.
+
+**Phase 3A — integrated throughput baseline: IMPLEMENTED / MEASURED.**
+
+- `benchmark/market_data_pipeline_throughput_bench.cpp` — the composed
+  two-thread measurement. It owns its own thread pair rather than delegating to
+  the frozen `ThreadedMdPipeline`, because the frozen harness offers neither a
+  producer-side ready gate nor a consumer-side end stamp and §3.1 requires both;
+  equivalence is pinned by requiring the benchmark, the frozen
+  `ThreadedMdPipeline` and a single-threaded reference to agree on every
+  observable and all twenty counters over the same bytes **before** any clock
+  starts.
+- `scripts/market-data-throughput.sh` — the 4-session canonical runner, with the
+  load-average pre-flight and the refuse-to-clobber guard.
+- `scripts/analyze-market-data-throughput.py` — the authoritative gate. It
+  re-derives each headline from the raw rows, refuses the dataset if any two
+  sessions disagree on workload or reference checksum, refuses it if any
+  repetition's decoded/enqueued/consumed counts differ from the expected total,
+  and refuses it if any session's slowest repetition exceeds 5× its own fastest.
+- `docs/MARKET_DATA_THROUGHPUT.md` — methodology, WHY / WHAT / HOW, the measured
+  dataset, the retry diagnostics and their stated limits.
+- `docs/results/market-data-throughput/` — the committed dataset: 4 sessions ×
+  (1 excluded warm-up + 5 measured repetitions), 20 measured repetitions, all
+  `PASS`.
+
+The two constants that define the single canonical cell live in the benchmark
+source, not on the command line: `kChunkBytes = 64 * 1024` and
+`kCapacity = 4096`. The parser rejects unrecognised flags, and four CTest guards
+pin that refusal, so an off-cell invocation fails rather than being silently
+measured under a guessed configuration.
+
+**Phase 3 is NOT complete.** Phases NOT STARTED for Experiment 03:
+**Phase 3B — per-message latency and percentiles**, and any later controlled
+comparison of chunking policies, queue capacities, books or queue variants.
+Phase 3A measures throughput only: nothing in this repository reads a clock per
+message, no `MdMessage` carries a timestamp and no side timestamp array exists.
+No such phase is opened here.
 
 ## Next phases
 
@@ -1971,11 +2072,14 @@ clock, ship no benchmark binary and publish no results dataset. Phase 2 places a
 thread boundary and Experiment 02's frozen SPSC queue between Phase 1B's decoder
 and Phase 1A's sequencer, and is verified against a single-threaded reference
 with the suites sabotage-tested; TSan runs and reports no races.
-**Phase 3 — Throughput / End-to-End Latency — is NOT STARTED**, and is not
-opened here. It would be the first phase in Experiment 03 to read a clock:
-ingress-to-book latency, end-to-end throughput, sequencer cost per message. No
-sample-collection, warm-up or steady-state surface exists yet, and Phases 1 and 2
-make no claim about any of those numbers.
+**Phase 3A (Integrated Throughput Baseline) IMPLEMENTED / MEASURED** — one cell,
+one workload, one host, no treatment comparison, and a committed dataset whose
+every repetition matched a single-threaded reference.
+**Phase 3 is NOT complete. Phase 3B — per-message latency and percentiles — is
+NOT STARTED**, and is not opened here; nor is any controlled comparison of chunk
+sizes, capacities, books or queue variants. Phases 1A/1B/2 and Phase 3A make no
+claim about per-message cost or about any latency distribution.
 
 Experiments 01 and 02 are **COMPLETE / FROZEN**; Experiment 03 Phases 1 and 2 are
-**COMPLETE / FROZEN**. **No next engineering task is currently opened.**
+**COMPLETE / FROZEN**, and Phase 3A is **IMPLEMENTED / MEASURED** with Phase 3
+left open. **No next engineering task is currently opened.**

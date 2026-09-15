@@ -1,0 +1,43 @@
+# Experiment 03 Phase 3A — integrated market-data pipeline throughput.,"# ONE cell: 64 KiB source chunks, SPSC capacity 4096, separated-cursor","# baseline queue, FlatOrderBook, 5,000,000 live Level messages after a",# 130-message snapshot. The snapshot is applied BEFORE the timed region,# and is excluded from every figure below.,"# messages_per_second = live messages consumed / elapsed_ns, where elapsed",# is [release start gate] -> [the consumer's final apply]. It INCLUDES,"# stream framing, binary decode, the queue handoff, both retry loops,","# sequencing and the FlatOrderBook apply. It is NOT a latency, NOT a",# percentile and NOT a per-message cost. NOT exchange throughput.,# This figure is workload- and host-specific.
+
+session,reps,median_ns_per_message,median_messages_per_second,session_min_ns_per_message,session_max_ns_per_message,median_producer_full_retries,median_consumer_empty_retries
+1,5,34.102708,29323184.196,33.902833,35.161858,0,20143214
+2,5,35.386125,28259663.922,34.660775,37.555858,0,21418089
+3,5,35.162250,28439590.754,34.910242,37.533842,0,22736239
+4,5,34.657275,28853970.775,33.443083,35.944575,0,20457937
+
+# PRIMARY (median of session medians)
+median_ns_per_message,34.909762
+median_messages_per_second,28646780.764
+
+# spread across session medians
+min_session_ns_per_message,34.102708
+max_session_ns_per_message,35.386125
+spread_pct,3.676
+
+# retry diagnostics (medians of session medians)
+median_producer_full_retries,0
+median_consumer_empty_retries,20938013
+
+"# every raw repetition, preserved; none discarded"
+session,rep,live_messages,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum
+1,1,5000000,172526792,34.505358,28981006.034,0,20562475,0x7E6BA57E42B53319
+1,2,5000000,169514167,33.902833,29496059.760,38322,19982238,0x7E6BA57E42B53319
+1,3,5000000,169996333,33.999267,29412399.149,0,19614367,0x7E6BA57E42B53319
+1,4,5000000,170513542,34.102708,29323184.196,0,20143214,0x7E6BA57E42B53319
+1,5,5000000,175809291,35.161858,28439907.650,0,20578797,0x7E6BA57E42B53319
+2,1,5000000,176930625,35.386125,28259663.922,0,22363980,0x7E6BA57E42B53319
+2,2,5000000,187779291,37.555858,26627004.359,33531,22103060,0x7E6BA57E42B53319
+2,3,5000000,174191292,34.838258,28704075.517,0,21418089,0x7E6BA57E42B53319
+2,4,5000000,173303875,34.660775,28851057.139,0,21331241,0x7E6BA57E42B53319
+2,5,5000000,178903834,35.780767,27947975.671,2048,20769877,0x7E6BA57E42B53319
+3,1,5000000,177523750,35.504750,28165245.495,0,23003859,0x7E6BA57E42B53319
+3,2,5000000,187669209,37.533842,26642623.085,28090,25741614,0x7E6BA57E42B53319
+3,3,5000000,175811250,35.162250,28439590.754,24323,20727208,0x7E6BA57E42B53319
+3,4,5000000,175216417,35.043283,28536138.825,0,20485209,0x7E6BA57E42B53319
+3,5,5000000,174551209,34.910242,28644888.962,0,22736239,0x7E6BA57E42B53319
+4,1,5000000,173938958,34.787792,28745716.644,0,19897557,0x7E6BA57E42B53319
+4,2,5000000,173286375,34.657275,28853970.775,0,20857829,0x7E6BA57E42B53319
+4,3,5000000,167215417,33.443083,29901549.090,0,17295286,0x7E6BA57E42B53319
+4,4,5000000,173107750,34.621550,28883744.373,0,20692655,0x7E6BA57E42B53319
+4,5,5000000,179722875,35.944575,27820609.925,0,20457937,0x7E6BA57E42B53319

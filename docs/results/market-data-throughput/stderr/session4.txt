@@ -1,0 +1,11 @@
+==> generating workload (messages=5000000, seed=0x5EEDC0FFEE)
+==> workload: 5000000 live + 130 snapshot = 5000130 messages, 145003736 bytes, 4400492 sets / 599508 deletes
+==> reference agrees: state=1 last_applied=5000130 bb=99999 ba=100001 levels=117 checksum=0x7E6BA57E42B53319
+[warmup 1/1] elapsed=187004334ns ns_per_message=37.400867 correct=PASS (excluded from reported data)
+[rep 1/5] elapsed=173938958ns ns_per_message=34.787792 messages_per_second=28745716.644 full_retries=0 empty_retries=19897557 correct=PASS
+[rep 2/5] elapsed=173286375ns ns_per_message=34.657275 messages_per_second=28853970.775 full_retries=0 empty_retries=20857829 correct=PASS
+[rep 3/5] elapsed=167215417ns ns_per_message=33.443083 messages_per_second=29901549.090 full_retries=0 empty_retries=17295286 correct=PASS
+[rep 4/5] elapsed=173107750ns ns_per_message=34.621550 messages_per_second=28883744.373 full_retries=0 empty_retries=20692655 correct=PASS
+[rep 5/5] elapsed=179722875ns ns_per_message=35.944575 messages_per_second=27820609.925 full_retries=0 empty_retries=20457937 correct=PASS
+
+correctness=PASS; 5 measured repetition(s) published.

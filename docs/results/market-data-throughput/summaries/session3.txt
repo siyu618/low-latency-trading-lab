@@ -1,0 +1,44 @@
+# Experiment 03 Phase 3A — integrated market-data pipeline throughput.
+# messages_per_second = live messages consumed / elapsed_ns, where elapsed is
+#   [release start gate] -> [consumer's final apply]. It INCLUDES stream
+#   framing, binary decode, queue handoff, sequencing and FlatOrderBook apply.
+# It is NOT a latency and NOT a percentile. Phase 3A measures throughput only.
+# This summary describes THIS PROCESS ONLY. Aggregation across sessions happens
+#   in scripts/market-data-throughput.sh from the preserved raw rows.
+# exact invocation (argv as received):
+#   argv[0]=build-phase3a/market_data_pipeline_throughput_bench
+#   argv[1]=--messages=5000000
+#   argv[2]=--reps=5
+#   argv[3]=--warmup=1
+#   argv[4]=--raw-out=docs/results/market-data-throughput/raw/session3.csv
+#   argv[5]=--summary-out=docs/results/market-data-throughput/summaries/session3.txt
+
+chunk_bytes=65536
+queue_capacity=4096
+seed=0x5EEDC0FFEE
+snapshot_messages=130
+live_messages=5000000
+total_messages=5000130
+sets=4400492
+deletes=599508
+measured_reps=5
+warmup_reps=1
+median_ns_per_message=35.162250
+min_ns_per_message=34.910242
+max_ns_per_message=37.533842
+spread_pct=7.461
+median_messages_per_second=28439590.754
+median_elapsed_ns=175811250
+median_producer_full_retries=0
+median_consumer_empty_retries=22736239
+checksum=0x7E6BA57E42B53319
+expected_checksum=0x7E6BA57E42B53319
+sink=0x1956FD7
+correctness=PASS
+# per-repetition detail — every measured repetition, none discarded:
+rep,live_messages,elapsed_ns,ns_per_message,messages_per_second,producer_full_retries,consumer_empty_retries,checksum
+1,5000000,177523750,35.504750,28165245.495,0,23003859,0x7E6BA57E42B53319
+2,5000000,187669209,37.533842,26642623.085,28090,25741614,0x7E6BA57E42B53319
+3,5000000,175811250,35.162250,28439590.754,24323,20727208,0x7E6BA57E42B53319
+4,5000000,175216417,35.043283,28536138.825,0,20485209,0x7E6BA57E42B53319
+5,5000000,174551209,34.910242,28644888.962,0,22736239,0x7E6BA57E42B53319

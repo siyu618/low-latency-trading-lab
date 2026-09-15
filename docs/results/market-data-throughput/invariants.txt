@@ -1,0 +1,17 @@
+VERIFIED
+  sessions                 : 4
+  measured repetitions      : 20
+  workload (live messages)  : 5000000
+  workload (total messages) : 5000130
+  chunk_bytes               : 65536
+  queue_capacity            : 4096
+  reference checksum        : 0x7E6BA57E42B53319
+  every repetition matched the single-threaded reference; every session
+  measured the same workload; the frozen harness agreed pre-timing.
+
+DERIVED
+  PRIMARY median_ns_per_message      : 34.909762
+  PRIMARY median_messages_per_second : 28646780.764
+  session medians (ns/message)       : 34.102708, 35.386125, 35.162250, 34.657275
+  spread across session medians      : 3.676%
+  written to                         : docs/results/market-data-throughput/SUMMARY.csv
