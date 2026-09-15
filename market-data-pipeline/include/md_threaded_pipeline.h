@@ -108,6 +108,37 @@
 // before the flag must still be consumed.
 //
 // ---------------------------------------------------------------------------
+// TWO WAYS A SESSION ENDS BADLY, and why they are not the same thing
+// ---------------------------------------------------------------------------
+//
+// The decoder thread stops for exactly two reasons, and conflating them would
+// lose real information:
+//
+//   MALFORMED. `feed` returns one of the `Invalid*` statuses: the bytes present
+//   PROVE the frame is not a message of this protocol. Terminal immediately —
+//   the verdict does not depend on any byte that has not arrived yet. No
+//   resynchronisation is attempted, because `consumed` is 0 on malformed input
+//   and any resync point would be a guess.
+//
+//   TRUNCATED. `feed` returned `Ok` for every chunk, then the source reported
+//   EOF while the framer still held a partial frame. Nothing is malformed — the
+//   session simply ended mid-frame. This is reported by `framer.finish()`, and
+//   ONLY at EOF, because mid-stream a retained prefix is the ordinary state of a
+//   framer waiting for the rest of a message.
+//
+// `NeedMoreData` therefore means two different things depending on where it is
+// observed, and the distinction is the whole point of the finalization call:
+//
+//     during streaming   ordinary. Retain the prefix, await the next chunk.
+//                        NOT an error, and the common case on a socket.
+//     at declared EOF    the session ended mid-frame. `terminal_error` is TRUE
+//                        and the status is `NeedMoreData`.
+//
+// The valid prefix is unaffected either way. Everything decoded before the
+// truncated frame was already pushed and is drained normally; the partial frame
+// itself is never published, so it appears in no count and in no book state.
+//
+// ---------------------------------------------------------------------------
 // BACKPRESSURE: no message is ever dropped
 // ---------------------------------------------------------------------------
 //
@@ -141,7 +172,8 @@ struct MdProducerStats {
     std::uint64_t enqueued_messages = 0; // ...of which these reached the queue
     std::uint64_t producer_full_retries = 0;
     DecodeStatus  terminal_decode_status = DecodeStatus::Ok;
-    bool          terminal_error = false; // a malformed frame ended the session
+    bool          terminal_error = false; // the session ended badly: malformed
+                                          // bytes, or truncated input at EOF
 };
 
 // Statistics owned by the BOOK thread. Same reasoning.
@@ -246,7 +278,17 @@ private:
         for (;;) {
             const std::span<const std::byte> chunk = src.next();
             if (chunk.empty()) {
-                break; // session exhausted
+                // Session exhausted. The framer may still be holding a partial
+                // frame, and `feed` has no way to say so — a retained prefix is
+                // `Ok` from its point of view, because mid-stream it is ordinary.
+                // Only here, where the source is known to be finished, does the
+                // carry mean anything: a non-empty one is TRUNCATED INPUT.
+                //
+                // Without this call the retained bytes are dropped on the floor
+                // and the session reports a clean success, which is exactly the
+                // defect this finalization closes.
+                status = framer.finish();
+                break;
             }
             status = framer.feed(chunk, sink);
             if (status != DecodeStatus::Ok) {

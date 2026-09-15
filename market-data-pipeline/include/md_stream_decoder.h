@@ -51,6 +51,26 @@
 // `consumed` is 0 on malformed input and skipping an arbitrary byte without a
 // framing-resynchronisation protocol would be guessing. See the Phase-2 note in
 // docs/MARKET_DATA_PIPELINE.md.
+//
+// FINALIZATION, and why `feed` alone cannot report truncation. Because a
+// retained prefix is `Ok` from `feed`'s point of view, a stream that simply
+// STOPS mid-frame would otherwise look exactly like a clean one: the caller
+// stops calling, the carry still holds bytes, and nothing in the return value
+// ever said so. `feed` cannot raise this itself — it has no way to know whether
+// more bytes are coming, and inventing an error for a partial frame would break
+// the ordinary chunk-boundary case, which is the common one on a socket.
+//
+// So the finalization step is EXPLICIT and belongs to whoever knows the session
+// is over. `finish()` answers one question: is the decoder at a frame boundary?
+// The caller asks it when the byte source is exhausted, and only then.
+//
+//   mid-stream, carry non-empty   -> ordinary, means "send me the rest"
+//   at EOF,      carry non-empty   -> the session ended mid-frame: TRUNCATED
+//
+// Both are `NeedMoreData` from this component, because both are literally the
+// same state — retained bytes with no complete frame. The meaning differs only
+// by what the caller knows about the byte source, which is exactly why the
+// caller, not this class, decides. See `finish()` below.
 // ---------------------------------------------------------------------------
 
 namespace llmd {
@@ -147,6 +167,33 @@ public:
             // (this is how a bracket followed by a partial Level is handled);
             // otherwise the `off == chunk.size()` guard above returns.
         }
+    }
+
+    // Finalize a stream: report whether the decoder ended on a frame boundary.
+    //
+    // Call this when — and only when — the byte source is exhausted. It is the
+    // caller's statement "no more bytes are coming", and it is what turns a
+    // retained partial frame from an ordinary wait into evidence of TRUNCATED
+    // INPUT. See the finalization note at the top of this header.
+    //
+    //   carry_size() == 0  ->  Ok            the stream ended cleanly
+    //   carry_size() != 0  ->  NeedMoreData  the stream ended mid-frame
+    //
+    // `NeedMoreData` is the honest answer rather than a new status: those bytes
+    // ARE a strict prefix of a message, and the only thing that makes them an
+    // error is that nothing more will ever arrive. `decode_one` answers the same
+    // way for the same bytes, so the two agree.
+    //
+    // It does NOT clear the carry and it does NOT parse anything. A
+    // finalization that silently dropped the partial frame and returned `Ok`
+    // would be the exact bug this exists to prevent: it would convert a
+    // truncated session into a clean one, and the discarded bytes would be
+    // invisible in every count and every log.
+    //
+    // const, noexcept, allocation-free. Calling it before the source is
+    // exhausted, or calling it twice, changes nothing — it reads one field.
+    [[nodiscard]] DecodeStatus finish() const noexcept {
+        return carry_size_ == 0 ? DecodeStatus::Ok : DecodeStatus::NeedMoreData;
     }
 
     // Bytes retained from an incomplete frame. Always < kCarryCapacity at rest,

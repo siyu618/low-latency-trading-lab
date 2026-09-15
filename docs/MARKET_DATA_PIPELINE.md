@@ -673,6 +673,11 @@ nothing at all. That is the reason for the two-path structure: with the carry
 empty, the chunk is decoded in place; only a retained prefix pays for a copy,
 and only up to 29 bytes.
 
+The carry is also the only state the framer has, which is what makes
+`finish()` — the EOF check that distinguishes a stream waiting for more bytes
+from a stream that will never get them — a single comparison on `carry_size_`.
+See *Truncated input is not a clean session* below.
+
 ## Backpressure: no message is ever dropped
 
 Every decoded message is pushed with **retry until success**. A full queue makes
@@ -701,12 +706,27 @@ output only as evidence that the path was exercised at all.
 
 ## Malformed wire is terminal
 
+A session can end badly in two different ways, and this phase keeps them
+**distinct** rather than collapsing them into one "error" flag:
+
+| | MALFORMED | TRUNCATED |
+|---|---|---|
+| what happened | the bytes present *prove* the frame is not a message of this protocol | the byte source ended while a partial frame was still retained |
+| what is wrong | the data | nothing — the stream simply stopped |
+| depends on bytes not yet arrived? | no | yes; mid-stream this state is the ordinary wait |
+| detected by | `feed` returning an `Invalid*` status | `finish()`, and only at a declared EOF |
+| how the session ends | immediately, terminally | the prefix is delivered, then the session ends |
+| resynchronisation | not attempted (see below) | not applicable — there is nothing to resync |
+
+The next two sections take them one at a time. This one is MALFORMED.
+
 The decoder thread distinguishes two things that both look like failure:
 
 - **`NeedMoreData` is not an error.** It is the ordinary answer for a partial
-  read, and in this design it never even escapes: a partial frame becomes the
-  retained carry, and `feed` returns `Ok`. A chunk boundary landing mid-message
-  is a normal event, not a fault.
+  read, and in this design it never even escapes `feed`: a partial frame becomes
+  the retained carry, and `feed` returns `Ok`. A chunk boundary landing
+  mid-message is a normal event, not a fault. Calling it an error would classify
+  the commonest thing a socket does as a failure.
 - **Every other non-`Ok` status is terminal.** The bytes are malformed as a
   property of themselves; re-reading them cannot help. The decoder thread
   records the status, publishes nothing further, and **stops accepting that
@@ -721,6 +741,116 @@ becomes invisible in exactly the case where visibility matters most. The bytes
 after a malformed frame may well be a valid message; without a framing-level
 resync protocol there is no way to *know* they are aligned, and treating them as
 aligned is an assumption, not a recovery.
+
+## Truncated input is not a clean session
+
+The mirror case is the one `feed` cannot see. A frame cut in half is the
+*ordinary* state of a framer mid-stream — it is what the carry is for — so a
+stream that never delivers the rest looks, from every per-chunk return value,
+exactly like a stream that is about to. The decoder thread stops calling `feed`,
+the carry still holds bytes, and nothing in the return values ever said so.
+
+That is not a hypothetical. It was a real defect in this phase's first cut, and
+it had the worst shape a data-integrity bug can take: **a session that lost a
+message reported a clean success.**
+
+```
+before the fix    terminal_error = false    terminal_decode_status = Ok
+                  decoded=5  enqueued=5  consumed=5   ... and 20 bytes
+                  of a real frame silently discarded
+```
+
+Everything visible was correct. The prefix decoded, the queue delivered, the book
+matched the reference, all twenty counters closed, and the missing message
+appeared in no count, no counter and no log. The session simply claimed to have
+finished.
+
+The fix is a **finalization step that only the caller can perform**, because only
+the caller knows the source is exhausted:
+
+```cpp
+[[nodiscard]] DecodeStatus finish() const noexcept {
+    return carry_size_ == 0 ? DecodeStatus::Ok : DecodeStatus::NeedMoreData;
+}
+```
+
+and in the decoder thread, the empty-chunk branch asks it *before* declaring
+success:
+
+```cpp
+if (chunk.empty()) {
+    status = framer.finish();   // was: break, leaving status == Ok
+    break;
+}
+```
+
+`NeedMoreData` is the honest answer rather than a new status: those bytes *are* a
+strict prefix of a message, and the only thing that makes them an error is that
+nothing more will ever arrive. `decode_one` answers the same way for the same
+bytes, so the two agree, and no fourth layer of validity is invented.
+
+Four properties of `finish` are load-bearing:
+
+- **It does not clear the carry.** A finalization that tidied up by dropping the
+  partial frame and returning `Ok` would *be* the bug, wearing a different hat.
+  Because it only reads a field, the same decoder that reports `NeedMoreData` at
+  a cut goes on to report `Ok` once the remainder arrives — pinned for every one
+  of the 28 possible cut positions.
+- **It allocates nothing and parses nothing.** It is one comparison on one
+  member. It cannot fail, so it cannot itself introduce a way for a session to
+  end badly.
+- **It is `const`.** A query, not a transition: asking twice says the same thing
+  and changes nothing, so it is safe to call from a `const` context and safe to
+  call twice.
+- **Calling it early is harmless.** On a live socket mid-stream, `finish()`
+  returning `NeedMoreData` means "the stream is currently mid-frame", which is
+  true and is not a claim about the future. The meaning is supplied entirely by
+  the caller having declared EOF. That is exactly why the caller, not
+  `StreamDecoder`, decides.
+
+**The valid prefix is never disturbed.** Everything decoded before the truncated
+frame was already pushed, and is drained normally; the partial frame is never
+published, so it reaches neither the counts nor the book. The precedent is
+Phase 1B's composed invariant, unchanged:
+
+> decode failure → no typed message is published → no sequencer or book mutation
+
+A truncated frame is not a decode failure — it produced no verdict at all — but
+the same invariant covers it, for the same structural reason: a message that was
+never published cannot be applied.
+
+### How this is tested
+
+Two layers, because the defect had two halves — a missing call and a missing
+answer — and each half fails differently.
+
+**Unit, single-threaded** (suite *stream finalization*, 482 checks). Exhaustive
+rather than sampled, because the range is 28 bytes wide: every 1..11 prefix of a
+12-byte header, every 1..28 prefix of a 29-byte Level (the cuts named in the
+brief — 12, 13, 20, 28 — are inside that range), and every exact frame boundary
+including the empty stream. The clean cases are the negative control: a `finish`
+that answered `NeedMoreData` unconditionally would pass every truncation case and
+still be worthless, so it is sabotaged and must fail here.
+
+**End-to-end, threaded** (suite *truncated input at EOF*, 952 checks). A valid
+prefix — `SnapshotBegin 1`, two levels, `SnapshotEnd 4`, one live update — reaches
+`LIVE`, then the byte source stops inside a `Level` whose price would be plainly
+visible in the book if it were ever published. Every one of the 28 cut positions,
+under four chunk plans (one large chunk, one byte, the awkward plan, a seeded
+random plan), must produce:
+
+```
+terminal_error         == true
+terminal_decode_status == NeedMoreData
+decoded == enqueued == consumed == 5      the prefix, and nothing else
+final state            == the single-thread reference of the PREFIX ALONE
+```
+
+The second half of that is what keeps the first half honest. A "fix" that dropped
+the last valid message, reported an error on clean input, or disturbed the
+prefix's effect on the book would satisfy the truncation assertion and fail here.
+The negative control runs the same prefix with no truncated frame appended under
+all four plans and requires a clean `Ok` — so neither answer can be hardcoded.
 
 ## Termination, and the happens-before argument
 
@@ -780,7 +910,7 @@ equals the single-threaded reference computed from the prefix alone.
 
 ## Verification
 
-Six suites in `market-data-pipeline/tests/md_threaded_pipeline_tests.cpp`, all
+Eight suites in `market-data-pipeline/tests/md_threaded_pipeline_tests.cpp`, all
 green:
 
 | Suite | What it pins |
@@ -791,6 +921,8 @@ green:
 | backpressure, no message dropped | capacity 2 and 4, consumer gated until the ring is provably full |
 | termination keeps the final message | a message pushed immediately before `producer_done` must still be consumed |
 | malformed wire terminates the session | a terminal status ends the session without resynchronisation, after the valid prefix is delivered |
+| stream finalization | every partial prefix is `NeedMoreData` at EOF; every exact frame boundary is `Ok` |
+| truncated input at EOF | a session that stops mid-frame is reported as truncated, and the prefix it did deliver still matches the reference |
 
 The **reference is single-threaded**: the same messages applied straight to a
 `MarketDataPipeline<FlatOrderBook>` with no queue and no threads, then compared
@@ -835,7 +967,7 @@ mode for this phase and should report as a test failure rather than stalling CI.
 
 ### Sabotage results
 
-A green suite is not evidence until it has been shown to fail. Five deliberate
+A green suite is not evidence until it has been shown to fail. Eight deliberate
 defects were introduced, one at a time, and reverted:
 
 | Sabotage | Detected by |
@@ -845,6 +977,24 @@ defects were introduced, one at a time, and reverted:
 | treat a terminal decode status as non-terminal and continue | malformed-wire suite |
 | return `NeedMoreData` instead of retaining the carry | framing suite and every chunk-plan run |
 | (found in the harness) a wait bound of 2×10⁹ iterations | **not** a detection — it hung instead of failing, and was reduced |
+| ignore the carry at EOF — the pre-fix code | truncated-EOF suite, 112 checks |
+| `finish()` always answers `Ok` | finalization suite (95) and truncated-EOF suite (112) |
+| `finish()` always answers `NeedMoreData` | finalization suite (39), truncated-EOF suite (8) and the pre-existing reference suite (8) |
+
+The last three are aimed at the two halves of the truncation fix — the missing
+call and the missing answer — plus the boundary itself, and each fails in a
+different place. **Ignoring the carry at EOF fails only the truncated-EOF
+suite**: the finalization unit tests still pass, because `finish()` is correct
+and it is the *call site* that is wrong. That separation is the reason the two
+suites exist rather than one, and it is the same shape as the defect itself,
+which was a correct framer inside a caller that never asked it anything.
+
+The third sabotage is the one that justifies the negative controls. A `finish`
+that always answered "truncated" would satisfy every truncation assertion in the
+phase — which is why the clean-stream cases are pinned in the finalization unit
+suite, in the truncated-EOF suite's negative control, and (already, from the
+first cut) in the threaded reference suite's `!terminal_error` checks. It fails
+in all three.
 
 The third and fourth are the interesting ones. Under a *single* chunk plan the
 terminal-status sabotage was caught only by the status checks, because the bytes
@@ -864,15 +1014,26 @@ vacuously.
 
 | Sanitizer | Result |
 |---|---|
-| ASan (`-fsanitize=address -fno-omit-frame-pointer -g`) | clean; all Experiment-03 suites pass |
-| UBSan (`-fsanitize=undefined -fno-sanitize-recover=all -g`) | clean; all Experiment-03 suites pass |
-| **TSan** (`-fsanitize=thread -fno-omit-frame-pointer`) | **runs, and reports no races** — 20 consecutive runs of the threaded suite, and the CTest set, with zero diagnostics and zero non-zero exits |
+| ASan (`-fsanitize=address -fno-omit-frame-pointer -g`) | clean; 35/35 CTest |
+| UBSan (`-fsanitize=undefined -fno-sanitize-recover=all -g`) | clean; 35/35 CTest |
+| **TSan** (`-fsanitize=thread -fno-omit-frame-pointer`) | **runs, and reports no races** — 20 consecutive runs of the threaded suite, and the full CTest set, with zero diagnostics and zero non-zero exits |
 
 TSan is the one that matters for this phase, and it is reported as a real result
 rather than assumed: the toolchain here builds and runs it, so the claim is
 "TSan ran and found nothing", not "TSan was unavailable". The threaded suite is
 run repeatedly under it because a race that manifests once in twenty runs would
 otherwise be reported as a pass.
+
+**A positive control, because a clean TSan report is only evidence if the tool
+was looking.** Zero diagnostics could equally mean "no races" or "the threads
+were never instrumented". So TSan's ability to see a race in *this* binary was
+demonstrated rather than trusted: a write to the non-atomic
+`producer_.decoded_messages` was injected into `book_thread()`, where it races
+with the decoder thread's increment. TSan reported six data races, each pointing
+at `ThreadedMdPipeline<1024ul>::book_thread()` — the sabotaged thread — with the
+decoder thread named as the other party. The sabotage was then reverted and the
+clean result re-confirmed. Both worker threads are genuinely under
+instrumentation, so the zero above is a negative and not a blind spot.
 
 ## What cannot be claimed
 
@@ -892,6 +1053,13 @@ otherwise be reported as a pass.
 - **No claim that malformed input is *recoverable*.** This phase ends the session.
   Wire resynchronisation is not implemented, and no statement is made about how a
   real feed handler should do it.
+- **No claim to detect truncation *in a live stream*.** The caller must declare
+  the source exhausted; until then, a stream mid-frame and a stream that has
+  silently died are the same observation, and no protocol-level trick separates
+  them. What this phase guarantees is narrower and honest: *given* that the byte
+  source is finished, a session that ended mid-frame is reported as such rather
+  than as a clean one. Detecting a dead peer needs heartbeats or sequence
+  timeouts, which are not in this contract.
 - **No claim that TSan exhausts the race space.** It reports races it observes on
   the schedules it produces; absence of a report is evidence, not proof.
 
@@ -900,20 +1068,30 @@ otherwise be reported as a pass.
 **Phase 2 — Threaded Decoder → SPSC → Book Correctness: COMPLETE / FROZEN.**
 
 - `market-data-pipeline/include/md_stream_decoder.h` — the framing component:
-  arbitrary chunks in, complete messages out, at most one retained partial frame.
+  arbitrary chunks in, complete messages out, at most one retained partial frame,
+  plus `finish()` for the EOF question `feed` cannot answer.
 - `market-data-pipeline/include/md_threaded_pipeline.h` — the ownership split, the
-  producer and consumer loops, the retry policy, and the completion protocol.
-- `market-data-pipeline/tests/md_threaded_pipeline_tests.cpp` — six suites, 1518
+  producer and consumer loops, the retry policy, the completion protocol, and the
+  EOF finalization that separates truncated input from a clean session.
+- `market-data-pipeline/tests/md_threaded_pipeline_tests.cpp` — eight suites, 2952
   checks, all green, with the `LLDB_SELFTEST_FAIL=1` exit-code guard.
 - `market-data-pipeline/CMakeLists.txt` — the new target, strict flags,
   `Threads::Threads`, the exit-code guard and a 120-second timeout.
 - `market-data-pipeline/include/md_encoder.h` — comment-only: two stale claims
   corrected, no behaviour change.
 
-Full CTest: **35/35**, including every pre-existing Phase-1A and Phase-1B test.
-No Experiment 01 or 02 file is touched. There is still no benchmark target in
-this directory, and still no `BENCH_ARCH_FLAGS` entry, because there is still
-nothing being measured.
+Full CTest: **35/35** in a clean Release build with `BUILD_BENCHMARKS=ON`, under
+ASan and under UBSan, and in the CTest set under TSan; including every
+pre-existing Phase-1A and Phase-1B test. No Experiment 01 or 02 file is touched.
+There is still no benchmark target in this directory, and still no
+`BENCH_ARCH_FLAGS` entry, because there is still nothing being measured.
+
+One correctness hole was found and closed after the phase's first cut, and it is
+recorded in full under *Truncated input is not a clean session* above: a session
+whose byte source ended mid-frame reported a clean success, dropping the partial
+frame without a trace. That is why the phase's status was not stated as frozen
+until the finalization call, its two test suites, and the sabotages that prove
+those suites fail without it, were all in place.
 
 **Phase 3 — Throughput / End-to-End Latency: NOT STARTED.** Phase 2 deliberately
 left the measurement surfaces alone: no clock is read, no sample is collected,

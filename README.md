@@ -229,27 +229,44 @@ namespace (`llmd`), leaving the Experiment 01/02 trees untouched.
 > and **never drops**, because a dropped message is a lost *sequence number* that
 > the sequencer can only read as a gap. A terminal decode status ends the session
 > with **no resynchronisation**, since `consumed` is 0 on malformed input and any
-> resync point would be a guess; `NeedMoreData` is not terminal. End-of-input is
-> an out-of-band `producer_done` release/acquire pair rather than a new `MdKind`:
+> resync point would be a guess; `NeedMoreData` is not terminal. Two ways a
+> session can end badly are kept **distinct**: MALFORMED, where the bytes present
+> prove the frame is not a message of this protocol, and TRUNCATED, where the
+> byte source simply stopped mid-frame and nothing was wrong with what arrived.
+> `feed` cannot tell them apart — a retained prefix is `Ok` mid-stream, which is
+> the ordinary socket case — so the caller, which alone knows the source is
+> exhausted, asks explicitly via `StreamDecoder::finish()`. That closes a real
+> defect found after this phase's first cut, where a session that lost a message
+> **reported a clean success**: the prefix decoded, the book matched, every
+> counter closed, and the dropped bytes appeared nowhere. End-of-input is an
+> out-of-band `producer_done` release/acquire pair rather than a new `MdKind`:
 > everything the producer will ever push is sequenced before the release store,
 > so the consumer's final `try_pop` after the acquire load observes the queue
 > *after* the last push and a failure there is decisive — `queue.empty()` alone
 > can never terminate a consumer without losing the final message. Verification
-> is six suites (1518 checks) against a **single-threaded** reference sharing none
-> of the threaded machinery, over a fixture whose counts are asserted as
+> is eight suites (2952 checks) against a **single-threaded** reference sharing
+> none of the threaded machinery, over a fixture whose counts are asserted as
 > *predictions*; the same stream is decoded under six chunk plans (whole, one
 > byte, awkward fixed sizes, seeded random) and must yield identical messages and
 > identical final state, and since the pipeline is order-sensitive by
 > construction, matching every counter *and* the book is only possible if FIFO
-> held. Backpressure is made deterministic with a test-only gate released only
-> once the producer reports a provably full ring, not by sleeping. Five sabotage
-> runs confirm the suites fail when they should — two of them found defects in the
-> tests themselves, one of which had been hanging rather than failing. Full CTest
-> **35/35**, clean under ASan and UBSan, and **TSan runs and reports no races**
-> across 20 consecutive runs of the threaded suite. No performance claim of any
-> kind: nothing is timed and no retry count is a rate. Methodology:
-> `docs/MARKET_DATA_PIPELINE.md`. **Phase 3 (Throughput / End-to-End Latency) is
-> NOT STARTED.**
+> held. Truncation is pinned at both layers — every one of the 28 possible
+> partial-frame prefixes is `NeedMoreData` at EOF and every exact boundary is
+> `Ok` in the unit suite, and all 28 cut positions under four chunk plans in the
+> threaded suite, each required to report truncation *and* to leave the valid
+> prefix identical to the reference, with clean-stream negative controls so
+> neither answer can be hardcoded. Backpressure is made deterministic with a
+> test-only gate released only once the producer reports a provably full ring,
+> not by sleeping. Eight sabotage runs confirm the suites fail when they should —
+> two of them found defects in the tests themselves, one of which had been
+> hanging rather than failing, and the three aimed at the truncation fix each
+> fail in a different place. Full CTest **35/35**, clean under ASan and UBSan,
+> and **TSan runs and reports no races** across 20 consecutive runs of the
+> threaded suite — with a positive control confirming TSan actually instruments
+> both worker threads, so the clean report is a negative and not a blind spot. No
+> performance claim of any kind: nothing is timed and no retry count is a rate.
+> Methodology: `docs/MARKET_DATA_PIPELINE.md`. **Phase 3 (Throughput /
+> End-to-End Latency) is NOT STARTED.**
 
 ## Experiments
 
@@ -396,9 +413,11 @@ low-latency-trading-lab/
 │   │   ├── md_encoder.h     # Phase 1B: test-and-fixture encoder (allocates; not
 │   │   │                    #   the hot path, and not on it)
 │   │   ├── md_stream_decoder.h  # Phase 2: chunk framing — zero or more complete
-│   │   │                    #   messages out, at most one retained partial frame
+│   │   │                    #   messages out, at most one retained partial frame,
+│   │   │                    #   plus finish() for the EOF/truncation question
 │   │   ├── md_threaded_pipeline.h  # Phase 2: decoder thread -> SPSC -> book
-│   │   │                    #   thread, the retry policy, producer_done
+│   │   │                    #   thread, the retry policy, producer_done, and the
+│   │   │                    #   EOF finalization separating truncated from clean
 │   │   └── md_stream_gen.h  # deterministic base scenarios + the 15-entry named
 │   │                        #   mutation catalogue + seeded composition grammar
 │   ├── tests/
@@ -410,9 +429,10 @@ low-latency-trading-lab/
 │   │   ├── md_decoder_tests.cpp  # 6 suites: literal expected bytes, endian
 │   │   │                    #   helpers, stream decoding, exhaustive truncation,
 │   │   │                    #   malformed frames, bytes -> decoder -> pipeline
-│   │   └── md_threaded_pipeline_tests.cpp  # Phase 2: 6 suites: framing, chunk-plan
+│   │   └── md_threaded_pipeline_tests.cpp  # Phase 2: 8 suites: framing, chunk-plan
 │   │                        #   equivalence, threaded vs single-thread reference,
-│   │                        #   backpressure, termination, malformed wire
+│   │                        #   backpressure, termination, malformed wire,
+│   │                        #   finalization, truncated input at EOF
 │   └── CMakeLists.txt       # header-only INTERFACE lib + three test targets + their
 │                            #   exit-code guards; deliberately no benchmark target
 ├── CMakeLists.txt
@@ -1781,7 +1801,7 @@ never terminate a consumer without occasionally losing the final message.
 
 ### Verification and sabotage (Phase 2)
 
-Six suites, 1518 checks, all green. The oracle is **single-threaded** — the same
+Eight suites, 2952 checks, all green. The oracle is **single-threaded** — the same
 messages applied straight to a `MarketDataPipeline<FlatOrderBook>` with no queue
 and no threads — and the threaded run must match it on state, cursor, watermark,
 best bid, best ask, level count and all twenty counters *by name*. That is a
@@ -1802,17 +1822,41 @@ wait for that flag is bounded, and the bound is deliberately small, because it i
 a failure detector rather than patience: a producer that never signals must be
 reported as a failed check instead of hanging the suite.
 
-Five sabotage runs confirm the suites fail when they should: dropping on a full
+**Truncation is a separate claim from malformed wire, and it is pinned
+separately.** A session that stops mid-frame is not a session with bad bytes: the
+`StreamDecoder` unit suite walks all 28 possible partial-frame prefixes and
+requires `NeedMoreData` at EOF for every one, and `Ok` for every exact frame
+boundary including the empty stream; the threaded suite then walks all 28 cut
+positions again under four chunk plans and requires each run to *report*
+truncation while the prefix it did deliver stays identical to the single-thread
+reference for the prefix alone. Clean-stream negative controls sit in both, so a
+`finish()` that always answered "truncated" — which would satisfy every
+truncation assertion in the phase — fails instead.
+
+Eight sabotage runs confirm the suites fail when they should: dropping on a full
 push, removing the decisive final `try_pop`, treating a terminal decode status as
 non-terminal, and returning `NeedMoreData` instead of retaining the carry are all
-caught. Two of them found defects in the **tests**: the terminal-status sabotage
-was initially caught only by the status checks (the bytes after the bad frame
-happened to resync onto nothing decodable), so the malformed suite was widened to
-run every chunk plan — now a byte-skip is caught behaviourally, inventing
-messages under two of the five plans. The fifth found a wait bound of 2×10⁹
-iterations that hung rather than failed, and it was reduced. This is the same
-pattern as Phase 1B, where sabotaging the decoder exposed a malformed-case frame
-that was 21 bytes instead of 29 and had been passing vacuously.
+caught, as are the three aimed at the truncation fix. Those three fail in
+different places by design: ignoring the carry at EOF fails **only** the
+truncated-EOF suite (the finalization unit tests still pass, because `finish()`
+is correct and the *call site* is what is wrong — the same shape as the defect
+itself), while the two `finish()` sabotages also trip the finalization suite and,
+for the always-truncated one, the pre-existing clean-stream checks in the
+reference suite. Two of the earlier sabotages found defects in the **tests**: the
+terminal-status sabotage was initially caught only by the status checks (the
+bytes after the bad frame happened to resync onto nothing decodable), so the
+malformed suite was widened to run every chunk plan — now a byte-skip is caught
+behaviourally, inventing messages under two of the five plans. Another found a
+wait bound of 2×10⁹ iterations that hung rather than failed, and it was reduced.
+This is the same pattern as Phase 1B, where sabotaging the decoder exposed a
+malformed-case frame that was 21 bytes instead of 29 and had been passing
+vacuously.
+
+Under TSan the threaded suite is run 20 times consecutively with zero diagnostics,
+and **TSan's ability to see a race in this binary is demonstrated rather than
+assumed**: injecting a write to a non-atomic stat from the book thread produces
+six data races pointing at `book_thread()`, so the clean report is a negative
+rather than an uninstrumented blind spot.
 
 ### Running it
 
@@ -1879,12 +1923,14 @@ Phase 2 — threaded decoder → SPSC → book:
 
 - `market-data-pipeline/include/md_stream_decoder.h` — the framing component.
   Arbitrary chunks in, complete `MdMessage` values out, at most one retained
-  partial frame in a fixed 29-byte carry.
+  partial frame in a fixed 29-byte carry, and `finish()` — the EOF question
+  `feed` cannot answer, because a retained prefix is `Ok` mid-stream.
 - `market-data-pipeline/include/md_threaded_pipeline.h` — the ownership split,
-  the producer and consumer loops, the retry-without-drop policy, and the
-  `producer_done` completion protocol.
-- `market-data-pipeline/tests/md_threaded_pipeline_tests.cpp` — six suites, all
-  green, including the `LLDB_SELFTEST_FAIL=1` exit-code guard.
+  the producer and consumer loops, the retry-without-drop policy, the
+  `producer_done` completion protocol, and the EOF finalization that separates
+  truncated input from a clean session.
+- `market-data-pipeline/tests/md_threaded_pipeline_tests.cpp` — eight suites,
+  all green, including the `LLDB_SELFTEST_FAIL=1` exit-code guard.
 - `market-data-pipeline/include/md_encoder.h` — comment-only change: two stale
   claims corrected, no behaviour change.
 

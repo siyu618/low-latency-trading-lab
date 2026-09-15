@@ -28,6 +28,18 @@
 //   6. malformed wire     — a terminal decode error ends the session without
 //                           resynchronisation, after the valid prefix is fully
 //                           delivered.
+//   7. finalization       — which streams ended on a frame boundary: every
+//                           possible partial prefix is NeedMoreData at EOF,
+//                           every exact boundary is Ok.
+//   8. truncated at EOF   — a stream that stops mid-frame is REPORTED as
+//                           truncated, while the valid prefix it did deliver
+//                           stays identical to the single-thread reference.
+//
+// Suites 6 and 8 are the two ways a session ends badly and they are deliberately
+// kept distinct: MALFORMED means the bytes present prove the frame is not a
+// message of this protocol, TRUNCATED means the session simply ended mid-frame
+// and nothing was wrong with what arrived. Only the caller knows which one it is
+// looking at, because only the caller knows whether more bytes were coming.
 //
 // A plain CHECK macro reports file/line. Failed CHECKs accumulate and main()
 // returns non-zero, so CTest genuinely fails on a bad run.
@@ -822,6 +834,325 @@ void suite_malformed_wire() {
 }
 
 // ---------------------------------------------------------------------------
+// Suite 7 — finalization: which streams actually ended on a frame boundary.
+//
+// `feed` cannot answer this question, and that is the entire reason `finish`
+// exists. A retained partial frame is `Ok` mid-stream — it is the ordinary state
+// of a framer waiting for the rest of a message on a socket — so nothing in the
+// per-chunk return value separates "more bytes are coming" from "the stream
+// stopped here". Only the component that owns the byte source knows the source
+// is exhausted, so only it can ask, and it asks explicitly.
+//
+// The coverage is exhaustive rather than sampled, because the range is tiny: all
+// 1..11 prefixes of a 12-byte header, and all 1..28 prefixes of a 29-byte Level.
+// The cuts named in the brief (12, 13, 20, 28) are all inside that range; the
+// rest cost a loop iteration each and close the boundary completely instead of
+// leaving it to four samples.
+// ---------------------------------------------------------------------------
+void suite_finalization() {
+    // What one feed-then-finalize reports. `published` is carried so a case can
+    // assert that finalization itself published nothing and parsed nothing.
+    struct Ended {
+        DecodeStatus fed       = DecodeStatus::Ok;
+        DecodeStatus fin       = DecodeStatus::Ok;
+        std::size_t  carried   = 0;
+        std::size_t  published = 0;
+    };
+
+    // Feed exactly `n` bytes of `wire` as ONE chunk, then finalize.
+    auto feed_cut = [](std::span<const std::byte> wire, std::size_t n) {
+        StreamDecoder d;
+        Ended e;
+        e.fed     = d.feed(wire.first(n), [&](const MdMessage&) { ++e.published; });
+        e.fin     = d.finish();
+        e.carried = d.carry_size();
+        return e;
+    };
+
+    // Feed all of `wire` under a chunk plan, then finalize.
+    auto feed_plan = [](std::span<const std::byte> wire, std::vector<std::size_t> sizes) {
+        ChunkSource src(wire, std::move(sizes));
+        StreamDecoder d;
+        Ended e;
+        for (;;) {
+            const std::span<const std::byte> chunk = src.next();
+            if (chunk.empty()) break;
+            e.fed = d.feed(chunk, [&](const MdMessage&) { ++e.published; });
+            if (e.fed != DecodeStatus::Ok) break;
+        }
+        e.fin     = d.finish();
+        e.carried = d.carry_size();
+        return e;
+    };
+
+    const std::vector<std::byte> bracket = llmd::encode::encode(B(1));
+    const std::vector<std::byte> level   = llmd::encode::encode(L(2, Side::Bid, 100, 10));
+    CHECK(bracket.size() == llmd::wire::kHeaderSize);
+    CHECK(level.size() == llmd::wire::kLevelMessageSize);
+    CHECK(StreamDecoder::kCarryCapacity == llmd::wire::kLevelMessageSize);
+
+    std::vector<std::byte> bracket_level = bracket;
+    bracket_level.insert(bracket_level.end(), level.begin(), level.end());
+
+    // ---- A. an exact frame boundary reports Ok -----------------------------
+    //
+    // The empty stream is here too: nothing retained is nothing truncated. This
+    // is the negative control for the whole suite. A `finish` that answered
+    // NeedMoreData unconditionally would pass every truncation case below and
+    // still be worthless, so the clean cases have to be pinned as hard as the
+    // truncated ones.
+    {
+        StreamDecoder d;
+        CHECK(d.finish() == DecodeStatus::Ok);
+        CHECK(d.carry_size() == 0);
+    }
+
+    struct Clean {
+        const char*                name;
+        const std::vector<std::byte>* wire;
+        std::size_t                msgs;
+    };
+    const std::vector<Clean> clean = {
+        {"one bracket", &bracket, 1},
+        {"one level", &level, 1},
+        {"bracket + level", &bracket_level, 2},
+    };
+    for (const Clean& c : clean) {
+        const std::vector<std::vector<std::size_t>> plans = {
+            plan_whole(c.wire->size()), plan_one_byte(), plan_awkward()};
+        for (const std::vector<std::size_t>& sizes : plans) {
+            const Ended e = feed_plan(*c.wire, sizes);
+            CHECK(e.fed == DecodeStatus::Ok);
+            CHECK(e.published == c.msgs);
+            CHECK(e.carried == 0);
+            CHECK(e.fin == DecodeStatus::Ok);
+        }
+    }
+
+    // ---- B. a partial HEADER is NeedMoreData at EOF ------------------------
+    //
+    // 1..11 bytes of a 12-byte header. Mid-stream each is ordinary — the framer
+    // is simply waiting — and at EOF each is a session that died inside a
+    // header. Same bytes, same status, different fact, and only the caller can
+    // tell them apart.
+    for (std::size_t n = 1; n < llmd::wire::kHeaderSize; ++n) {
+        const Ended e = feed_cut(bracket, n);
+        CHECK(e.fed == DecodeStatus::Ok);
+        CHECK(e.published == 0);
+        CHECK(e.carried == n);
+        CHECK(e.fin == DecodeStatus::NeedMoreData);
+    }
+
+    // ---- C. a partial LEVEL is NeedMoreData at EOF -------------------------
+    //
+    // Every cut of a 29-byte Level. Four are structurally distinct and worth
+    // naming:
+    //
+    //    12   header complete, payload entirely absent
+    //    13   one payload byte
+    //    20   mid-payload
+    //    28   one byte short — the largest prefix that can exist at all
+    //
+    // and 28 is exactly the ceiling the fixed carry is sized for. A partial
+    // frame can never exceed kLevelMessageSize - 1 bytes, which is why one
+    // `std::array<std::byte, 29>` holds every prefix there is and why the
+    // steady path never needs to grow a buffer.
+    for (std::size_t n = 1; n < level.size(); ++n) {
+        const Ended e = feed_cut(level, n);
+        CHECK(e.fed == DecodeStatus::Ok);
+        CHECK(e.published == 0);
+        CHECK(e.carried == n);
+        CHECK(e.fin == DecodeStatus::NeedMoreData);
+    }
+    CHECK(level.size() - 1 == StreamDecoder::kCarryCapacity - 1);
+
+    // ---- D. a truncated decoder is not a dead one --------------------------
+    //
+    // `finish` reports the carry and changes nothing: it does not clear it and
+    // it parses no bytes. So the SAME decoder that reported NeedMoreData at a
+    // cut goes on to report Ok once the remainder arrives and completes the
+    // frame. The tempting "tidy up on finalize" implementation — drop the
+    // partial frame so the object is left clean — could not, and would silently
+    // lose the rest of a message that a caller had merely paused on.
+    const std::span<const std::byte> level_span(level);
+    for (std::size_t n = 1; n < level.size(); ++n) {
+        StreamDecoder d;
+        std::size_t published = 0;
+        CHECK(d.feed(level_span.first(n), [&](const MdMessage&) { ++published; }) ==
+              DecodeStatus::Ok);
+        CHECK(d.finish() == DecodeStatus::NeedMoreData);
+        CHECK(d.carry_size() == n);
+        CHECK(published == 0);
+
+        // Idempotent: asking twice reads one field and says the same thing.
+        CHECK(d.finish() == DecodeStatus::NeedMoreData);
+        CHECK(d.carry_size() == n);
+
+        // The remainder arrives. The frame completes, exactly one message is
+        // published, and the stream is clean.
+        CHECK(d.feed(level_span.subspan(n), [&](const MdMessage&) { ++published; }) ==
+              DecodeStatus::Ok);
+        CHECK(published == 1);
+        CHECK(d.carry_size() == 0);
+        CHECK(d.finish() == DecodeStatus::Ok);
+    }
+
+    // ---- the terminal case, and why it is not a contradiction --------------
+    //
+    // A malformed frame clears the carry and ends the session inside `feed`, so
+    // by the time `finish` is asked there is nothing left to finalize and it
+    // answers Ok. That is correct, and it is not in tension with anything
+    // above: `NeedMoreData` at EOF means "the stream stopped mid-frame", while
+    // this means "the stream stopped, cleanly, because the bytes were proven
+    // bad". The pipeline takes its `terminal_error` from the `feed` status in
+    // this case, not from this call, and `feed`'s report is the one that
+    // matters. Pinned so the distinction is a documented fact rather than a
+    // surprise for the next reader.
+    {
+        std::vector<std::byte> bad = bracket;
+        bad[llmd::wire::kOffsetVersion] = std::byte{0}; // not kvVersion
+        StreamDecoder d;
+        std::size_t published = 0;
+        CHECK(d.feed(bad, [&](const MdMessage&) { ++published; }) ==
+              DecodeStatus::InvalidVersion);
+        CHECK(published == 0);
+        CHECK(d.carry_size() == 0);
+        CHECK(d.finish() == DecodeStatus::Ok);
+    }
+
+    summary("stream finalization");
+}
+
+// ---------------------------------------------------------------------------
+// Suite 8 — a stream that stops MID-FRAME.
+//
+// This is the defect the finalization call closes. Before it, a session whose
+// byte source simply ended while the framer still held a partial frame reported
+// a CLEAN SUCCESS: `terminal_error == false`, `terminal_decode_status == Ok`,
+// and the retained bytes vanished without appearing in any count, any counter or
+// any log. The prefix was delivered correctly, the book was correct, and the
+// missing message was invisible — the worst shape a data-integrity bug can take.
+//
+// Note what is NOT in question here: the valid prefix is delivered either way,
+// and must be. So the assertions come in two halves, and the second half is the
+// one that keeps the fix honest —
+//
+//   reported      the session is TRUNCATED: terminal_error, NeedMoreData, and
+//                 the partial frame in no count.
+//   unaffected    everything before the truncation is identical to the
+//                 single-threaded Phase-1 reference for the prefix ALONE.
+//
+// The second half is what stops the first from being satisfied by breaking
+// something else: a "fix" that dropped the last valid message, or reported an
+// error on clean input, fails here.
+// ---------------------------------------------------------------------------
+void suite_truncated_eof() {
+    // The valid prefix: a complete snapshot bracket plus one live update, so the
+    // session reaches LIVE and the final book is a real, checkable state rather
+    // than an empty one.
+    const std::vector<MdMessage> prefix = {B(1), L(2, Side::Bid, 100, 10),
+                                           L(3, Side::Ask, 101, 20), E(4),
+                                           L(5, Side::Bid, 100, 12)};
+    const std::vector<std::byte> wire = llmd::encode::encode_all(prefix);
+
+    // The frame the session dies inside. A Level, so a cut can land either in a
+    // header or in a payload, and carrying a price that would be plainly visible
+    // in the book if it were ever published — the point of the test is that a
+    // truncated frame reaches neither the counts nor the levels.
+    const std::vector<std::byte> next_frame = llmd::encode::encode(L(6, Side::Bid, 777, 5));
+
+    CHECK(wire.size() == 111); // 12 + 29 + 29 + 12 + 29
+    CHECK(next_frame.size() == llmd::wire::kLevelMessageSize);
+
+    const Observation want = observe_single_thread(prefix);
+    CHECK(want.state == MdState::Live);
+    CHECK(want.last_applied == 5);
+    CHECK(want.expected == 6);
+    CHECK(want.best_bid == 100); // 777 must never appear
+    CHECK(want.best_ask == 101);
+    CHECK(want.level_count == 2);
+
+    // Four chunk plans, so the EOF verdict is shown to be independent of how the
+    // transport happened to slice the bytes — including plans whose boundaries
+    // fall in the middle of the truncated frame, which is where a framing bug
+    // would hide.
+    struct Plan {
+        const char*              name;
+        std::vector<std::size_t> sizes;
+    };
+    const std::vector<Plan> plans = {
+        {"whole/large", plan_whole(static_cast<std::size_t>(1) << 16)}, // clamped
+        {"one byte", plan_one_byte()},
+        {"awkward 3,7,11,2,17", plan_awkward()},
+        {"random seed 5", plan_random(5)},
+    };
+
+    auto check_truncated = [&](const char* label, const ThreadedMdPipeline<64>& p) {
+        const auto& ps = p.producer_stats();
+        const auto& cs = p.consumer_stats();
+
+        ++g_checks;
+        if (!(ps.terminal_error &&
+              ps.terminal_decode_status == DecodeStatus::NeedMoreData &&
+              ps.decoded_messages == prefix.size() &&
+              ps.enqueued_messages == prefix.size() &&
+              cs.consumed_messages == prefix.size())) {
+            ++g_failures;
+            std::printf("FAIL %s: truncated EOF not reported\n", label);
+            std::printf("       terminal_error=%d status=%s\n",
+                        static_cast<int>(ps.terminal_error),
+                        llmd::decode_status_name(ps.terminal_decode_status));
+            std::printf("       decoded=%llu enqueued=%llu consumed=%llu (want %zu each)\n",
+                        (unsigned long long)ps.decoded_messages,
+                        (unsigned long long)ps.enqueued_messages,
+                        (unsigned long long)cs.consumed_messages, prefix.size());
+        }
+
+        // The prefix's effect on the book, counter for counter, against the
+        // single-threaded Phase-1 reference for the prefix alone.
+        check_same_observation(label, observe_threaded(p), want);
+    };
+
+    // Every possible cut of the next frame: 1..28 bytes present, the rest never
+    // sent. 28 is the largest prefix that can exist, so this covers the ceiling
+    // as well as the boundary cases (12 = header complete, no payload).
+    for (std::size_t cut = 1; cut < next_frame.size(); ++cut) {
+        std::vector<std::byte> truncated = wire;
+        const std::span<const std::byte> partial =
+            std::span<const std::byte>(next_frame).first(cut);
+        truncated.insert(truncated.end(), partial.begin(), partial.end());
+
+        for (const Plan& pl : plans) {
+            ThreadedMdPipeline<64> p;
+            ChunkSource src(truncated, pl.sizes);
+            p.run(src);
+
+            char label[80];
+            std::snprintf(label, sizeof label, "%s, cut %zu", pl.name, cut);
+            check_truncated(label, p);
+        }
+    }
+
+    // The negative control: the SAME prefix with no truncated frame appended is
+    // a clean session. Without it, a finalization that always answered "ended
+    // mid-frame" would satisfy every case above.
+    for (const Plan& pl : plans) {
+        ThreadedMdPipeline<64> p;
+        ChunkSource src(wire, pl.sizes);
+        p.run(src);
+
+        CHECK(!p.producer_stats().terminal_error);
+        CHECK(p.producer_stats().terminal_decode_status == DecodeStatus::Ok);
+        CHECK(p.producer_stats().decoded_messages == prefix.size());
+        CHECK(p.producer_stats().enqueued_messages == prefix.size());
+        CHECK(p.consumer_stats().consumed_messages == prefix.size());
+        check_same_observation(pl.name, observe_threaded(p), want);
+    }
+
+    summary("truncated input at EOF");
+}
+
+// ---------------------------------------------------------------------------
 // The deliberate failure, reached only through the self-test env var.
 // ---------------------------------------------------------------------------
 void suite_selftest_failure() {
@@ -848,6 +1179,8 @@ int main() {
     suite_backpressure();
     suite_termination();
     suite_malformed_wire();
+    suite_finalization();
+    suite_truncated_eof();
 
     if (g_failures_total == 0) {
         std::printf("\nALL SUITES PASSED\n");
